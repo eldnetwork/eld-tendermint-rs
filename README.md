@@ -20,3 +20,12 @@ Edit `proto/tendermint/**` only when the Go schema changes, then regenerate. Do 
 - Those bindings are not tested against Eld’s Go hex vectors.
 
 `tendermint-rs` `tools/proto-compiler` is only the prost-build recipe: prost 0.13, `bytes` for ABCI fields, and extern paths for `Timestamp` and `Duration`.
+
+### Still to do
+
+Protobuf field numbers and names are generated. These pieces of step 1 are not done yet:
+
+- **Amino and gogoproto JSON tags are not on the Rust types.** Prost ignores `jsontag`, `customname`, and names like `tendermint/PubKeyEd25519`. The generated structs have no `serde` derive. Those tags matter for JSON, not for protobuf bytes. Add them with the types and RPC crates.
+- **Wire compatibility is only partly proven.** `tests/vectors.rs` covers mempool txs, blockchain messages other than `BlockResponse`, privval ping and pubkey rows, deliver-tx nil-versus-empty `Data`, and one `RequestEcho` round-trip. Still to port from the Go tests: block, vote, proposal, consensus, p2p, statesync, and evidence hex vectors (`TestBlockchainMessageVectors` block response, `TestPrivvalVectors` vote and proposal rows, `TestConsMsgsVectors`, `TestVoteSignBytesTestVectors`, `TestPexVectors`, `TestConnVectors`, `TestStateSyncVectors`, `TestEvidenceVectors`).
+- **No live Go node check.** Nothing in this crate has encoded or decoded bytes against a running `eld-tendermint` process.
+- **gRPC service stubs were not generated.** `ABCIApplication` and `BroadcastAPI` are messages only. Socket framing and gRPC servers come with the later `abci` crate.
