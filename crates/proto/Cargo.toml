@@ -1,0 +1,15 @@
+[package]
+name = "eld-tendermint-proto"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Prost types for Eld Tendermint v0.34.24 (ABCI 0.17)."
+
+[dependencies]
+bytes = "1"
+prost = "0.13"
+prost-types = "0.13"
+
+[dev-dependencies]
+hex = "0.4"

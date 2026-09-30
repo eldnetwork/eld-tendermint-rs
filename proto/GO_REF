@@ -1,0 +1,8 @@
+GO_REF=v0.34.24-eld.3
+COMMIT=79dcdd71257e56285c3abc2aad5f89e8e2ef02d5
+REPO=https://github.com/eldnetwork/eld-tendermint
+ABCI=0.17.0
+
+The .proto files under proto/tendermint were copied from that commit.
+They match upstream Tendermint v0.34.24 (no schema diff).
+Do not edit them. Regenerate Rust with scripts/gen-proto.sh.

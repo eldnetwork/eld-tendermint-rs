@@ -1,0 +1,9 @@
+[package]
+name = "eld-tendermint-proto-compiler"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Regenerates crates/proto/src/prost from proto/tendermint."
+
+[dependencies]
+prost-build = "0.13"
