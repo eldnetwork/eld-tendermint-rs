@@ -13,6 +13,7 @@ mod genesis;
 mod hash;
 mod header;
 mod params;
+mod part;
 mod proposal;
 mod time;
 mod tx;
@@ -30,6 +31,7 @@ pub use params::{
     ABCI_PUBKEY_TYPE_ED25519, ABCI_PUBKEY_TYPE_SECP256K1, BlockParams, ConsensusParams, Duration,
     EvidenceParams, ValidatorParams, VersionParams, hash_consensus_params,
 };
+pub use part::{Part, PartSet};
 pub use proposal::Proposal;
 pub use time::Time;
 pub use tx::{Tx, Txs};
@@ -57,3 +59,9 @@ pub const MAX_TOTAL_VOTING_POWER: i64 = i64::MAX / 8;
 
 /// `types.MaxBlockSizeBytes` (100 MiB).
 pub const MAX_BLOCK_SIZE_BYTES: i64 = 104_857_600;
+
+/// `types.BlockPartSizeBytes` (64 KiB).
+pub const BLOCK_PART_SIZE_BYTES: u32 = 65_536;
+
+/// `types.MaxBlockPartsCount` (`MaxBlockSizeBytes / BlockPartSizeBytes + 1`).
+pub const MAX_BLOCK_PARTS_COUNT: u32 = (MAX_BLOCK_SIZE_BYTES as u32 / BLOCK_PART_SIZE_BYTES) + 1;

@@ -50,6 +50,14 @@ pub enum Error {
     InvalidBitArray { detail: String },
     Json(String),
     PubKey(CryptoError),
+    PartTooBig { len: usize },
+    ZeroPartSize,
+    TooManyParts { count: usize },
+    UnexpectedPartIndex { index: u32, total: u32 },
+    InvalidPartProof,
+    IncompletePartSet,
+    MissingPart,
+    Proof(CryptoError),
 }
 
 impl fmt::Display for Error {
@@ -147,6 +155,22 @@ impl fmt::Display for Error {
             Self::InvalidBitArray { detail } => write!(f, "invalid bit array: {detail}"),
             Self::Json(msg) => write!(f, "invalid genesis json: {msg}"),
             Self::PubKey(err) => write!(f, "invalid public key: {err}"),
+            Self::PartTooBig { len } => {
+                write!(
+                    f,
+                    "too big: {len} bytes, max: {}",
+                    crate::BLOCK_PART_SIZE_BYTES
+                )
+            }
+            Self::ZeroPartSize => write!(f, "part size must be greater than 0"),
+            Self::TooManyParts { count } => write!(f, "too many parts: {count}"),
+            Self::UnexpectedPartIndex { index, total } => {
+                write!(f, "unexpected part index {index}, total {total}")
+            }
+            Self::InvalidPartProof => write!(f, "invalid part proof"),
+            Self::IncompletePartSet => write!(f, "incomplete part set"),
+            Self::MissingPart => write!(f, "nil part"),
+            Self::Proof(err) => write!(f, "invalid proof: {err}"),
         }
     }
 }
@@ -154,7 +178,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::PubKey(err) => Some(err),
+            Self::PubKey(err) | Self::Proof(err) => Some(err),
             _ => None,
         }
     }
