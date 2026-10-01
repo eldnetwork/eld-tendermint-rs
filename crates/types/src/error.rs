@@ -40,6 +40,7 @@ pub enum Error {
     NegativeVotingPower,
     ZeroVotingPower,
     EmptyValidatorSet,
+    NonPositiveTimes,
     DuplicateValidator,
     MissingProposer,
     VotingPowerTooHigh,
@@ -161,6 +162,10 @@ impl fmt::Display for Error {
             Self::NegativeVotingPower => write!(f, "validator has negative voting power"),
             Self::ZeroVotingPower => write!(f, "validator has no voting power"),
             Self::EmptyValidatorSet => write!(f, "validator set is empty"),
+            Self::NonPositiveTimes => write!(
+                f,
+                "Cannot call IncrementProposerPriority with non-positive times"
+            ),
             Self::DuplicateValidator => write!(f, "duplicate validator address"),
             Self::MissingProposer => write!(f, "validator set has no proposer"),
             Self::VotingPowerTooHigh => write!(f, "total voting power is too high"),

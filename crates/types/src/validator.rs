@@ -1,8 +1,8 @@
 //! `types.Validator` and `ValidatorSet`.
 //!
-//! Proposer priority is stored and used only to pick the proposer when every priority
-//! is already set (all zeros selects the lowest address). `IncrementProposerPriority`
-//! is not implemented.
+//! `IncrementProposerPriority` recenters priorities, then adds each validator's voting
+//! power and subtracts the total from the proposer. Go panics on an empty set or a
+//! non-positive `times`; those cases return [`Error`].
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -12,6 +12,9 @@ use prost::Message;
 use eld_tendermint_crypto::{PubKey, hash_from_byte_slices, pub_key_to_proto};
 
 use crate::{ADDRESS_SIZE, Error, Hash, MAX_TOTAL_VOTING_POWER};
+
+/// `types.PriorityWindowSizeFactor`. The priority gap is capped at twice the total power.
+const PRIORITY_WINDOW_SIZE_FACTOR: i64 = 2;
 
 /// `types.Validator`. `validate_basic` does not check that `address` matches `pub_key`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,7 +73,7 @@ impl Validator {
     }
 }
 
-/// `types.ValidatorSet`, without proposer-priority rotation.
+/// `types.ValidatorSet`.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ValidatorSet {
     validators: Vec<Validator>,
@@ -79,15 +82,20 @@ pub struct ValidatorSet {
 }
 
 impl ValidatorSet {
-    /// Sorts by voting power descending, then address ascending, and sums voting power.
+    /// `NewValidatorSet`.
     ///
-    /// Rejects an empty set, duplicate addresses, and voting power of 0, matching
-    /// `NewValidatorSet` / `updateWithChangeSet`. Does not run `IncrementProposerPriority`.
+    /// Sorts by voting power descending, then address ascending. Each new validator's
+    /// priority starts at `-(total + (total >> 3))`, then the set is rescaled, shifted
+    /// so the average is near zero, and incremented once.
+    ///
+    /// Pubkey presence and the 20-byte address check stay on [`Validator::validate_basic`].
+    /// This constructor accepts the short addresses used by the Go proposer fixtures.
     ///
     /// # Errors
     ///
-    /// Returns a validation error from a validator, or [`Error::EmptyValidatorSet`],
-    /// [`Error::DuplicateValidator`], [`Error::ZeroVotingPower`], or [`Error::VotingPowerTooHigh`].
+    /// Returns [`Error::EmptyValidatorSet`], [`Error::NegativeVotingPower`],
+    /// [`Error::ZeroVotingPower`], [`Error::DuplicateValidator`], or
+    /// [`Error::VotingPowerTooHigh`].
     pub fn new(mut validators: Vec<Validator>) -> Result<Self, Error> {
         if validators.is_empty() {
             return Err(Error::EmptyValidatorSet);
@@ -95,7 +103,9 @@ impl ValidatorSet {
         let mut seen = BTreeSet::new();
         let mut total = 0i64;
         for validator in &validators {
-            validator.validate_basic()?;
+            if validator.voting_power < 0 {
+                return Err(Error::NegativeVotingPower);
+            }
             if validator.voting_power == 0 {
                 return Err(Error::ZeroVotingPower);
             }
@@ -107,13 +117,111 @@ impl ValidatorSet {
                 .filter(|sum| *sum <= MAX_TOTAL_VOTING_POWER)
                 .ok_or(Error::VotingPowerTooHigh)?;
         }
-        validators.sort_by(validator_power_order);
-        let proposer_index = pick_proposer(&validators);
-        Ok(Self {
+        // `computeNewPriorities` for validators that are not already in the set.
+        let initial = -(total + (total >> 3));
+        for validator in &mut validators {
+            validator.proposer_priority = initial;
+        }
+        let mut set = Self {
             validators,
-            proposer_index: Some(proposer_index),
+            proposer_index: None,
             total_voting_power: total,
-        })
+        };
+        let diff_max = PRIORITY_WINDOW_SIZE_FACTOR * total;
+        set.rescale_priorities(diff_max);
+        set.shift_by_avg_proposer_priority();
+        set.validators.sort_by(validator_power_order);
+        set.increment_proposer_priority(1)?;
+        Ok(set)
+    }
+
+    /// `ValidatorSet.Copy`. A deep copy: incrementing the result does not change `self`.
+    #[must_use]
+    pub fn copy(&self) -> Self {
+        self.clone()
+    }
+
+    /// `ValidatorSet.IncrementProposerPriority`.
+    ///
+    /// Rescales, subtracts the average priority, then adds voting power to every
+    /// validator and subtracts the total from the winner, `times` times.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EmptyValidatorSet`] or [`Error::NonPositiveTimes`]. Go panics
+    /// on both (`"empty validator set"` and `"Cannot call IncrementProposerPriority
+    /// with non-positive times"`).
+    pub fn increment_proposer_priority(&mut self, times: i32) -> Result<(), Error> {
+        if self.validators.is_empty() {
+            return Err(Error::EmptyValidatorSet);
+        }
+        if times <= 0 {
+            return Err(Error::NonPositiveTimes);
+        }
+        let diff_max = PRIORITY_WINDOW_SIZE_FACTOR * self.total_voting_power;
+        self.rescale_priorities(diff_max);
+        self.shift_by_avg_proposer_priority();
+        let mut proposer = 0;
+        for _ in 0..times {
+            proposer = self.increment_one();
+        }
+        self.proposer_index = Some(proposer);
+        Ok(())
+    }
+
+    /// `RescalePriorities`. No change when `diff_max <= 0` or the spread already fits.
+    fn rescale_priorities(&mut self, diff_max: i64) {
+        if diff_max <= 0 {
+            return;
+        }
+        let diff = max_min_priority_diff(&self.validators);
+        let diff_max = i128::from(diff_max);
+        if diff > diff_max {
+            let ratio = (diff + diff_max - 1) / diff_max;
+            let ratio = i64::try_from(ratio).unwrap_or(i64::MAX);
+            for validator in &mut self.validators {
+                validator.proposer_priority /= ratio;
+            }
+        }
+    }
+
+    /// `shiftByAvgProposerPriority`.
+    fn shift_by_avg_proposer_priority(&mut self) {
+        let average = self.average_proposer_priority();
+        for validator in &mut self.validators {
+            validator.proposer_priority = safe_sub_clip(validator.proposer_priority, average);
+        }
+    }
+
+    /// `computeAvgProposerPriority`. The sum is `i128` so it matches Go's `big.Int` and
+    /// does not overflow. Division truncates toward zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the average does not fit in `i64`. Go panics with
+    /// `"Cannot represent avg ProposerPriority as an int64"`. That does not happen while
+    /// each priority fits in `i64`.
+    fn average_proposer_priority(&self) -> i64 {
+        let count = i128::try_from(self.validators.len()).expect("validator count fits in i128");
+        let sum = self.validators.iter().fold(0i128, |sum, validator| {
+            sum + i128::from(validator.proposer_priority)
+        });
+        let average = sum / count;
+        i64::try_from(average).expect("avg proposer priority fits in i64")
+    }
+
+    /// One step of `incrementProposerPriority`: add voting power, then subtract the total
+    /// from the validator with the highest priority.
+    fn increment_one(&mut self) -> usize {
+        for validator in &mut self.validators {
+            validator.proposer_priority =
+                safe_add_clip(validator.proposer_priority, validator.voting_power);
+        }
+        let winner = pick_proposer(&self.validators);
+        let total = self.total_voting_power;
+        let priority = self.validators[winner].proposer_priority;
+        self.validators[winner].proposer_priority = safe_sub_clip(priority, total);
+        winner
     }
 
     #[must_use]
@@ -192,4 +300,37 @@ fn wins_priority(candidate: &Validator, current: &Validator) -> bool {
         Ordering::Less => false,
         Ordering::Equal => candidate.address < current.address,
     }
+}
+
+/// `safeAddClip`. Overflow clips to `i64::MAX` when `b >= 0`, otherwise `i64::MIN`.
+fn safe_add_clip(a: i64, b: i64) -> i64 {
+    match a.checked_add(b) {
+        Some(sum) => sum,
+        None if b < 0 => i64::MIN,
+        None => i64::MAX,
+    }
+}
+
+/// `safeSubClip`. Overflow clips to `i64::MIN` when `b > 0`, otherwise `i64::MAX`.
+fn safe_sub_clip(a: i64, b: i64) -> i64 {
+    match a.checked_sub(b) {
+        Some(difference) => difference,
+        None if b > 0 => i64::MIN,
+        None => i64::MAX,
+    }
+}
+
+/// `computeMaxMinPriorityDiff`. The spread is computed in `i128` so `max - min` cannot wrap.
+fn max_min_priority_diff(validators: &[Validator]) -> i128 {
+    let mut max = i64::MIN;
+    let mut min = i64::MAX;
+    for validator in validators {
+        if validator.proposer_priority < min {
+            min = validator.proposer_priority;
+        }
+        if validator.proposer_priority > max {
+            max = validator.proposer_priority;
+        }
+    }
+    i128::from(max) - i128::from(min)
 }

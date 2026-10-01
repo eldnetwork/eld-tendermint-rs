@@ -71,12 +71,8 @@ fn validator_set_sorts_by_power_then_address_and_rejects_bad_sets() {
     assert_eq!(set.validators()[1].voting_power, 1);
 
     let proposer = set.proposer().unwrap();
-    let lower_address = if low.address < high.address {
-        &low.address
-    } else {
-        &high.address
-    };
-    assert_eq!(&proposer.address, lower_address);
+    assert_eq!(proposer.voting_power, 5);
+    assert_eq!(proposer.address, high.address);
 
     assert!(ValidatorSet::new(vec![]).is_err());
     assert!(ValidatorSet::default().validate_basic().is_err());
