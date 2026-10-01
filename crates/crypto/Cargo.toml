@@ -1,0 +1,15 @@
+[package]
+name = "eld-tendermint-crypto"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 tmhash, Ed25519 key bytes, and Amino JSON."
+
+[dependencies]
+base64 = "0.22"
+eld-tendermint-proto = { path = "../proto" }
+sha2 = "0.10"
+
+[dev-dependencies]
+hex = "0.4"
