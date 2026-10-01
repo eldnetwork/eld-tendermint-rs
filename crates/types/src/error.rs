@@ -10,16 +10,26 @@ pub enum Error {
     NegativeRound,
     NegativePolRound,
     ChainIdEmpty,
-    ChainIdTooLong { len: usize },
-    InvalidHashLength { len: usize },
-    InvalidAddressLength { len: usize },
-    WrongBlockProtocol { got: u64 },
+    ChainIdTooLong {
+        len: usize,
+    },
+    InvalidHashLength {
+        len: usize,
+    },
+    InvalidAddressLength {
+        len: usize,
+    },
+    WrongBlockProtocol {
+        got: u64,
+    },
     BlockIdMustBeComplete,
     CommitForNilBlock,
     InvalidVoteType,
     InvalidProposalType,
     MissingSignature,
-    SignatureTooBig { len: usize },
+    SignatureTooBig {
+        len: usize,
+    },
     NegativeValidatorIndex,
     UnknownBlockIdFlag,
     AbsentHasAddress,
@@ -34,31 +44,63 @@ pub enum Error {
     MissingProposer,
     VotingPowerTooHigh,
     AddressMismatch,
-    BlockMaxBytesNotPositive { got: i64 },
-    BlockMaxBytesTooBig { got: i64 },
-    BlockMaxGasTooSmall { got: i64 },
-    TimeIotaNotPositive { got: i64 },
-    EvidenceMaxAgeBlocksNotPositive { got: i64 },
+    BlockMaxBytesNotPositive {
+        got: i64,
+    },
+    BlockMaxBytesTooBig {
+        got: i64,
+    },
+    BlockMaxGasTooSmall {
+        got: i64,
+    },
+    TimeIotaNotPositive {
+        got: i64,
+    },
+    EvidenceMaxAgeBlocksNotPositive {
+        got: i64,
+    },
     EvidenceMaxAgeDurationNotPositive,
-    EvidenceMaxBytesTooBig { got: i64 },
-    EvidenceMaxBytesNegative { got: i64 },
+    EvidenceMaxBytesTooBig {
+        got: i64,
+    },
+    EvidenceMaxBytesNegative {
+        got: i64,
+    },
     NoPubKeyTypes,
-    UnknownPubKeyType { got: String },
+    UnknownPubKeyType {
+        got: String,
+    },
     InvalidTime,
     InvalidHex,
     InvalidInteger,
-    InvalidBitArray { detail: String },
+    InvalidBitArray {
+        detail: String,
+    },
     Json(String),
     PubKey(CryptoError),
     Signature(CryptoError),
-    PartTooBig { len: usize },
+    PartTooBig {
+        len: usize,
+    },
     ZeroPartSize,
-    TooManyParts { count: usize },
-    UnexpectedPartIndex { index: u32, total: u32 },
+    TooManyParts {
+        count: usize,
+    },
+    UnexpectedPartIndex {
+        index: u32,
+        total: u32,
+    },
     InvalidPartProof,
     IncompletePartSet,
     MissingPart,
     Proof(CryptoError),
+    MissingHeader,
+    NilLastCommit,
+    WrongLastCommitHash,
+    WrongDataHash,
+    WrongEvidenceHash,
+    /// Non-empty evidence cannot be decoded until `DuplicateVoteEvidence` exists.
+    UnsupportedEvidence,
 }
 
 impl fmt::Display for Error {
@@ -173,6 +215,12 @@ impl fmt::Display for Error {
             Self::IncompletePartSet => write!(f, "incomplete part set"),
             Self::MissingPart => write!(f, "nil part"),
             Self::Proof(err) => write!(f, "invalid proof: {err}"),
+            Self::MissingHeader => write!(f, "nil Header"),
+            Self::NilLastCommit => write!(f, "nil LastCommit"),
+            Self::WrongLastCommitHash => write!(f, "wrong Header.LastCommitHash"),
+            Self::WrongDataHash => write!(f, "wrong Header.DataHash"),
+            Self::WrongEvidenceHash => write!(f, "wrong Header.EvidenceHash"),
+            Self::UnsupportedEvidence => write!(f, "evidence is not supported yet"),
         }
     }
 }
