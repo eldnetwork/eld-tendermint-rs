@@ -1,0 +1,16 @@
+[package]
+name = "eld-tendermint-types"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 core types, ValidateBasic, and canonical sign bytes."
+
+[dependencies]
+eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-proto = { path = "../proto" }
+hex = "0.4"
+prost = "0.13"
+prost-types = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

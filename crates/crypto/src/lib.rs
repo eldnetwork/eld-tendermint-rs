@@ -1,11 +1,12 @@
-//! Ed25519 key bytes, tmhash addresses, and Amino JSON for Tendermint 0.34.
+//! Ed25519 key bytes, tmhash, Merkle roots, and Amino JSON for Tendermint 0.34.
 //!
-//! Matches `crypto/crypto.go`, `crypto/tmhash`, and `crypto/ed25519` in the Go tree.
-//! Merkle, signing, and the other curves are later crates.
+//! Matches `crypto/crypto.go`, `crypto/tmhash`, `crypto/merkle`, and `crypto/ed25519`
+//! in the Go tree. Signing and the other curves are later.
 
 mod amino;
 mod ed25519;
 mod encoding;
+mod merkle;
 mod tmhash;
 
 pub mod error;
@@ -14,6 +15,7 @@ pub use amino::{marshal_priv_key, marshal_pub_key, unmarshal_priv_key, unmarshal
 pub use ed25519::{PRIV_KEY_NAME, PRIV_KEY_SIZE, PUB_KEY_NAME, PUB_KEY_SIZE, PrivKey, PubKey};
 pub use encoding::{pub_key_from_proto, pub_key_to_proto};
 pub use error::Error;
+pub use merkle::hash_from_byte_slices;
 pub use tmhash::{SIZE as TMHASH_SIZE, TRUNCATED_SIZE, sum, sum_truncated};
 
 /// Length of a Tendermint address. Same as `crypto.AddressSize` / `tmhash.TruncatedSize`.

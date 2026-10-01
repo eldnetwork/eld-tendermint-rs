@@ -1,0 +1,159 @@
+use std::fmt;
+
+use eld_tendermint_crypto::Error as CryptoError;
+
+/// Failures from validation, JSON, and proto conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    NegativeHeight,
+    ZeroHeight,
+    NegativeRound,
+    NegativePolRound,
+    ChainIdEmpty,
+    ChainIdTooLong { len: usize },
+    InvalidHashLength { len: usize },
+    InvalidAddressLength { len: usize },
+    WrongBlockProtocol { got: u64 },
+    BlockIdMustBeComplete,
+    CommitForNilBlock,
+    InvalidVoteType,
+    InvalidProposalType,
+    MissingSignature,
+    SignatureTooBig { len: usize },
+    NegativeValidatorIndex,
+    UnknownBlockIdFlag,
+    AbsentHasAddress,
+    AbsentHasTime,
+    AbsentHasSignature,
+    NoCommitSignatures,
+    MissingPubKey,
+    NegativeVotingPower,
+    ZeroVotingPower,
+    EmptyValidatorSet,
+    DuplicateValidator,
+    MissingProposer,
+    VotingPowerTooHigh,
+    AddressMismatch,
+    BlockMaxBytesNotPositive { got: i64 },
+    BlockMaxBytesTooBig { got: i64 },
+    BlockMaxGasTooSmall { got: i64 },
+    TimeIotaNotPositive { got: i64 },
+    EvidenceMaxAgeBlocksNotPositive { got: i64 },
+    EvidenceMaxAgeDurationNotPositive,
+    EvidenceMaxBytesTooBig { got: i64 },
+    EvidenceMaxBytesNegative { got: i64 },
+    NoPubKeyTypes,
+    UnknownPubKeyType { got: String },
+    InvalidTime,
+    InvalidHex,
+    InvalidInteger,
+    Json(String),
+    PubKey(CryptoError),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NegativeHeight => write!(f, "negative height"),
+            Self::ZeroHeight => write!(f, "zero height"),
+            Self::NegativeRound => write!(f, "negative round"),
+            Self::NegativePolRound => write!(f, "negative POL round"),
+            Self::ChainIdEmpty => write!(f, "chain id is empty"),
+            Self::ChainIdTooLong { len } => {
+                write!(
+                    f,
+                    "chain id is too long: got {len}, max {MAX}",
+                    MAX = crate::MAX_CHAIN_ID_LEN
+                )
+            }
+            Self::InvalidHashLength { len } => {
+                write!(
+                    f,
+                    "invalid hash length: got {len}, expected 0 or {}",
+                    crate::HASH_SIZE
+                )
+            }
+            Self::InvalidAddressLength { len } => {
+                write!(
+                    f,
+                    "invalid address length: got {len}, expected {}",
+                    crate::ADDRESS_SIZE
+                )
+            }
+            Self::WrongBlockProtocol { got } => {
+                write!(
+                    f,
+                    "block protocol is {got}, expected {}",
+                    crate::BLOCK_PROTOCOL
+                )
+            }
+            Self::BlockIdMustBeComplete => write!(f, "block id must be complete"),
+            Self::CommitForNilBlock => write!(f, "commit cannot be for a nil block"),
+            Self::InvalidVoteType => write!(f, "invalid vote type"),
+            Self::InvalidProposalType => write!(f, "invalid proposal type"),
+            Self::MissingSignature => write!(f, "signature is missing"),
+            Self::SignatureTooBig { len } => {
+                write!(
+                    f,
+                    "signature is too big: got {len}, max {}",
+                    crate::MAX_SIGNATURE_SIZE
+                )
+            }
+            Self::NegativeValidatorIndex => write!(f, "negative validator index"),
+            Self::UnknownBlockIdFlag => write!(f, "unknown block id flag"),
+            Self::AbsentHasAddress => write!(f, "absent commit has a validator address"),
+            Self::AbsentHasTime => write!(f, "absent commit has a timestamp"),
+            Self::AbsentHasSignature => write!(f, "absent commit has a signature"),
+            Self::NoCommitSignatures => write!(f, "no signatures in commit"),
+            Self::MissingPubKey => write!(f, "validator does not have a public key"),
+            Self::NegativeVotingPower => write!(f, "validator has negative voting power"),
+            Self::ZeroVotingPower => write!(f, "validator has no voting power"),
+            Self::EmptyValidatorSet => write!(f, "validator set is empty"),
+            Self::DuplicateValidator => write!(f, "duplicate validator address"),
+            Self::MissingProposer => write!(f, "validator set has no proposer"),
+            Self::VotingPowerTooHigh => write!(f, "total voting power is too high"),
+            Self::AddressMismatch => write!(f, "validator address does not match public key"),
+            Self::BlockMaxBytesNotPositive { got } => {
+                write!(f, "block max bytes must be greater than 0, got {got}")
+            }
+            Self::BlockMaxBytesTooBig { got } => write!(f, "block max bytes is too big: {got}"),
+            Self::BlockMaxGasTooSmall { got } => {
+                write!(f, "block max gas must be at least -1, got {got}")
+            }
+            Self::TimeIotaNotPositive { got } => {
+                write!(f, "time iota must be greater than 0, got {got}")
+            }
+            Self::EvidenceMaxAgeBlocksNotPositive { got } => {
+                write!(
+                    f,
+                    "evidence max age in blocks must be greater than 0, got {got}"
+                )
+            }
+            Self::EvidenceMaxAgeDurationNotPositive => {
+                write!(f, "evidence max age duration must be greater than 0")
+            }
+            Self::EvidenceMaxBytesTooBig { got } => {
+                write!(f, "evidence max bytes exceeds block max bytes: {got}")
+            }
+            Self::EvidenceMaxBytesNegative { got } => {
+                write!(f, "evidence max bytes must be non-negative, got {got}")
+            }
+            Self::NoPubKeyTypes => write!(f, "validator pubkey types must be non-empty"),
+            Self::UnknownPubKeyType { got } => write!(f, "unknown validator pubkey type {got:?}"),
+            Self::InvalidTime => write!(f, "invalid time"),
+            Self::InvalidHex => write!(f, "invalid hex"),
+            Self::InvalidInteger => write!(f, "invalid integer"),
+            Self::Json(msg) => write!(f, "invalid genesis json: {msg}"),
+            Self::PubKey(err) => write!(f, "invalid public key: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::PubKey(err) => Some(err),
+            _ => None,
+        }
+    }
+}
