@@ -1,0 +1,22 @@
+[package]
+name = "eld-tendermint-config"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 config.toml and genesis.json loaders."
+
+[[bin]]
+name = "eld-tendermint-config"
+path = "src/bin/show.rs"
+
+[dependencies]
+eld-tendermint-types = { path = "../types" }
+hex = "0.4"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+eld-tendermint-types = { path = "../types" }
+hex = "0.4"
