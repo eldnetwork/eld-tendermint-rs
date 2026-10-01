@@ -31,6 +31,14 @@ pub enum Error {
     ProofRootMismatch,
     /// Proto proof is missing.
     MissingProof,
+    /// Signature is not 64 raw Ed25519 bytes.
+    InvalidSignatureLength { got: usize },
+    /// Ed25519 verification failed.
+    BadSignature,
+    /// Public key bytes are not a valid Ed25519 point.
+    InvalidPublicKey,
+    /// Private-key suffix does not match the public key derived from the seed.
+    PrivKeyMismatch,
 }
 
 impl fmt::Display for Error {
@@ -66,6 +74,14 @@ impl fmt::Display for Error {
             Self::ProofLeafMismatch => write!(f, "invalid leaf hash"),
             Self::ProofRootMismatch => write!(f, "invalid root hash"),
             Self::MissingProof => write!(f, "nil proof"),
+            Self::InvalidSignatureLength { got } => {
+                write!(f, "invalid signature length: got {got}, expected 64")
+            }
+            Self::BadSignature => write!(f, "invalid signature"),
+            Self::InvalidPublicKey => write!(f, "invalid ed25519 public key"),
+            Self::PrivKeyMismatch => {
+                write!(f, "private key suffix does not match the seed's public key")
+            }
         }
     }
 }

@@ -1,9 +1,15 @@
 //! Ed25519 key bytes in the Go layout (`crypto/ed25519`).
 //!
 //! A private key is 64 bytes: the 32-byte seed followed by the 32-byte public key.
-//! This module does not sign or generate keys. The public key is the stored suffix.
+//! Signing uses the seed. The signature is raw 64-byte Ed25519, not Amino-wrapped.
+
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand::rngs::OsRng;
 
 use crate::{Address, Error, address_hash};
+
+/// `ed25519.SignatureSize`.
+pub const SIGNATURE_SIZE: usize = 64;
 
 /// `ed25519.PubKeySize`.
 pub const PUB_KEY_SIZE: usize = 32;
@@ -49,6 +55,25 @@ impl PubKey {
     pub fn address(&self) -> Address {
         address_hash(&self.0)
     }
+
+    /// `PubKey.VerifySignature`. Rejects any signature whose length is not 64.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSignatureLength`], [`Error::InvalidPublicKey`], or
+    /// [`Error::BadSignature`].
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), Error> {
+        if signature.len() != SIGNATURE_SIZE {
+            return Err(Error::InvalidSignatureLength {
+                got: signature.len(),
+            });
+        }
+        let verifying = VerifyingKey::from_bytes(&self.0).map_err(|_| Error::InvalidPublicKey)?;
+        let signature = Signature::from_slice(signature).map_err(|_| Error::BadSignature)?;
+        verifying
+            .verify(message, &signature)
+            .map_err(|_| Error::BadSignature)
+    }
 }
 
 impl PrivKey {
@@ -85,6 +110,37 @@ impl PrivKey {
             return Err(Error::UninitializedPrivKey);
         }
         Ok(PubKey(suffix))
+    }
+
+    /// `GenPrivKey`. Fills the Go layout: seed, then the derived public key.
+    #[must_use]
+    pub fn generate() -> Self {
+        let signing = SigningKey::generate(&mut OsRng);
+        Self::from_signing_key(signing)
+    }
+
+    /// `PrivKey.Sign`. Uses the first 32 bytes as the RFC 8032 seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UninitializedPrivKey`] when the suffix is all zeros, or
+    /// [`Error::PrivKeyMismatch`] when the suffix is not the public key of that seed.
+    pub fn sign(&self, message: &[u8]) -> Result<[u8; SIGNATURE_SIZE], Error> {
+        let suffix = self.public_key()?;
+        let mut seed = [0u8; PUB_KEY_SIZE];
+        seed.copy_from_slice(&self.0[..PUB_KEY_SIZE]);
+        let signing = SigningKey::from_bytes(&seed);
+        if signing.verifying_key().to_bytes() != *suffix.as_bytes() {
+            return Err(Error::PrivKeyMismatch);
+        }
+        Ok(signing.sign(message).to_bytes())
+    }
+
+    fn from_signing_key(signing: SigningKey) -> Self {
+        let mut bytes = [0u8; PRIV_KEY_SIZE];
+        bytes[..PUB_KEY_SIZE].copy_from_slice(&signing.to_bytes());
+        bytes[PUB_KEY_SIZE..].copy_from_slice(signing.verifying_key().as_bytes());
+        Self(bytes)
     }
 }
 

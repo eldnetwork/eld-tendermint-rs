@@ -123,3 +123,41 @@ fn zero_block_id_is_omitted_from_proposal_sign_bytes() {
     };
     assert!(without.sign_bytes("chain").len() < with_block.sign_bytes("chain").len());
 }
+
+#[test]
+fn signed_vote_verifies_with_the_derived_pubkey() {
+    let priv_key = eld_tendermint_crypto::PrivKey::generate();
+    let pub_key = priv_key.public_key().unwrap();
+    assert_eq!(&priv_key.as_bytes()[32..], pub_key.as_bytes().as_slice());
+
+    let mut vote = Vote {
+        vote_type: SignedMsgType::Prevote,
+        height: 1,
+        round: 0,
+        block_id: BlockId {
+            hash: vec![1; 32],
+            part_set_header: PartSetHeader {
+                total: 1,
+                hash: vec![2; 32],
+            },
+        },
+        timestamp: Time::from_unix_parts(1_700_000_000, 0),
+        validator_address: pub_key.address().to_vec(),
+        validator_index: 0,
+        signature: Vec::new(),
+    };
+    let sign_bytes = vote.sign_bytes("chain");
+    vote.sign(&priv_key, "chain").unwrap();
+    assert_eq!(vote.signature.len(), 64);
+    vote.verify_signature(&pub_key, "chain").unwrap();
+
+    vote.signature[0] ^= 0x01;
+    assert!(vote.verify_signature(&pub_key, "chain").is_err());
+    vote.signature[0] ^= 0x01;
+    assert!(vote.verify_signature(&pub_key, "other-chain").is_err());
+    assert_eq!(vote.sign_bytes("chain"), sign_bytes);
+
+    let mut short = vote.clone();
+    short.signature = vec![1; 63];
+    assert!(short.verify_signature(&pub_key, "chain").is_err());
+}

@@ -1,0 +1,16 @@
+[package]
+name = "eld-tendermint-privval"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 file privval: load a validator key and sign without double-signing."
+
+[dependencies]
+eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-proto = { path = "../proto" }
+eld-tendermint-types = { path = "../types" }
+hex = "0.4"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

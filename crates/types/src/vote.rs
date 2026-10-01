@@ -3,6 +3,8 @@
 use eld_tendermint_proto::types::SignedMsgType;
 use prost::Message;
 
+use eld_tendermint_crypto::{PrivKey, PubKey};
+
 use crate::time::Time;
 use crate::{ADDRESS_SIZE, BlockId, Error, MAX_SIGNATURE_SIZE};
 
@@ -73,6 +75,35 @@ impl Vote {
     #[must_use]
     pub fn sign_bytes(&self, chain_id: &str) -> Vec<u8> {
         self.to_canonical(chain_id).encode_length_delimited_to_vec()
+    }
+
+    /// Signs [`Self::sign_bytes`] and stores the raw 64-byte signature.
+    ///
+    /// Not called from [`Self::validate_basic`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Signature`] when the private key cannot sign.
+    pub fn sign(&mut self, priv_key: &PrivKey, chain_id: &str) -> Result<(), Error> {
+        let signature = priv_key
+            .sign(&self.sign_bytes(chain_id))
+            .map_err(Error::Signature)?;
+        self.signature = signature.to_vec();
+        Ok(())
+    }
+
+    /// Verifies [`Self::sign_bytes`] against a raw Ed25519 signature.
+    ///
+    /// A signature whose length is not 64 is rejected here even when
+    /// [`Self::validate_basic`] allows any non-empty signature up to 64 bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Signature`] when verification fails.
+    pub fn verify_signature(&self, pub_key: &PubKey, chain_id: &str) -> Result<(), Error> {
+        pub_key
+            .verify(&self.sign_bytes(chain_id), &self.signature)
+            .map_err(Error::Signature)
     }
 
     #[must_use]

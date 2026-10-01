@@ -8,7 +8,9 @@ description = "Tendermint 0.34 tmhash, Merkle roots, Ed25519 key bytes, and Amin
 
 [dependencies]
 base64 = "0.22"
+ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 eld-tendermint-proto = { path = "../proto" }
+rand = "0.8"
 sha2 = "0.10"
 
 [dev-dependencies]

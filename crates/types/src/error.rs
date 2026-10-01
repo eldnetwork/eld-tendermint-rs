@@ -50,6 +50,7 @@ pub enum Error {
     InvalidBitArray { detail: String },
     Json(String),
     PubKey(CryptoError),
+    Signature(CryptoError),
     PartTooBig { len: usize },
     ZeroPartSize,
     TooManyParts { count: usize },
@@ -155,6 +156,7 @@ impl fmt::Display for Error {
             Self::InvalidBitArray { detail } => write!(f, "invalid bit array: {detail}"),
             Self::Json(msg) => write!(f, "invalid genesis json: {msg}"),
             Self::PubKey(err) => write!(f, "invalid public key: {err}"),
+            Self::Signature(err) => write!(f, "invalid signature: {err}"),
             Self::PartTooBig { len } => {
                 write!(
                     f,
@@ -178,7 +180,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::PubKey(err) | Self::Proof(err) => Some(err),
+            Self::PubKey(err) | Self::Proof(err) | Self::Signature(err) => Some(err),
             _ => None,
         }
     }
