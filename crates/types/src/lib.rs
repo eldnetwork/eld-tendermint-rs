@@ -4,6 +4,7 @@
 //! and length-prefixed canonical sign bytes. Block execution and proposer-priority
 //! rotation are later.
 
+mod bits;
 mod block_id;
 mod cdc;
 mod commit;
@@ -18,6 +19,7 @@ mod tx;
 mod validator;
 mod vote;
 
+pub use bits::BitArray;
 pub use block_id::{BlockId, PartSetHeader};
 pub use commit::{Commit, CommitSig};
 pub use error::Error;

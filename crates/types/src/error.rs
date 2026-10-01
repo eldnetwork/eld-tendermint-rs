@@ -47,6 +47,7 @@ pub enum Error {
     InvalidTime,
     InvalidHex,
     InvalidInteger,
+    InvalidBitArray { detail: String },
     Json(String),
     PubKey(CryptoError),
 }
@@ -143,6 +144,7 @@ impl fmt::Display for Error {
             Self::InvalidTime => write!(f, "invalid time"),
             Self::InvalidHex => write!(f, "invalid hex"),
             Self::InvalidInteger => write!(f, "invalid integer"),
+            Self::InvalidBitArray { detail } => write!(f, "invalid bit array: {detail}"),
             Self::Json(msg) => write!(f, "invalid genesis json: {msg}"),
             Self::PubKey(err) => write!(f, "invalid public key: {err}"),
         }
