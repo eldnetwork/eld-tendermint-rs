@@ -200,6 +200,7 @@ name = "eld-tendermint-proto"
 version = "0.0.1"
 dependencies = [
  "bytes",
+ "eld-tendermint-crypto",
  "hex",
  "prost",
  "prost-types",

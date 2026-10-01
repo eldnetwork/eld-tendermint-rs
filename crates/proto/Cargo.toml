@@ -12,4 +12,5 @@ prost = "0.13"
 prost-types = "0.13"
 
 [dev-dependencies]
+eld-tendermint-crypto = { path = "../crypto" }
 hex = "0.4"
