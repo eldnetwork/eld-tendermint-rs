@@ -1,0 +1,13 @@
+[package]
+name = "eld-tendermint-mempool"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 v0 FIFO mempool."
+
+[dependencies]
+eld-tendermint-config = { path = "../config" }
+eld-tendermint-proto = { path = "../proto" }
+eld-tendermint-types = { path = "../types" }
+prost = "0.13"

@@ -4,6 +4,7 @@ members = [
     "crates/abci",
     "crates/config",
     "crates/crypto",
+    "crates/mempool",
     "crates/p2p",
     "crates/privval",
     "crates/proto",

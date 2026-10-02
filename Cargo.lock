@@ -305,6 +305,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-mempool"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-config",
+ "eld-tendermint-proto",
+ "eld-tendermint-types",
+ "prost",
+]
+
+[[package]]
 name = "eld-tendermint-p2p"
 version = "0.0.1"
 dependencies = [
