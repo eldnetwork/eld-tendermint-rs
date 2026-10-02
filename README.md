@@ -2,7 +2,7 @@
 
 Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the secret-connection handshake, an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool, and in-process consensus with a write-ahead log. The p2p reactor and RPC come later. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool and its reactor, and consensus with a write-ahead log and a gossip reactor. `eld-tendermint start` serves JSON-RPC `status` and `health`. The evidence pool, fast sync, the tx index, WAL rotation, and the rest of RPC are not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -15,12 +15,13 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-types` | Headers, blocks, votes, proposals, validators and proposer priority, `VoteSet` (+2/3), duplicate-vote evidence, genesis, `BitArray`, `PartSet`, `ValidateBasic`, and canonical sign bytes. |
 | `eld-tendermint-config` | `config.toml` and `genesis.json`. The `eld-tendermint-config` binary prints chain id, moniker, proxy app, and the genesis validator set. |
 | `eld-tendermint-privval` | `privval.FilePV`: load a Go validator key and sign a vote or proposal, replaying the same height, round, and step and rejecting conflicting bytes. |
-| `eld-tendermint-p2p` | `p2p.NodeKey` and the secret-connection handshake. Loads `node_key.json` and checks `deriveSecrets` against the Go golden file. No reactor or dial loop. |
+| `eld-tendermint-p2p` | `p2p.NodeKey`, the secret-connection handshake, the switch, TCP dial and accept, `addrbook.json`, and PEX on channel `0x00`. |
 | `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
 | `eld-tendermint-store` | `store.BlockStore`. Keys are `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`. RocksDB on disk, an in-memory map in tests. A Go goleveldb directory is refused. |
 | `eld-tendermint-state` | `MakeGenesisState` and `ApplyBlock`. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. |
-| `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. No reactor. |
-| `eld-tendermint-consensus` | In-process rounds. One and four validators commit height 1, and a locked validator re-proposes that block. The WAL is one CRC32C-framed file; a durable prevote is replayed without a second signature. No gossip reactor. |
+| `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. The reactor gossips one tx per message on channel `0x30` and does not echo a tx to the peer that sent it. |
+| `eld-tendermint-consensus` | In-process rounds and the gossip reactor on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. The WAL is one CRC32C-framed file; a durable prevote is replayed without a second signature. WAL rotation is not implemented. |
+| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, mempool, consensus, and PEX) and serves JSON-RPC `status` and `health`. |
 
 ## Database
 
@@ -31,12 +32,13 @@ Both are embedded, single-process key-value stores built on a log-structured mer
 - The files are not interchangeable. A Go data/ directory created with db_backend = "goleveldb" will not open under RocksDB.
 - Key prefixes match the Go block store (H:, P:, C:, SC:, BH:, blockStore). The directory does not.
 - Tests use the in-memory Db. The node writes RocksDB files in its own directory.
-- blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. Only blockstore and state exist after tasks 1 and 2.
+- blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. `eld-tendermint start` opens blockstore and state. Evidence and tx_index are not opened.
 
 `tools/proto-compiler` is the prost-build binary used by `scripts/gen-proto.sh`.
 
 ```bash
 cargo test --workspace
+eld-tendermint start --home /path/to/node
 eld-tendermint-config --home /path/to/node
 ```
 
@@ -73,6 +75,5 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 
 ## Still to do
 
-- **p2p reactor.** `NodeKey` and the secret connection are in place. The switch, PEX, and dial loop are not.
-- **RPC.** The JSON-RPC server and client are not ported.
-- **Not in this port yet.** Consensus gossip, the evidence pool, the tx index, fast sync, and WAL file rotation. The mempool has no reactor. Rounds run in one process.
+- **RPC beyond `status` and `health`.** `broadcast_tx_commit`, `abci_query`, and `subscribe` are not served. An unknown method returns JSON-RPC `-32601`.
+- **Not in this port yet.** The evidence pool, fast sync, the tx index, and WAL file rotation.

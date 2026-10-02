@@ -344,6 +344,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-node"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-abci",
+ "eld-tendermint-config",
+ "eld-tendermint-consensus",
+ "eld-tendermint-crypto",
+ "eld-tendermint-mempool",
+ "eld-tendermint-p2p",
+ "eld-tendermint-privval",
+ "eld-tendermint-proto",
+ "eld-tendermint-state",
+ "eld-tendermint-store",
+ "eld-tendermint-types",
+ "hex",
+ "serde_json",
+]
+
+[[package]]
 name = "eld-tendermint-p2p"
 version = "0.0.1"
 dependencies = [

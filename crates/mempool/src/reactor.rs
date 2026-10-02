@@ -42,7 +42,7 @@ fn recv_capacity(max_tx_bytes: i64) -> usize {
 }
 
 struct Inner<A: App> {
-    mempool: Mempool<A>,
+    mempool: Arc<Mutex<Mempool<A>>>,
     ids: HashMap<String, u16>,
     next_id: u16,
     sent: HashMap<String, HashSet<Vec<u8>>>,
@@ -64,6 +64,12 @@ impl<A: App> Clone for Reactor<A> {
 impl<A: App + Send> Reactor<A> {
     #[must_use]
     pub fn new(mempool: Mempool<A>) -> Self {
+        Self::from_shared(Arc::new(Mutex::new(mempool)))
+    }
+
+    /// Same pool another task already holds, such as the consensus node.
+    #[must_use]
+    pub fn from_shared(mempool: Arc<Mutex<Mempool<A>>>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 mempool,
@@ -80,14 +86,15 @@ impl<A: App + Send> Reactor<A> {
     ///
     /// Returns the same errors as [`Mempool::check_tx`].
     pub fn check_tx(&self, tx: &Tx) -> Result<(), Error> {
-        lock(&self.inner).mempool.check_tx(tx)
+        let inner = lock(&self.inner);
+        lock(&inner.mempool).check_tx(tx)
     }
 
     /// Every pooled tx, in arrival order.
     #[must_use]
     pub fn reap(&self) -> Vec<Tx> {
-        lock(&self.inner)
-            .mempool
+        let inner = lock(&self.inner);
+        lock(&inner.mempool)
             .reap_max_bytes_max_gas(-1, -1)
             .as_slice()
             .to_vec()
@@ -96,14 +103,14 @@ impl<A: App + Send> Reactor<A> {
     /// Send pooled txs that each peer has not already sent us.
     pub fn poll(&self, switch: &Switch) {
         let mut inner = lock(&self.inner);
-        if !inner.mempool.broadcasts() {
+        if !lock(&inner.mempool).broadcasts() {
             return;
         }
         let peer_ids: Vec<String> = switch.peers().into_iter().map(|peer| peer.id).collect();
         for peer_id in &peer_ids {
             inner.sender_id(peer_id);
         }
-        let pooled = inner.mempool.pooled();
+        let pooled = lock(&inner.mempool).pooled();
         for peer_id in peer_ids {
             let sender_id = inner.ids[&peer_id];
             for (tx, senders) in &pooled {
@@ -150,7 +157,7 @@ impl<A: App + Send> Reactor<A> {
         let sender_id = inner.sender_id(peer_id);
         for raw in txs.txs {
             let tx = Tx::new(raw);
-            let _ = inner.mempool.check_tx_with_sender(&tx, sender_id);
+            let _ = lock(&inner.mempool).check_tx_with_sender(&tx, sender_id);
         }
         true
     }

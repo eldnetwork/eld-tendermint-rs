@@ -1,6 +1,7 @@
 //! One validator's round state. No network.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use eld_tendermint_config::ConsensusConfig;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
@@ -88,7 +89,7 @@ pub struct Node<E: ExecApp, C: MempoolApp> {
     height: i64,
     round: i32,
     step: Step,
-    mempool: Mempool<C>,
+    mempool: Arc<Mutex<Mempool<C>>>,
     block_store: BlockStore<MemDb>,
     exec: E,
     votes: HeightVoteSet,
@@ -141,6 +142,12 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         Self::boot(config, pv, chain_state, mempool, exec, Some(wal))
     }
 
+    /// The pool this node reaps. The mempool reactor must lock this same handle.
+    #[must_use]
+    pub fn mempool(&self) -> Arc<Mutex<Mempool<C>>> {
+        Arc::clone(&self.mempool)
+    }
+
     fn boot(
         config: ConsensusConfig,
         pv: FilePV,
@@ -152,6 +159,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
+        let mempool = Arc::new(Mutex::new(mempool));
         let mut node = Self {
             config,
             pv,
@@ -506,7 +514,11 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
     fn create_proposal_block(&mut self, height: i64) -> Option<(Block, PartSet)> {
         let max_bytes = self.chain_state.consensus_params.block.max_bytes;
         let max_gas = self.chain_state.consensus_params.block.max_gas;
-        let txs = self.mempool.reap_max_bytes_max_gas(max_bytes, max_gas);
+        let txs = self
+            .mempool
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .reap_max_bytes_max_gas(max_bytes, max_gas);
         self.reap_count += 1;
         let commit = if height == self.chain_state.initial_height {
             Some(Commit {

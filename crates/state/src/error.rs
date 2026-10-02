@@ -34,6 +34,8 @@ pub enum Error {
     MissingLastValidators,
     MissingConsensusParams,
     Db(String),
+    /// The socket app returned an I/O or protocol error.
+    Abci(String),
 }
 
 impl fmt::Display for Error {
@@ -72,6 +74,7 @@ impl fmt::Display for Error {
             Self::MissingLastValidators => write!(f, "state is missing last validators"),
             Self::MissingConsensusParams => write!(f, "state is missing consensus params"),
             Self::Db(message) => write!(f, "state db: {message}"),
+            Self::Abci(message) => write!(f, "{message}"),
         }
     }
 }
