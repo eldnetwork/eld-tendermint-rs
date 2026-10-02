@@ -6,10 +6,11 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- v0 blockchain reactor on channel `0x40`. A genesis node catches up to a taller peer when `fast_sync` is on, applying each block as soon as it is the next height.
 - JSON-RPC `abci_query` returns the app's query value. `block` and `commit` return a saved block and the seen commit at the chain tip.
 - JSON-RPC `broadcast_tx_sync` returns the CheckTx code and tx hash. `broadcast_tx_commit` returns the DeliverTx code after the next committed block, or a timeout error.
 - A fresh home calls ABCI `InitChain` once and stores the app hash under `stateKey`. A restart calls `Info` only.
-- `eld-tendermint start` loads one home and serves JSON-RPC `status` and `health`. Any other method returns `-32601`. The evidence pool, fast sync, the tx index, WAL rotation, and the rest of RPC are not started.
+- `eld-tendermint start` loads one home and serves JSON-RPC `status` and `health`. Any other method returns `-32601`. The evidence pool, the tx index, WAL rotation, and the rest of RPC are not started.
 - PEX and the dial loop. A persistent peer completes the secret handshake, and an address learned for another peer is dialed and reloaded from `addrbook.json`.
 - Consensus gossip. Proposals, block parts, and votes move between switches on channels `0x20`–`0x23`, and four validators commit height 1 across the network.
 - Mempool gossip. A transaction checked on one node is reaped on a peer, and it is not echoed back to the sender.

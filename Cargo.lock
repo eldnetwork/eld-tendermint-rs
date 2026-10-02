@@ -291,6 +291,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-blockchain"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-crypto",
+ "eld-tendermint-p2p",
+ "eld-tendermint-proto",
+ "eld-tendermint-state",
+ "eld-tendermint-store",
+ "eld-tendermint-types",
+ "prost",
+]
+
+[[package]]
 name = "eld-tendermint-config"
 version = "0.0.1"
 dependencies = [
@@ -349,6 +362,7 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "eld-tendermint-abci",
+ "eld-tendermint-blockchain",
  "eld-tendermint-config",
  "eld-tendermint-consensus",
  "eld-tendermint-crypto",

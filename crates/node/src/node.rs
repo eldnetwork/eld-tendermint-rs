@@ -1,4 +1,4 @@
-//! Load one home, start the three reactors, then serve RPC.
+//! Load one home, start the reactors, then serve RPC.
 
 use std::env;
 use std::io::{self, Write};
@@ -10,6 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use eld_tendermint_abci::SocketClient;
+use eld_tendermint_blockchain::{
+    Reactor as BlockchainReactor, channel_descriptors as blockchain_channels,
+};
 use eld_tendermint_config::{Config, load_home, resolve_home};
 use eld_tendermint_consensus::{
     Node, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
@@ -70,12 +73,23 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     )
     .map_err(fail)?;
     let block_store = open_block_store(&config)?;
-    let state_store = open_state_store(&config)?;
+    let state_store = Arc::new(open_state_store(&config)?);
     let app = connect_app(&config.base.proxy_app)?;
     let state = load_or_init_chain(&state_store, &mut genesis, |request| {
         app.init_chain(request)
     })
     .map_err(fail)?;
+    let fast_sync = config.base.fast_sync && config.fastsync.version == "v0";
+    let blockchain = if fast_sync {
+        Some(BlockchainReactor::new(
+            Arc::clone(&block_store),
+            Arc::clone(&state_store),
+            state.clone(),
+            app.clone(),
+        ))
+    } else {
+        None
+    };
     let pub_key = pv.get_pub_key();
     let address_bytes = pub_key.address();
     let voting_power = genesis
@@ -124,11 +138,17 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let mempool_desc = mempool_channels(config.mempool.max_tx_bytes);
     let consensus_desc = consensus_channels();
     let pex_desc = pex_channel_descriptors();
+    let blockchain_desc = if fast_sync {
+        blockchain_channels()
+    } else {
+        Vec::new()
+    };
     let channels = hex::encode(
         mempool_desc
             .iter()
             .chain(consensus_desc.iter())
             .chain(pex_desc.iter())
+            .chain(blockchain_desc.iter())
             .map(|desc| desc.id)
             .collect::<Vec<_>>(),
     )
@@ -144,6 +164,9 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         consensus_desc,
         pex_desc,
     )?;
+    if let Some(blockchain) = &blockchain {
+        register_blockchain(&switch, blockchain, blockchain_desc)?;
+    }
 
     let stop = Arc::new(AtomicBool::new(true));
     let poll = spawn_poll(
@@ -152,6 +175,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         consensus,
         mempool_reactor,
         pex,
+        blockchain,
     );
 
     let process = NodeProcess {
@@ -237,18 +261,46 @@ fn register(
     Ok(())
 }
 
+fn register_blockchain(
+    switch: &Arc<Switch>,
+    blockchain: &BlockchainReactor<AbciApp, RocksDb>,
+    blockchain_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
+) -> Result<(), Error> {
+    let blockchain_cb = blockchain.clone();
+    let blockchain_switch = Arc::downgrade(switch);
+    switch
+        .add_reactor(
+            "blockchain",
+            blockchain_desc,
+            move |peer_id, ch_id, bytes| {
+                let Some(switch) = blockchain_switch.upgrade() else {
+                    return;
+                };
+                if !blockchain_cb.handle(&switch, peer_id, ch_id, &bytes) {
+                    switch.stop_peer(peer_id);
+                }
+            },
+        )
+        .map_err(fail)?;
+    Ok(())
+}
+
 fn spawn_poll(
     stop: Arc<AtomicBool>,
     switch: Arc<Switch>,
     consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: MempoolReactor<AbciApp>,
     pex: PexReactor,
+    blockchain: Option<BlockchainReactor<AbciApp, RocksDb>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while stop.load(Ordering::SeqCst) {
             consensus.poll(&switch);
             mempool.poll(&switch);
             pex.poll(&switch);
+            if let Some(blockchain) = &blockchain {
+                blockchain.poll(&switch);
+            }
             thread::sleep(Duration::from_millis(5));
         }
     })

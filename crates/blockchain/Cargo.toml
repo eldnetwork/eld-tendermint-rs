@@ -1,0 +1,18 @@
+[package]
+name = "eld-tendermint-blockchain"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 v0 blockchain reactor. Fast sync on channel 0x40."
+
+[dependencies]
+eld-tendermint-p2p = { path = "../p2p" }
+eld-tendermint-proto = { path = "../proto" }
+eld-tendermint-state = { path = "../state" }
+eld-tendermint-store = { path = "../store" }
+eld-tendermint-types = { path = "../types" }
+prost = "0.13"
+
+[dev-dependencies]
+eld-tendermint-crypto = { path = "../crypto" }

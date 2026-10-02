@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 eld-tendermint-abci = { path = "../abci" }
+eld-tendermint-blockchain = { path = "../blockchain" }
 eld-tendermint-config = { path = "../config" }
 eld-tendermint-consensus = { path = "../consensus" }
 eld-tendermint-crypto = { path = "../crypto" }
