@@ -10,6 +10,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 - PEX and the dial loop. A persistent peer completes the secret handshake, and an address learned for another peer is dialed and reloaded from `addrbook.json`.
 - Consensus gossip. Proposals, block parts, and votes move between switches on channels `0x20`–`0x23`, and four validators commit height 1 across the network.
 - Mempool gossip. A transaction checked on one node is reaped on a peer, and it is not echoed back to the sender.
+- P2P switch. Two peers reassemble a channel message on a secret connection. An unknown channel, an oversized payload, or a bad frame stops that peer.
 - RocksDB is the on-disk backend. A Go data directory created with goleveldb is not opened.
 - Consensus WAL. Records are CRC32C-framed `TimedWALMessage`s in one append-only file. A prevote that was `fsync`ed is replayed after reload without a second signature, and a conflicting vote at the same height, round, and step leaves the stored signature unchanged. The file is not rotated.
 - In-process consensus. One and four validators commit height 1, and a validator that locked in round 0 re-proposes that block.
