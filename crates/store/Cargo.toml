@@ -1,0 +1,16 @@
+[package]
+name = "eld-tendermint-store"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 block store."
+
+[dependencies]
+eld-tendermint-proto = { path = "../proto" }
+eld-tendermint-types = { path = "../types" }
+hex = "0.4"
+prost = "0.13"
+# Compression codecs are off so the build does not need system snappy/lz4/zstd.
+# bindgen-runtime uses the crate's pregenerated bindings.
+rocksdb = { version = "0.24", default-features = false, features = ["bindgen-runtime"] }

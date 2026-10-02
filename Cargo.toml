@@ -7,6 +7,7 @@ members = [
     "crates/p2p",
     "crates/privval",
     "crates/proto",
+    "crates/store",
     "crates/types",
     "tools/proto-compiler",
 ]

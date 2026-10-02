@@ -25,6 +25,12 @@ cargo test --workspace
 eld-tendermint-config --home /path/to/node
 ```
 
+`cargo test --workspace` builds RocksDB for `eld-tendermint-store`. That build needs CMake. If CMake is not installed, install it with Homebrew. CMake 4.4.3 is enough:
+
+```bash
+brew install cmake
+```
+
 `--home` defaults the same way as the Go binary when the flag is omitted.
 
 ## Proto
