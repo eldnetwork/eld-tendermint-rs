@@ -2,7 +2,7 @@
 
 Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The workspace covers proto messages, Ed25519, core types (blocks, evidence, and proposer priority), `config.toml` and genesis loading, file privval, the secret-connection handshake, and an ABCI 0.17 socket client. Consensus, the p2p reactor, mempool, WAL, and RPC come later. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the secret-connection handshake, an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool, and in-process consensus with a write-ahead log. The p2p reactor and RPC come later. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -12,11 +12,15 @@ Every package is `0.0.1` and unpublished.
 | --- | --- |
 | `eld-tendermint-proto` | Prost messages generated from `proto/`. `tests/vectors.rs` checks them against the Go hex vectors. |
 | `eld-tendermint-crypto` | `crypto/tmhash`, RFC-6962 Merkle roots and inclusion proofs, Ed25519 key bytes, Amino JSON, sign and verify. |
-| `eld-tendermint-types` | Headers, blocks, votes, proposals, validators and proposer priority, duplicate-vote evidence, genesis, `BitArray`, `PartSet`, `ValidateBasic`, and canonical sign bytes. |
+| `eld-tendermint-types` | Headers, blocks, votes, proposals, validators and proposer priority, `VoteSet` (+2/3), duplicate-vote evidence, genesis, `BitArray`, `PartSet`, `ValidateBasic`, and canonical sign bytes. |
 | `eld-tendermint-config` | `config.toml` and `genesis.json`. The `eld-tendermint-config` binary prints chain id, moniker, proxy app, and the genesis validator set. |
 | `eld-tendermint-privval` | `privval.FilePV`: load a Go validator key and sign a vote or proposal, replaying the same height, round, and step and rejecting conflicting bytes. |
 | `eld-tendermint-p2p` | `p2p.NodeKey` and the secret-connection handshake. Loads `node_key.json` and checks `deriveSecrets` against the Go golden file. No reactor or dial loop. |
 | `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
+| `eld-tendermint-store` | `store.BlockStore`. Keys are `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`. RocksDB on disk, an in-memory map in tests. A Go goleveldb directory is refused. |
+| `eld-tendermint-state` | `MakeGenesisState` and `ApplyBlock`. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. |
+| `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. No reactor. |
+| `eld-tendermint-consensus` | In-process rounds. One and four validators commit height 1, and a locked validator re-proposes that block. The WAL is one CRC32C-framed file; a durable prevote is replayed without a second signature. No gossip reactor. |
 
 ## Database
 
@@ -69,8 +73,6 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 
 ## Still to do
 
-- **Consensus.** The state machine is not ported. Blocks and votes can be built and checked. They are not executed.
 - **p2p reactor.** `NodeKey` and the secret connection are in place. The switch, PEX, and dial loop are not.
-- **Mempool.** Proto messages exist. The reactor does not.
-- **WAL.** The consensus write-ahead log is not ported.
 - **RPC.** The JSON-RPC server and client are not ported.
+- **Not in this port yet.** Consensus gossip, the evidence pool, the tx index, fast sync, and WAL file rotation. The mempool has no reactor. Rounds run in one process.

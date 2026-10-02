@@ -7,6 +7,11 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 ### Added
 
 - RocksDB is the on-disk backend. A Go data directory created with goleveldb is not opened.
+- Consensus WAL. Records are CRC32C-framed `TimedWALMessage`s in one append-only file. A prevote that was `fsync`ed is replayed after reload without a second signature, and a conflicting vote at the same height, round, and step leaves the stored signature unchanged.
+- In-process consensus. One and four validators commit height 1, and a validator that locked in round 0 re-proposes that block. There is no gossip reactor.
+- v0 mempool. Transactions are checked, reaped in arrival order, and dropped on recheck. There is no reactor.
+- `ApplyBlock` and validator-set updates. A genesis block can rotate the next validator set, and that state reloads from `stateKey`.
+- Block store. Blocks, parts, and commits persist under the Go key prefixes (`H:`, `P:`, `C:`, `SC:`, `BH:`, `blockStore`). On disk that is RocksDB. A goleveldb directory is not opened.
 - `Block` and `MakeBlock`. Data, evidence, and last-commit hashes, `ValidateBasic`, and `MakePartSet` match the Go block tests, including the `Hello World` protobuf bytes.
 - Proposer priority on `ValidatorSet`. Increment, copy, and the proposer sequence for fixed voting powers match the Go tests.
 - `DuplicateVoteEvidence` and `EvidenceList`. A conflicting vote pair verifies against a validator set, and the block evidence hash changes when the list does.
