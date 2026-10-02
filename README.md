@@ -18,6 +18,17 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-p2p` | `p2p.NodeKey` and the secret-connection handshake. Loads `node_key.json` and checks `deriveSecrets` against the Go golden file. No reactor or dial loop. |
 | `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
 
+## Database
+
+Tendermint 0.34 defaults to goleveldb. goleveldb is a pure-Go port of Google LevelDB. It is the Tendermint 0.34 default because it has no C dependency. RocksDB is Facebook's fork of LevelDB. This Rust port uses RocksDB.
+
+Both are embedded, single-process key-value stores built on a log-structured merge tree. You write batches, read by key, and scan ranges. Compaction runs in the background.
+
+- The files are not interchangeable. A Go data/ directory created with db_backend = "goleveldb" will not open under RocksDB.
+- Key prefixes match the Go block store (H:, P:, C:, SC:, BH:, blockStore). The directory does not.
+- Tests use the in-memory Db. The node writes RocksDB files in its own directory.
+- blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. Only blockstore and state exist after tasks 1 and 2.
+
 `tools/proto-compiler` is the prost-build binary used by `scripts/gen-proto.sh`.
 
 ```bash

@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- RocksDB is the on-disk backend. A Go data directory created with goleveldb is not opened.
 - `Block` and `MakeBlock`. Data, evidence, and last-commit hashes, `ValidateBasic`, and `MakePartSet` match the Go block tests, including the `Hello World` protobuf bytes.
 - Proposer priority on `ValidatorSet`. Increment, copy, and the proposer sequence for fixed voting powers match the Go tests.
 - `DuplicateVoteEvidence` and `EvidenceList`. A conflicting vote pair verifies against a validator set, and the block evidence hash changes when the list does.
