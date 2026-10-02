@@ -27,7 +27,7 @@ use eld_tendermint_mempool::{
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::RequestInfo;
-use eld_tendermint_state::{StateStore, load_or_init_chain};
+use eld_tendermint_state::{IndexTxs, StateStore, TxIndex, load_or_init_chain};
 use eld_tendermint_store::{BlockStore, RocksDb};
 
 use crate::app::AbciApp;
@@ -83,12 +83,17 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     })
     .map_err(fail)?;
     let fast_sync = config.base.fast_sync && config.fastsync.version == "v0";
+    let tx_index = open_tx_index(&config)?;
+    let tx_for_reactors = tx_index
+        .as_ref()
+        .map(|index| Arc::clone(index) as Arc<dyn IndexTxs>);
     let blockchain = if fast_sync {
         Some(BlockchainReactor::new(
             Arc::clone(&block_store),
             Arc::clone(&state_store),
             state.clone(),
             app.clone(),
+            tx_for_reactors.clone(),
         ))
     } else {
         None
@@ -123,6 +128,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         NodeExtras {
             wal_path: wal_path.is_file().then_some(wal_path),
             evidence: Some(evidence_for_node),
+            tx_index: tx_for_reactors,
         },
     )
     .map_err(fail)?;
@@ -200,6 +206,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             waiter,
             commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
             app: rpc_app,
+            tx_index,
         }),
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };
@@ -329,6 +336,14 @@ fn spawn_poll(
             thread::sleep(Duration::from_millis(5));
         }
     })
+}
+
+fn open_tx_index(config: &Config) -> Result<Option<Arc<TxIndex<RocksDb>>>, Error> {
+    if config.tx_index.indexer == "null" {
+        return Ok(None);
+    }
+    let db = RocksDb::open(config.db_dir().join("tx_index.db")).map_err(fail)?;
+    Ok(Some(Arc::new(TxIndex::new(db))))
 }
 
 fn open_block_store(config: &Config) -> Result<Arc<BlockStore<RocksDb>>, Error> {

@@ -163,6 +163,105 @@ skip_timeout_commit = true
 }
 
 #[test]
+fn tx_and_tx_search_survive_restart() {
+    let home = TestHome::new("tx-index");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"2s\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = true
+";
+    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    let tx = b"pay";
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    assert_eq!(status["result"]["node_info"]["other"]["tx_index"], "on");
+    let (_code, _headers, committed) = post_for(
+        &addr,
+        &broadcast("broadcast_tx_commit", tx),
+        Duration::from_secs(20),
+    );
+    assert!(committed.get("error").is_none(), "{committed}");
+    let height = committed["result"]["height"].as_i64().unwrap();
+    assert!(height >= 1, "{committed}");
+    let hash = committed["result"]["hash"].as_str().unwrap().to_owned();
+    assert_eq!(hash, hex_upper(&sum(tx)));
+    let found = wait_for_tx(&addr, &hash);
+    assert_eq!(found["result"]["height"], height);
+    assert_eq!(found["result"]["index"], 0);
+    assert_eq!(found["result"]["tx_result"]["code"], 7);
+    assert_eq!(
+        found["result"]["tx"],
+        base64::engine::general_purpose::STANDARD.encode(tx)
+    );
+    assert!(found["result"].get("proof").is_none());
+    drop(node);
+
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let (_code, _headers, found) = post(&addr, &tx_by_hash(&hash));
+    assert!(found.get("error").is_none(), "{found}");
+    assert_eq!(found["result"]["hash"], hash);
+    assert_eq!(found["result"]["height"], height);
+    assert_eq!(found["result"]["index"], 0);
+
+    // Height 1 is often empty: the proposer builds it before this RPC call arrives.
+    let query = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tx_search","params":{{"query":"tx.height = {height}","prove":true,"order_by":"asc"}}}}"#
+    );
+    let (_code, _headers, search) = post(&addr, &query);
+    assert!(search.get("error").is_none(), "{search}");
+    assert_eq!(search["result"]["total_count"], 1);
+    assert_eq!(search["result"]["txs"][0]["hash"], hash);
+    assert!(search["result"]["txs"][0].get("proof").is_none());
+
+    let (_code, _headers, missing) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tx","params":{"hash":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+    );
+    assert_eq!(missing["error"]["code"], -32603);
+    assert_eq!(
+        missing["error"]["data"],
+        "tx (0000000000000000000000000000000000000000000000000000000000000000) not found"
+    );
+
+    let (_code, _headers, tag) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tx_search","params":{"query":"app.creator = 'bob'"}}"#,
+    );
+    assert_eq!(tag["error"]["code"], -32603);
+    assert_eq!(tag["error"]["message"], "Internal error");
+    assert_eq!(tag["error"]["data"], "tag app.creator is not supported");
+}
+
+fn tx_by_hash(hash: &str) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tx","params":{{"hash":"{hash}","prove":true}}}}"#)
+}
+
+/// `broadcast_tx_commit` returns from DeliverTx, before the index write.
+fn wait_for_tx(addr: &str, hash: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_code, _headers, body) = post(addr, &tx_by_hash(hash));
+        if body.get("error").is_none() {
+            return body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "tx {hash} was not indexed: {body}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn broadcast_tx_commit_times_out_when_undelivered() {
     let home = TestHome::new("timeout");
     let proxy = stub_abci();

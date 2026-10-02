@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- Transaction index in `tx_index.db`. JSON-RPC `tx` and `tx_search` return a committed DeliverTx after a restart. The queries served are `tx.height` and `tx.hash`.
 - Evidence pool on channel `0x38`, stored in its own `evidence.db`. A duplicate vote is gossiped, included in the next proposed block once, and omitted after that block commits.
 - v0 blockchain reactor on channel `0x40`. A genesis node catches up to a taller peer when `fast_sync` is on, applying each block as soon as it is the next height.
 - JSON-RPC `abci_query` returns the app's query value. `block` and `commit` return a saved block and the seen commit at the chain tip.

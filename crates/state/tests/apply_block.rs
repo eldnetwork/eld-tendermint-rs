@@ -159,7 +159,9 @@ fn genesis_height_one_commits_and_reloads() {
     let (block, id) = height_one(&state);
     assert!(block.last_commit.is_none());
     let mut app = FakeApp::new(None);
-    let next = apply_block(&state, &id, &block, &mut app).expect("apply height 1");
+    let next = apply_block(&state, &id, &block, &mut app)
+        .expect("apply height 1")
+        .state;
     assert_eq!(next.app_hash, APP_HASH);
     let db = Arc::new(MemDb::new());
     StateStore::new(Arc::clone(&db)).save(&next).expect("save");
@@ -193,7 +195,9 @@ fn validator_update_lands_one_block_later() {
     };
     let (block, id) = height_one(&state);
     let mut app = FakeApp::new(Some(update));
-    let after_one = apply_block(&state, &id, &block, &mut app).expect("apply height 1");
+    let after_one = apply_block(&state, &id, &block, &mut app)
+        .expect("apply height 1")
+        .state;
     let added_address = added.address();
     assert!(
         !contains(&after_one.validators, added_address.as_slice()),
@@ -218,7 +222,9 @@ fn validator_update_lands_one_block_later() {
     );
     fill_header(&mut block, &after_one);
     let id = block_id(&block);
-    let after_two = apply_block(&after_one, &id, &block, &mut app).expect("apply height 2");
+    let after_two = apply_block(&after_one, &id, &block, &mut app)
+        .expect("apply height 2")
+        .state;
     assert!(
         contains(&after_two.validators, added_address.as_slice()),
         "validators missing the update after the next block"
@@ -231,7 +237,9 @@ fn nil_last_commit_after_initial_height_is_rejected() {
     let state = make_genesis_state(&mut doc).expect("genesis");
     let (block, id) = height_one(&state);
     let mut app = FakeApp::new(None);
-    let after_one = apply_block(&state, &id, &block, &mut app).expect("apply height 1");
+    let after_one = apply_block(&state, &id, &block, &mut app)
+        .expect("apply height 1")
+        .state;
     let mut block = Block::make_block(2, Txs::new(Vec::new()), None, EvidenceList::new(Vec::new()));
     fill_header(&mut block, &after_one);
     let id = block_id(&block);

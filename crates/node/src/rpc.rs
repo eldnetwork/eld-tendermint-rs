@@ -1,4 +1,4 @@
-//! `POST /` JSON-RPC for `status`, `health`, broadcast tx, and block reads.
+//! `POST /` JSON-RPC for `status`, `health`, broadcast tx, block reads, and the tx index.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -10,8 +10,10 @@ use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_proto::abci::{
     Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseQuery,
+    TxResult,
 };
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
+use eld_tendermint_state::TxIndex;
 use eld_tendermint_store::{BlockStore, RocksDb};
 use eld_tendermint_types::{Block, BlockId, Commit, CommitSig, Header, Time, Tx};
 use serde_json::{Map, Value};
@@ -36,6 +38,8 @@ pub struct NodeStatus {
     pub waiter: Arc<TxWaiter>,
     pub commit_timeout: Duration,
     pub app: AbciApp,
+    /// Open when `[tx_index] indexer` is not `null`.
+    pub tx_index: Option<Arc<TxIndex<RocksDb>>>,
 }
 
 /// Accept JSON-RPC calls until the listener closes.
@@ -84,6 +88,8 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "abci_query" => abci_query(&id, request, status),
         "block" => rpc_block(&id, request, status),
         "commit" => rpc_commit(&id, request, status),
+        "tx" => rpc_tx(&id, request, status),
+        "tx_search" => rpc_tx_search(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
@@ -108,7 +114,7 @@ fn status_result(status: &NodeStatus) -> Value {
             "channels": status.channels,
             "moniker": status.moniker,
             "other": {
-                "tx_index": "off",
+                "tx_index": if status.tx_index.is_some() { "on" } else { "off" },
                 "rpc_address": status.rpc_address,
             },
         },
@@ -522,6 +528,269 @@ fn commit_sig_json(sig: &CommitSig) -> Value {
             Value::String(b64(&sig.signature))
         },
     })
+}
+
+const MAX_QUERY_LENGTH: usize = 512;
+const DEFAULT_PER_PAGE: i64 = 30;
+const MAX_PER_PAGE: i64 = 100;
+
+fn rpc_tx(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(index) = &status.tx_index else {
+        return internal_message(id, "transaction indexing is disabled");
+    };
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return invalid_params(id, &data),
+    };
+    if let Err(data) = bool_param(params, "prove") {
+        return invalid_params(id, &data);
+    }
+    let hash = match hash_param(params) {
+        Ok(hash) => hash,
+        Err(HashParam::Empty) => {
+            return internal_message(id, "transaction hash cannot be empty");
+        }
+        Err(HashParam::Invalid(data)) => return invalid_params(id, &data),
+    };
+    match index.get(&hash) {
+        Ok(Some(tx)) => rpc_result(id.clone(), result_tx_json(&hash, &tx)),
+        Ok(None) => internal_message(id, &format!("tx ({}) not found", hex_upper(&hash))),
+        Err(err) => internal_error(id.clone(), &err),
+    }
+}
+
+fn rpc_tx_search(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(index) = &status.tx_index else {
+        return internal_message(id, "transaction indexing is disabled");
+    };
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return invalid_params(id, &data),
+    };
+    if let Err(data) = bool_param(params, "prove") {
+        return invalid_params(id, &data);
+    }
+    let query = match string_param(params, "query") {
+        Ok(query) => query,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let page = match i64_param(params, "page") {
+        Ok(page) => page,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let per_page = match i64_param(params, "per_page") {
+        Ok(per_page) => per_page,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let order_by = match string_param(params, "order_by") {
+        Ok(order_by) => order_by,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let mut txs = match search_query(index, &query) {
+        Ok(txs) => txs,
+        Err(data) => return internal_message(id, &data),
+    };
+    let desc = match order_by.as_str() {
+        "desc" => true,
+        "asc" | "" => false,
+        _ => {
+            return internal_message(
+                id,
+                "expected order_by to be either `asc` or `desc` or empty",
+            );
+        }
+    };
+    txs.sort_by(|left, right| {
+        let order = left
+            .height
+            .cmp(&right.height)
+            .then(left.index.cmp(&right.index));
+        if desc { order.reverse() } else { order }
+    });
+    let total = i64::try_from(txs.len()).unwrap_or(i64::MAX);
+    let per_page = validate_per_page(per_page);
+    let page = match validate_page(page, per_page, total) {
+        Ok(page) => page,
+        Err(data) => return internal_message(id, &data),
+    };
+    let skip = (page - 1) * per_page;
+    let end = (skip + per_page).min(total);
+    let page_txs: Vec<Value> = txs[skip as usize..end as usize]
+        .iter()
+        .map(|tx| result_tx_json(&sum(tx.tx.as_ref()), tx))
+        .collect();
+    rpc_result(
+        id.clone(),
+        serde_json::json!({
+            "txs": page_txs,
+            "total_count": total,
+        }),
+    )
+}
+
+fn result_tx_json(hash: &[u8], tx: &TxResult) -> Value {
+    let deliver = tx.result.clone().unwrap_or_default();
+    serde_json::json!({
+        "hash": hex_upper(hash),
+        "height": tx.height,
+        "index": tx.index,
+        "tx_result": deliver_tx_json(&deliver),
+        "tx": b64(tx.tx.as_ref()),
+    })
+}
+
+enum HashParam {
+    Empty,
+    Invalid(String),
+}
+
+/// Hex, including a `0x` prefix, or standard base64. Even-length hex wins over base64.
+fn hash_param(params: &Value) -> Result<Vec<u8>, HashParam> {
+    let Some(value) = field(params, "hash") else {
+        return Err(HashParam::Empty);
+    };
+    let Value::String(text) = value else {
+        return Err(HashParam::Invalid("params.hash is not a string".to_owned()));
+    };
+    if text.is_empty() {
+        return Err(HashParam::Empty);
+    }
+    let decoded = if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        hex::decode(rest).map_err(|_| HashParam::Invalid("params.hash is not hex".to_owned()))?
+    } else if text.len() % 2 == 0 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        hex::decode(text).map_err(|_| HashParam::Invalid("params.hash is not hex".to_owned()))?
+    } else {
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map_err(|_| HashParam::Invalid("params.hash is not hex or base64".to_owned()))?
+    };
+    if decoded.is_empty() {
+        return Err(HashParam::Empty);
+    }
+    Ok(decoded)
+}
+
+enum TxSearch {
+    Hash(Vec<u8>),
+    Height(i64),
+    None,
+}
+
+fn search_query(index: &TxIndex<RocksDb>, query: &str) -> Result<Vec<TxResult>, String> {
+    if query.len() > MAX_QUERY_LENGTH {
+        return Err("maximum query length exceeded".to_owned());
+    }
+    match parse_tx_query(query)? {
+        TxSearch::Hash(hash) => index
+            .get(&hash)
+            .map(|found| found.into_iter().collect())
+            .map_err(|err| err.to_string()),
+        TxSearch::Height(height) => index.by_height(height).map_err(|err| err.to_string()),
+        TxSearch::None => Ok(Vec::new()),
+    }
+}
+
+/// Equality on `tx.height` and `tx.hash` only. A hash condition wins, as in `lookForHash`.
+fn parse_tx_query(query: &str) -> Result<TxSearch, String> {
+    let parts: Vec<&str> = if query.contains(" AND ") {
+        query.split(" AND ").collect()
+    } else {
+        vec![query]
+    };
+    let mut hash = None;
+    let mut height = None;
+    let mut heights_disagree = false;
+    for part in parts {
+        let part = part.trim();
+        let (tag, rest) = split_condition(part)?;
+        if tag != "tx.height" && tag != "tx.hash" {
+            return Err(format!("tag {tag} is not supported"));
+        }
+        let rest = rest.trim();
+        let Some(operand) = rest.strip_prefix('=') else {
+            return Err(format!("tag {tag} is not supported"));
+        };
+        let operand = operand.trim();
+        if tag == "tx.hash" {
+            let Some(quoted) = operand
+                .strip_prefix('\'')
+                .and_then(|text| text.strip_suffix('\''))
+            else {
+                return Err("tag tx.hash is not supported".to_owned());
+            };
+            if hash.is_none() {
+                hash = Some(decode_query_hash(quoted)?);
+            }
+        } else {
+            let Ok(parsed) = operand.parse::<i64>() else {
+                return Err("tag tx.height is not supported".to_owned());
+            };
+            if let Some(seen) = height {
+                if seen != parsed {
+                    heights_disagree = true;
+                }
+            } else {
+                height = Some(parsed);
+            }
+        }
+    }
+    if let Some(hash) = hash {
+        return Ok(TxSearch::Hash(hash));
+    }
+    if heights_disagree {
+        return Ok(TxSearch::None);
+    }
+    if let Some(height) = height {
+        return Ok(TxSearch::Height(height));
+    }
+    Err("tag  is not supported".to_owned())
+}
+
+fn split_condition(part: &str) -> Result<(&str, &str), String> {
+    let end = part
+        .find([' ', '='])
+        .filter(|end| *end > 0)
+        .ok_or_else(|| "tag  is not supported".to_owned())?;
+    Ok((&part[..end], &part[end..]))
+}
+
+fn decode_query_hash(text: &str) -> Result<Vec<u8>, String> {
+    if text.len() % 2 != 0 {
+        return Err(
+            "error during searching for a hash in the query: encoding/hex: odd length hex string"
+                .to_owned(),
+        );
+    }
+    hex::decode(text)
+        .map_err(|err| format!("error during searching for a hash in the query: {err}"))
+}
+
+fn validate_per_page(per_page: Option<i64>) -> i64 {
+    match per_page {
+        Some(value) if (1..=MAX_PER_PAGE).contains(&value) => value,
+        Some(value) if value > MAX_PER_PAGE => MAX_PER_PAGE,
+        _ => DEFAULT_PER_PAGE,
+    }
+}
+
+fn validate_page(page: Option<i64>, per_page: i64, total: i64) -> Result<i64, String> {
+    let Some(page) = page else {
+        return Ok(1);
+    };
+    let mut pages = if total == 0 {
+        1
+    } else {
+        (total - 1) / per_page + 1
+    };
+    if pages == 0 {
+        pages = 1;
+    }
+    if page <= 0 || page > pages {
+        return Err(format!(
+            "page should be within [1, {pages}] range, given {page}"
+        ));
+    }
+    Ok(page)
 }
 
 /// A missing `params` object uses field defaults. Anything else is invalid.

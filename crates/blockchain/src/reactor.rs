@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use eld_tendermint_p2p::{ChannelDescriptor, Switch};
 use eld_tendermint_proto::blockchain::{self, Message};
-use eld_tendermint_state::{App, State, StateStore, apply_block, validate_block};
+use eld_tendermint_state::{App, IndexTxs, State, StateStore, apply_block, validate_block};
 use eld_tendermint_store::{BlockStore, Db};
 use eld_tendermint_types::{BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, CommitSig};
 use prost::Message as ProstMessage;
@@ -41,6 +41,7 @@ struct Inner<A: App, D: Db> {
     state: State,
     app: A,
     pool: Pool,
+    tx_index: Option<Arc<dyn IndexTxs>>,
 }
 
 /// Fast-sync pool on a [`Switch`].
@@ -63,6 +64,7 @@ impl<A: App, D: Db> Reactor<A, D> {
         states: Arc<StateStore<D>>,
         state: State,
         app: A,
+        tx_index: Option<Arc<dyn IndexTxs>>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
@@ -71,6 +73,7 @@ impl<A: App, D: Db> Reactor<A, D> {
                 state,
                 app,
                 pool: Pool::new(),
+                tx_index,
             })),
         }
     }
@@ -283,7 +286,7 @@ impl<A: App, D: Db> Inner<A, D> {
             hash,
             part_set_header: parts.header(),
         };
-        let next = apply_block(&self.state, &block_id, &block, &mut self.app)
+        let applied = apply_block(&self.state, &block_id, &block, &mut self.app)
             .map_err(|_| peer_id.to_owned())?;
         let seen = Commit {
             height: block.header.height,
@@ -294,8 +297,15 @@ impl<A: App, D: Db> Inner<A, D> {
         self.blocks
             .save_block(&block, &parts, &seen)
             .map_err(|_| peer_id.to_owned())?;
-        self.states.save(&next).map_err(|_| peer_id.to_owned())?;
-        self.state = next;
+        if let Some(index) = &self.tx_index {
+            index
+                .index_committed(&block, &applied.deliver_txs)
+                .map_err(|_| peer_id.to_owned())?;
+        }
+        self.states
+            .save(&applied.state)
+            .map_err(|_| peer_id.to_owned())?;
+        self.state = applied.state;
         Ok(())
     }
 

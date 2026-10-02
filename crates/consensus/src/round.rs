@@ -8,7 +8,7 @@ use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::SignedMsgType;
-use eld_tendermint_state::{App as ExecApp, State as ChainState, apply_block};
+use eld_tendermint_state::{App as ExecApp, IndexTxs, State as ChainState, apply_block};
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal, Time,
@@ -65,12 +65,14 @@ impl Step {
     }
 }
 
-/// Optional WAL file and evidence pool for [`Node::start_with_store_extras`].
+/// Optional WAL file, evidence pool, and tx index for [`Node::start_with_store_extras`].
 pub struct NodeExtras {
     /// Replay this file before round 0 when it is set.
     pub wal_path: Option<PathBuf>,
     /// Pending evidence included in each proposal.
     pub evidence: Option<Arc<dyn ProposalEvidence>>,
+    /// Index DeliverTx results after each saved block.
+    pub tx_index: Option<Arc<dyn IndexTxs>>,
 }
 
 /// What a validator broadcasts. The group delivers these by method call.
@@ -101,6 +103,7 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     mempool: Arc<Mutex<Mempool<C>>>,
     block_store: Arc<BlockStore<D>>,
     evidence: Option<Arc<dyn ProposalEvidence>>,
+    tx_index: Option<Arc<dyn IndexTxs>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -142,6 +145,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
             NodeExtras {
                 wal_path: None,
                 evidence: None,
+                tx_index: None,
             },
         )
     }
@@ -169,6 +173,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
             NodeExtras {
                 wal_path: None,
                 evidence: Some(evidence),
+                tx_index: None,
             },
         )
     }
@@ -196,6 +201,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
             NodeExtras {
                 wal_path: Some(wal_path.as_ref().to_path_buf()),
                 evidence: None,
+                tx_index: None,
             },
         )
     }
@@ -225,6 +231,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             NodeExtras {
                 wal_path: None,
                 evidence: None,
+                tx_index: None,
             },
         )
     }
@@ -270,6 +277,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             NodeExtras {
                 wal_path: None,
                 evidence: Some(evidence),
+                tx_index: None,
             },
         )
     }
@@ -298,6 +306,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             NodeExtras {
                 wal_path: Some(wal_path.as_ref().to_path_buf()),
                 evidence: None,
+                tx_index: None,
             },
         )
     }
@@ -338,6 +347,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             mempool,
             block_store,
             evidence: extras.evidence,
+            tx_index: extras.tx_index,
             exec,
             votes,
             proposal: None,
@@ -932,7 +942,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             hash: block_hash.as_bytes().to_vec(),
             part_set_header: parts.header(),
         };
-        let Ok(new_state) = apply_block(&self.chain_state, &id, &block, &mut self.exec) else {
+        let Ok(applied) = apply_block(&self.chain_state, &id, &block, &mut self.exec) else {
             return;
         };
         let seen = self
@@ -945,14 +955,31 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.block_store.save_block(&block, &parts, &seen).is_err() {
             return;
         }
+        if let Some(index) = &self.tx_index {
+            if index.index_committed(&block, &applied.deliver_txs).is_err() {
+                return;
+            }
+        }
+        // Drop committed txs before the next height reaps, or the same hash is indexed again.
+        let _ = self
+            .mempool
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .update(
+                block.header.height,
+                block.data.as_slice(),
+                &applied.deliver_txs,
+                None,
+                None,
+            );
         if let Some(pool) = &self.evidence {
             pool.mark_committed(&block.evidence);
-            pool.update_state(&new_state);
+            pool.update_state(&applied.state);
         }
         let committed = self.height;
         self.wal_sync(&wal::end_height_message(Time::now(), committed));
         self.last_commit = self.votes.precommits(commit_round).cloned();
-        self.chain_state = new_state;
+        self.chain_state = applied.state;
         self.validators = self.chain_state.validators.copy();
         self.height = self.chain_state.last_block_height + 1;
         self.round = 0;

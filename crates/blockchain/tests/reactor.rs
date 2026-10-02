@@ -104,7 +104,9 @@ impl Chain {
             self.blocks
                 .save_block(&block, &parts, &seen)
                 .expect("save block");
-            self.state = apply_block(&self.state, &block_id, &block, &mut app).expect("apply");
+            self.state = apply_block(&self.state, &block_id, &block, &mut app)
+                .expect("apply")
+                .state;
             self.states.save(&self.state).expect("save state");
         }
     }
@@ -115,6 +117,7 @@ impl Chain {
             Arc::clone(&self.states),
             self.state.clone(),
             Exec,
+            None,
         )
     }
 }

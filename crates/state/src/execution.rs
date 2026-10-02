@@ -53,12 +53,13 @@ pub trait App {
 /// # Errors
 ///
 /// Returns a validation error before any ABCI call, or an update or app error after.
+/// `deliver_txs` is in block order so the tx index can store each result.
 pub fn apply_block(
     state: &State,
     block_id: &BlockId,
     block: &Block,
     app: &mut impl App,
-) -> Result<State, Error> {
+) -> Result<AppliedBlock, Error> {
     validate_block(state, block)?;
 
     let round = block
@@ -112,22 +113,40 @@ pub fn apply_block(
     }
 
     let commit = app.commit()?;
-    Ok(State {
-        version,
-        chain_id: state.chain_id.clone(),
-        initial_height: state.initial_height,
-        last_block_height: block.header.height,
-        last_block_id: block_id.clone(),
-        last_block_time: block.header.time,
-        next_validators,
-        validators: state.next_validators.copy(),
-        last_validators: state.validators.copy(),
-        last_height_validators_changed,
-        consensus_params,
-        last_height_consensus_params_changed,
-        last_results_hash: results_hash(&deliver_txs),
-        app_hash: commit.data.to_vec(),
+    Ok(AppliedBlock {
+        state: State {
+            version,
+            chain_id: state.chain_id.clone(),
+            initial_height: state.initial_height,
+            last_block_height: block.header.height,
+            last_block_id: block_id.clone(),
+            last_block_time: block.header.time,
+            next_validators,
+            validators: state.next_validators.copy(),
+            last_validators: state.validators.copy(),
+            last_height_validators_changed,
+            consensus_params,
+            last_height_consensus_params_changed,
+            last_results_hash: results_hash(&deliver_txs),
+            app_hash: commit.data.to_vec(),
+        },
+        deliver_txs,
     })
+}
+
+/// State after `ApplyBlock`, plus each `ResponseDeliverTx` in block order.
+pub struct AppliedBlock {
+    pub state: State,
+    pub deliver_txs: Vec<ResponseDeliverTx>,
+}
+
+impl std::fmt::Debug for AppliedBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppliedBlock")
+            .field("state", &self.state)
+            .field("deliver_txs", &self.deliver_txs.len())
+            .finish()
+    }
 }
 
 /// Height, chain id, and header-hash checks from `ApplyBlock`, before any ABCI call.

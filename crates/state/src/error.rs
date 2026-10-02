@@ -38,6 +38,10 @@ pub enum Error {
     Db(String),
     /// The socket app returned an I/O or protocol error.
     Abci(String),
+    /// `txindex.ErrorEmptyHash`.
+    EmptyTxHash,
+    /// A stored `TxResult` did not decode.
+    BadTxResult(String),
 }
 
 impl fmt::Display for Error {
@@ -83,6 +87,8 @@ impl fmt::Display for Error {
             Self::MissingConsensusParams => write!(f, "state is missing consensus params"),
             Self::Db(message) => write!(f, "state db: {message}"),
             Self::Abci(message) => write!(f, "{message}"),
+            Self::EmptyTxHash => write!(f, "transaction hash cannot be empty"),
+            Self::BadTxResult(message) => write!(f, "error reading TxResult: {message}"),
         }
     }
 }
