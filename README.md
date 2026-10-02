@@ -18,10 +18,10 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-p2p` | `p2p.NodeKey`, the secret-connection handshake, the switch, TCP dial and accept, `addrbook.json`, and PEX on channel `0x00`. |
 | `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
 | `eld-tendermint-store` | `store.BlockStore`. Keys are `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`. RocksDB on disk, an in-memory map in tests. A Go goleveldb directory is refused. |
-| `eld-tendermint-state` | `MakeGenesisState` and `ApplyBlock`. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. |
+| `eld-tendermint-state` | `MakeGenesisState`, `InitChain`, and `ApplyBlock`. A missing `stateKey` calls `InitChain` once. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. |
 | `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. The reactor gossips one tx per message on channel `0x30` and does not echo a tx to the peer that sent it. |
 | `eld-tendermint-consensus` | In-process rounds and the gossip reactor on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. The WAL is one CRC32C-framed file; a durable prevote is replayed without a second signature. WAL rotation is not implemented. |
-| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, mempool, consensus, and PEX) and serves JSON-RPC `status` and `health`. |
+| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, and PEX) and serves JSON-RPC `status` and `health`. |
 
 ## Database
 

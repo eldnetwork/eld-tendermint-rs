@@ -15,7 +15,8 @@ use eld_tendermint_p2p::NodeKey;
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{
     Request, Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx,
-    ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo, request, response,
+    ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo, ResponseInitChain, request,
+    response,
 };
 use serde_json::Value;
 
@@ -244,6 +245,9 @@ fn serve_abci(mut stream: TcpStream) {
         };
         let value = match req.value {
             Some(request::Value::Info(_)) => response::Value::Info(ResponseInfo::default()),
+            Some(request::Value::InitChain(_)) => {
+                response::Value::InitChain(ResponseInitChain::default())
+            }
             Some(request::Value::Flush(_)) => response::Value::Flush(ResponseFlush {}),
             Some(request::Value::CheckTx(_)) => {
                 response::Value::CheckTx(ResponseCheckTx::default())

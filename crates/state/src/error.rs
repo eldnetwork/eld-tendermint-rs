@@ -26,6 +26,8 @@ pub enum Error {
     InitialCommitHasSignatures,
     WrongLastCommitHash,
     NegativeVotingPower,
+    /// Genesis had no validators and `InitChain` did not return any.
+    NilValidatorSet,
     UnsupportedPubKeyType {
         got: String,
     },
@@ -63,6 +65,12 @@ impl fmt::Display for Error {
             }
             Self::WrongLastCommitHash => write!(f, "wrong Header.LastCommitHash"),
             Self::NegativeVotingPower => write!(f, "voting power can't be negative"),
+            Self::NilValidatorSet => {
+                write!(
+                    f,
+                    "validator set is nil in genesis and still empty after InitChain"
+                )
+            }
             Self::UnsupportedPubKeyType { got } => {
                 write!(
                     f,

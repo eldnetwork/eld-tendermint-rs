@@ -21,9 +21,8 @@ use eld_tendermint_mempool::{
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::RequestInfo;
-use eld_tendermint_state::{StateStore, make_genesis_state};
+use eld_tendermint_state::{StateStore, load_or_init_chain};
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::GenesisDoc;
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
@@ -71,8 +70,12 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     )
     .map_err(fail)?;
     let block_store = open_block_store(&config)?;
-    let state = open_state(&config, &mut genesis)?;
+    let state_store = open_state_store(&config)?;
     let app = connect_app(&config.base.proxy_app)?;
+    let state = load_or_init_chain(&state_store, &mut genesis, |request| {
+        app.init_chain(request)
+    })
+    .map_err(fail)?;
     let pub_key = pv.get_pub_key();
     let address_bytes = pub_key.address();
     let voting_power = genesis
@@ -236,18 +239,9 @@ fn open_block_store(config: &Config) -> Result<Arc<BlockStore<RocksDb>>, Error> 
     Ok(Arc::new(BlockStore::new(db)))
 }
 
-fn open_state(
-    config: &Config,
-    genesis: &mut GenesisDoc,
-) -> Result<eld_tendermint_state::State, Error> {
+fn open_state_store(config: &Config) -> Result<StateStore<RocksDb>, Error> {
     let db = RocksDb::open(config.db_dir().join("state")).map_err(fail)?;
-    let store = StateStore::new(db);
-    if let Some(state) = store.load() {
-        return Ok(state);
-    }
-    let state = make_genesis_state(genesis).map_err(fail)?;
-    store.save(&state).map_err(fail)?;
-    Ok(state)
+    Ok(StateStore::new(db))
 }
 
 fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {

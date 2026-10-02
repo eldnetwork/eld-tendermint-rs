@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- A fresh home calls ABCI `InitChain` once and stores the app hash under `stateKey`. A restart calls `Info` only.
 - `eld-tendermint start` loads one home and serves JSON-RPC `status` and `health`. Any other method returns `-32601`. The evidence pool, fast sync, the tx index, WAL rotation, and the rest of RPC are not started.
 - PEX and the dial loop. A persistent peer completes the secret handshake, and an address learned for another peer is dialed and reloaded from `addrbook.json`.
 - Consensus gossip. Proposals, block parts, and votes move between switches on channels `0x20`–`0x23`, and four validators commit height 1 across the network.

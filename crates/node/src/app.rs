@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use eld_tendermint_abci::SocketClient;
 use eld_tendermint_proto::abci::{
-    RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, ResponseBeginBlock,
-    ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEndBlock,
+    RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, RequestInitChain,
+    ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEndBlock,
+    ResponseInitChain,
 };
 use eld_tendermint_state::Error as StateError;
 
@@ -18,6 +19,13 @@ pub struct AbciApp {
 impl AbciApp {
     pub(crate) fn new(client: Arc<Mutex<SocketClient>>) -> Self {
         Self { client }
+    }
+
+    pub(crate) fn init_chain(
+        &self,
+        request: RequestInitChain,
+    ) -> Result<ResponseInitChain, StateError> {
+        lock(&self.client).init_chain(request).map_err(abci_err)
     }
 }
 

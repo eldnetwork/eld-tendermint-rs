@@ -12,3 +12,4 @@ eld-tendermint-proto = { path = "../proto" }
 eld-tendermint-store = { path = "../store" }
 eld-tendermint-types = { path = "../types" }
 prost = "0.13"
+serde_json = { version = "1", features = ["preserve_order"] }

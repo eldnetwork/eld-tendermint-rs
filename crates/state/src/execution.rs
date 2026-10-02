@@ -5,7 +5,7 @@
 use eld_tendermint_crypto::{hash_from_byte_slices, pub_key_from_proto};
 use eld_tendermint_proto::abci::{
     LastCommitInfo, RequestBeginBlock, RequestDeliverTx, RequestEndBlock, ResponseBeginBlock,
-    ResponseCommit, ResponseDeliverTx, ResponseEndBlock, VoteInfo,
+    ResponseCommit, ResponseDeliverTx, ResponseEndBlock, ValidatorUpdate, VoteInfo,
 };
 use eld_tendermint_types::{
     ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Validator, hash_consensus_params,
@@ -92,7 +92,7 @@ pub fn apply_block(
         height: block.header.height,
     })?;
 
-    let updates = validator_updates(&end, &state.consensus_params)?;
+    let updates = validator_updates(&end.validator_updates, &state.consensus_params)?;
     let mut last_height_validators_changed = state.last_height_validators_changed;
     let mut next_validators = state.next_validators.copy();
     if !updates.is_empty() {
@@ -217,12 +217,12 @@ fn last_commit_votes(state: &State, block: &Block) -> Vec<VoteInfo> {
         .collect()
 }
 
-fn validator_updates(
-    end: &ResponseEndBlock,
+pub(crate) fn validator_updates(
+    updates: &[ValidatorUpdate],
     params: &eld_tendermint_types::ConsensusParams,
 ) -> Result<Vec<Validator>, Error> {
-    let mut updates = Vec::with_capacity(end.validator_updates.len());
-    for update in &end.validator_updates {
+    let mut parsed = Vec::with_capacity(updates.len());
+    for update in updates {
         if update.power < 0 {
             return Err(Error::NegativeVotingPower);
         }
@@ -259,9 +259,9 @@ fn validator_updates(
             .map_err(|err| Error::Types(eld_tendermint_types::Error::PubKey(err)))?;
         let mut validator = Validator::new(pub_key, update.power);
         validator.voting_power = update.power;
-        updates.push(validator);
+        parsed.push(validator);
     }
-    Ok(updates)
+    Ok(parsed)
 }
 
 /// `ABCIResponsesResultsHash`. Events, log, info, and codespace are stripped

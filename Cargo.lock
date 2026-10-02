@@ -422,6 +422,7 @@ dependencies = [
  "eld-tendermint-store",
  "eld-tendermint-types",
  "prost",
+ "serde_json",
 ]
 
 [[package]]
