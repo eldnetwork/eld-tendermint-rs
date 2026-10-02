@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/config",
     "crates/crypto",
+    "crates/p2p",
     "crates/privval",
     "crates/proto",
     "crates/types",

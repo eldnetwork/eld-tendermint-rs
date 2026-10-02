@@ -1,0 +1,20 @@
+[package]
+name = "eld-tendermint-p2p"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 node key and secret-connection handshake."
+
+[dependencies]
+chacha20poly1305 = "0.10"
+eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-proto = { path = "../proto" }
+hex = "0.4"
+hkdf = "0.12"
+merlin = "3"
+prost = { version = "0.13", features = ["derive"] }
+rand = "0.8"
+serde_json = "1"
+sha2 = "0.10"
+x25519-dalek = "2"
