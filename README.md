@@ -2,7 +2,7 @@
 
 Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The workspace covers proto messages, Ed25519, core types, `config.toml` and genesis loading, and file privval. Consensus, the p2p reactor, the ABCI socket, and RPC come later. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+The workspace covers proto messages, Ed25519, core types (blocks, evidence, and proposer priority), `config.toml` and genesis loading, file privval, the secret-connection handshake, and an ABCI 0.17 socket client. Consensus, the p2p reactor, mempool, WAL, and RPC come later. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -12,9 +12,11 @@ Every package is `0.0.1` and unpublished.
 | --- | --- |
 | `eld-tendermint-proto` | Prost messages generated from `proto/`. `tests/vectors.rs` checks them against the Go hex vectors. |
 | `eld-tendermint-crypto` | `crypto/tmhash`, RFC-6962 Merkle roots and inclusion proofs, Ed25519 key bytes, Amino JSON, sign and verify. |
-| `eld-tendermint-types` | Headers, votes, proposals, validators, genesis, `BitArray`, `PartSet`, `ValidateBasic`, and canonical sign bytes. |
+| `eld-tendermint-types` | Headers, blocks, votes, proposals, validators and proposer priority, duplicate-vote evidence, genesis, `BitArray`, `PartSet`, `ValidateBasic`, and canonical sign bytes. |
 | `eld-tendermint-config` | `config.toml` and `genesis.json`. The `eld-tendermint-config` binary prints chain id, moniker, proxy app, and the genesis validator set. |
 | `eld-tendermint-privval` | `privval.FilePV`: load a Go validator key and sign a vote or proposal, replaying the same height, round, and step and rejecting conflicting bytes. |
+| `eld-tendermint-p2p` | `p2p.NodeKey` and the secret-connection handshake. Loads `node_key.json` and checks `deriveSecrets` against the Go golden file. No reactor or dial loop. |
+| `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
 
 `tools/proto-compiler` is the prost-build binary used by `scripts/gen-proto.sh`.
 
@@ -35,7 +37,9 @@ eld-tendermint-config --home /path/to/node
 
 Edit `proto/tendermint/**` only when the Go schema changes, then regenerate. Do not hand-edit `crates/proto/src/prost/`.
 
-`tests/vectors.rs` matches mempool txs, blockchain messages including `BlockResponse`, privval ping, pubkey, vote, and proposal rows, consensus messages, pex, connection packets, statesync, evidence, deliver-tx nil-versus-empty `Data`, and one `RequestEcho` round-trip. `TestVoteSignBytesTestVectors` lives in `crates/types/tests/sign_bytes.rs`. The secret-connection handshake and `TestDeriveSecretsAndChallengeGolden` are a KDF check for the later p2p crate. `types/protobuf_test.go` generates keys and has no static hex.
+`tests/vectors.rs` matches mempool txs, blockchain messages including `BlockResponse`, privval ping, pubkey, vote, and proposal rows, consensus messages, pex, connection packets, statesync, evidence, deliver-tx nil-versus-empty `Data`, and one `RequestEcho` round-trip. `TestVoteSignBytesTestVectors` lives in `crates/types/tests/sign_bytes.rs`. `TestDeriveSecretsAndChallengeGolden` is checked in `crates/p2p`. The length-prefixed `RequestEcho` frame is checked in `crates/abci`. `types/protobuf_test.go` generates keys and has no static hex.
+
+Amino JSON for keys, the privval files, and `node_key.json` is implemented on the hand-written types. Prost ignores `jsontag` and `customname`, so the generated messages do not carry those names.
 
 `tendermint-rs` (`tendermint-proto` 0.40) already has Prost types for this ABCI shape, under `tendermint_proto::v0_34`. This repo does not depend on that crate:
 
@@ -48,8 +52,8 @@ Edit `proto/tendermint/**` only when the Go schema changes, then regenerate. Do 
 
 ## Still to do
 
-- **Amino names stay off the generated structs.** Prost ignores `jsontag`, `customname`, and names like `tendermint/PubKeyEd25519`. The generated messages have no `serde` derive. Amino JSON for keys and the privval state file is implemented on the hand-written crypto, types, and privval types.
-- **Live process check.** The hex tests compare bytes copied from the Go unit tests. Nothing here has spoken to a running `eld-tendermint` process.
-- **gRPC service stubs.** `ABCIApplication` and `BroadcastAPI` are messages only. Socket framing and gRPC servers come with the later `abci` crate.
-- **Secret connection.** The handshake and `deriveSecrets` golden file wait for the p2p crate.
-- **Curves and reactors.** Ed25519 is the only key type. secp256k1, consensus, the p2p reactor, and RPC are out of scope for this tree.
+- **Consensus.** The state machine is not ported. Blocks and votes can be built and checked. They are not executed.
+- **p2p reactor.** `NodeKey` and the secret connection are in place. The switch, PEX, and dial loop are not.
+- **Mempool.** Proto messages exist. The reactor does not.
+- **WAL.** The consensus write-ahead log is not ported.
+- **RPC.** The JSON-RPC server and client are not ported.
