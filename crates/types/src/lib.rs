@@ -21,6 +21,7 @@ mod time;
 mod tx;
 mod validator;
 mod vote;
+mod vote_set;
 
 pub use bits::BitArray;
 pub use block::Block;
@@ -41,6 +42,7 @@ pub use time::Time;
 pub use tx::{Tx, Txs};
 pub use validator::{Validator, ValidatorSet};
 pub use vote::Vote;
+pub use vote_set::VoteSet;
 
 pub use eld_tendermint_crypto::ADDRESS_SIZE;
 pub use eld_tendermint_crypto::Address;

@@ -130,7 +130,12 @@ pub fn apply_block(
     })
 }
 
-fn validate_block(state: &State, block: &Block) -> Result<(), Error> {
+/// Height, chain id, and header-hash checks from `ApplyBlock`, before any ABCI call.
+///
+/// # Errors
+///
+/// Returns the first mismatched field.
+pub fn validate_block(state: &State, block: &Block) -> Result<(), Error> {
     let wanted = if state.last_block_height == 0 {
         state.initial_height
     } else {

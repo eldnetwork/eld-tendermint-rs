@@ -10,6 +10,6 @@ mod state;
 mod store;
 
 pub use error::Error;
-pub use execution::{App, apply_block};
+pub use execution::{App, apply_block, validate_block};
 pub use state::{State, StateVersion, TM_CORE_SEMVER, make_genesis_state};
 pub use store::{STATE_KEY, StateStore};

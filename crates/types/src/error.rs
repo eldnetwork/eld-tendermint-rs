@@ -114,6 +114,10 @@ pub enum Error {
     EvidencePubKeyMismatch,
     EvidenceValidatorPowerMismatch,
     EvidenceTotalPowerMismatch,
+    UnexpectedVoteStep,
+    InvalidVoteIndex,
+    ConflictingVote,
+    DuplicateVoteSignature,
 }
 
 impl fmt::Display for Error {
@@ -264,6 +268,10 @@ impl fmt::Display for Error {
                     "total voting power from the evidence and our validator set does not match"
                 )
             }
+            Self::UnexpectedVoteStep => write!(f, "unexpected vote step"),
+            Self::InvalidVoteIndex => write!(f, "invalid vote validator index"),
+            Self::ConflictingVote => write!(f, "conflicting vote"),
+            Self::DuplicateVoteSignature => write!(f, "vote signature is non-deterministic"),
         }
     }
 }
