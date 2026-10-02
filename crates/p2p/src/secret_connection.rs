@@ -5,7 +5,7 @@
 //! bytes: a little-endian length, then the chunk. ChaCha20-Poly1305 adds a 16-byte tag.
 
 use std::io::{self, Read, Write};
-use std::net::Shutdown;
+use std::net::{Shutdown, TcpStream};
 use std::os::unix::net::UnixStream;
 
 use chacha20poly1305::aead::generic_array::GenericArray;
@@ -228,6 +228,31 @@ impl SplitIo for UnixStream {
 impl IoShutdown for UnixStream {
     fn shutdown_io(&self) -> io::Result<()> {
         self.shutdown(Shutdown::Both)
+    }
+}
+
+impl SplitIo for TcpStream {
+    type ReadHalf = TcpStream;
+    type WriteHalf = TcpStream;
+    type Shutdown = TcpStream;
+
+    fn split_io(self) -> io::Result<(Self::ReadHalf, Self::WriteHalf, Self::Shutdown)> {
+        let write = self.try_clone()?;
+        let shutdown = self.try_clone()?;
+        Ok((self, write, shutdown))
+    }
+}
+
+impl IoShutdown for TcpStream {
+    fn shutdown_io(&self) -> io::Result<()> {
+        self.shutdown(Shutdown::Both)
+    }
+}
+
+impl SecretConnection<TcpStream> {
+    pub(crate) fn clear_socket_timeouts(&self) -> io::Result<()> {
+        self.conn.set_read_timeout(None)?;
+        self.conn.set_write_timeout(None)
     }
 }
 

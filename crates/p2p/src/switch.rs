@@ -1,18 +1,26 @@
-//! `p2p.Switch` without the dial loop.
+//! `p2p.Switch` with dial and accept.
 //!
 //! A reactor is a name, a channel list, and an `on_receive` callback. `add_peer` starts
 //! an [`MConnection`](crate::MConnection) on a secret connection using the channels
-//! registered so far. There is no PEX, address book, or accept loop.
+//! registered so far. `listen` and `dial_persistent` run that handshake on TCP.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use crate::address::{NetAddress, parse_persistent_peers};
 use crate::connection::{ChannelDescriptor, MConnConfig, MConnection};
 use crate::error::Error;
-use crate::secret_connection::{SecretConnection, SplitIo};
+use crate::node_key::NodeKey;
+use crate::secret_connection::{SecretConnection, SplitIo, make_secret_connection};
 
 type ReceiveCb = Arc<dyn Fn(&str, u8, Vec<u8>) + Send + Sync>;
+
+const DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 
 struct PeerSlot {
     id: String,
@@ -33,11 +41,11 @@ impl PeerConn for MConnection {
     }
 
     fn close(&self) {
-        Self::close(self);
+        Self::close(self)
     }
 
     fn stop(&self) {
-        Self::stop(self);
+        Self::stop(self)
     }
 }
 
@@ -52,21 +60,37 @@ struct Inner {
     by_ch: HashMap<u8, ReceiveCb>,
     descriptors: Vec<ChannelDescriptor>,
     peers: Vec<PeerSlot>,
+    dialing: HashSet<String>,
+}
+
+struct State {
+    inner: Mutex<Inner>,
+    listener: Mutex<Option<TcpListener>>,
+    local_addr: Mutex<Option<SocketAddr>>,
+    accept_thread: Mutex<Option<JoinHandle<()>>>,
+    accepting: AtomicBool,
 }
 
 /// Registers reactors and runs one [`MConnection`](crate::MConnection) per peer.
 pub struct Switch {
-    inner: Mutex<Inner>,
+    state: Arc<State>,
 }
 
 impl Switch {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(Inner {
-                by_ch: HashMap::new(),
-                descriptors: Vec::new(),
-                peers: Vec::new(),
+            state: Arc::new(State {
+                inner: Mutex::new(Inner {
+                    by_ch: HashMap::new(),
+                    descriptors: Vec::new(),
+                    peers: Vec::new(),
+                    dialing: HashSet::new(),
+                }),
+                listener: Mutex::new(None),
+                local_addr: Mutex::new(None),
+                accept_thread: Mutex::new(None),
+                accepting: AtomicBool::new(false),
             }),
         }
     }
@@ -91,7 +115,7 @@ impl Switch {
         F: Fn(&str, u8, Vec<u8>) + Send + Sync + 'static,
     {
         let _name = name.into();
-        let mut inner = lock(&self.inner);
+        let mut inner = lock(&self.state.inner);
         let mut seen = HashMap::new();
         for desc in &channels {
             if desc.priority == 0 || desc.send_queue_capacity == 0 {
@@ -109,6 +133,68 @@ impl Switch {
         Ok(())
     }
 
+    /// Bind `laddr` (`host:port` or `tcp://host:port`) and accept secret connections.
+    ///
+    /// Port `0` picks a free port. The returned address is the bound socket.
+    /// Register reactors before the peer is accepted; `add_peer` snapshots them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNetAddress`] when `laddr` is not a socket address,
+    /// or [`Error::Io`] when the bind fails.
+    pub fn listen(&self, node_key: &NodeKey, laddr: &str) -> Result<SocketAddr, Error> {
+        let addr = parse_listen(laddr)?;
+        let listener = TcpListener::bind(addr).map_err(Error::Io)?;
+        let bound = listener.local_addr().map_err(Error::Io)?;
+        *lock(&self.state.listener) = Some(listener);
+        *lock(&self.state.local_addr) = Some(bound);
+        self.state.accepting.store(true, Ordering::SeqCst);
+        let state = Arc::clone(&self.state);
+        let key = node_key.clone();
+        let handle = thread::spawn(move || accept_loop(state, key));
+        *lock(&self.state.accept_thread) = Some(handle);
+        Ok(bound)
+    }
+
+    /// Dial every `ID@host:port` in a comma-separated `persistent_peers` string.
+    ///
+    /// An id mismatch or a refused connection skips that peer and continues.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidNetAddress`] when an entry does not parse.
+    pub fn dial_persistent(&self, node_key: &NodeKey, peers: &str) -> Result<(), Error> {
+        let addrs = parse_persistent_peers(peers)?;
+        for addr in addrs {
+            let _ = self.dial_address(node_key, &addr);
+        }
+        Ok(())
+    }
+
+    /// Dial one address. The secret-connection id must equal `addr.id`.
+    ///
+    /// Already-connected and in-progress ids return `Ok` and do not open a second socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::IdMismatch`] when the handshake id differs, or [`Error::Io`]
+    /// when the TCP connect or handshake fails.
+    pub fn dial_address(&self, node_key: &NodeKey, addr: &NetAddress) -> Result<(), Error> {
+        if self.is_connected_or_dialing(&addr.id) {
+            return Ok(());
+        }
+        {
+            let mut inner = lock(&self.state.inner);
+            if connected_or_dialing(&inner, &addr.id) {
+                return Ok(());
+            }
+            inner.dialing.insert(addr.id.clone());
+        }
+        let result = self.dial_locked(node_key, addr);
+        lock(&self.state.inner).dialing.remove(&addr.id);
+        result
+    }
+
     /// Start an `MConnection` for `node_id` on the secret connection.
     ///
     /// # Errors
@@ -123,46 +209,7 @@ impl Switch {
     where
         S: SplitIo,
     {
-        let node_id = node_id.into();
-        let (descriptors, routes) = {
-            let inner = lock(&self.inner);
-            let routes = inner
-                .descriptors
-                .iter()
-                .filter_map(|desc| {
-                    inner
-                        .by_ch
-                        .get(&desc.id)
-                        .map(|callback| (desc.id, Arc::clone(callback)))
-                })
-                .collect::<HashMap<_, _>>();
-            (inner.descriptors.clone(), routes)
-        };
-
-        let (reader, writer, shutdown) = conn.split()?;
-        let peer_id = node_id.clone();
-        let on_receive = move |ch_id: u8, bytes: Vec<u8>| {
-            if let Some(callback) = routes.get(&ch_id) {
-                callback(&peer_id, ch_id, bytes);
-            }
-        };
-        let conn = MConnection::start(
-            reader,
-            writer,
-            shutdown,
-            descriptors,
-            on_receive,
-            |_| {},
-            MConnConfig::default(),
-        )?;
-        let running = conn.running_flag();
-        lock(&self.inner).peers.push(PeerSlot {
-            id: node_id,
-            remote_addr: String::new(),
-            running,
-            conn: Box::new(conn),
-        });
-        Ok(())
+        insert_peer(&self.state, conn, node_id.into(), String::new())
     }
 
     /// Queue `bytes` on `ch_id` for one running peer.
@@ -170,7 +217,7 @@ impl Switch {
     /// Returns `false` when the peer is unknown, the peer has stopped, or the
     /// channel is not registered. The peer stays up.
     pub fn send(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
-        let inner = lock(&self.inner);
+        let inner = lock(&self.state.inner);
         let Some(peer) = inner
             .peers
             .iter()
@@ -186,7 +233,7 @@ impl Switch {
     /// The connection threads exit on their own. [`Self::stop`] joins them.
     /// Unknown ids are ignored. Other peers stay up.
     pub fn stop_peer(&self, peer_id: &str) {
-        let inner = lock(&self.inner);
+        let inner = lock(&self.state.inner);
         if let Some(peer) = inner.peers.iter().find(|peer| peer.id == peer_id) {
             peer.running.store(false, Ordering::SeqCst);
             peer.conn.close();
@@ -198,7 +245,7 @@ impl Switch {
     /// Returns `false` when any peer rejects the send. An unknown channel rejects
     /// the send and leaves the peer up. Returns `true` when there are no peers.
     pub fn broadcast(&self, ch_id: u8, bytes: &[u8]) -> bool {
-        let inner = lock(&self.inner);
+        let inner = lock(&self.state.inner);
         inner
             .peers
             .iter()
@@ -209,7 +256,7 @@ impl Switch {
     /// Running peers. A peer that hit a fatal receive error is omitted.
     #[must_use]
     pub fn peers(&self) -> Vec<PeerInfo> {
-        let inner = lock(&self.inner);
+        let inner = lock(&self.state.inner);
         inner
             .peers
             .iter()
@@ -221,13 +268,44 @@ impl Switch {
             .collect()
     }
 
-    /// Shut down every peer and join its threads.
+    /// Shut down the listener, every peer, and join their threads.
     pub fn stop(&self) {
-        let peers = std::mem::take(&mut lock(&self.inner).peers);
+        self.state.accepting.store(false, Ordering::SeqCst);
+        if let Some(addr) = *lock(&self.state.local_addr) {
+            let _ = TcpStream::connect_timeout(&wake_addr(addr), Duration::from_millis(200));
+        }
+        if let Some(handle) = lock(&self.state.accept_thread).take() {
+            let _ = handle.join();
+        }
+        *lock(&self.state.listener) = None;
+        let peers = std::mem::take(&mut lock(&self.state.inner).peers);
         for peer in peers {
             peer.running.store(false, Ordering::SeqCst);
             peer.conn.stop();
         }
+    }
+
+    fn is_connected_or_dialing(&self, id: &str) -> bool {
+        connected_or_dialing(&lock(&self.state.inner), id)
+    }
+
+    fn dial_locked(&self, node_key: &NodeKey, addr: &NetAddress) -> Result<(), Error> {
+        let stream =
+            TcpStream::connect_timeout(&addr.socket_addr(), DIAL_TIMEOUT).map_err(Error::Io)?;
+        let conn = handshake(stream, &node_key.priv_key)?;
+        let got = hex::encode(conn.remote_pub_key().address());
+        if got != addr.id {
+            return Err(Error::IdMismatch {
+                expected: addr.id.clone(),
+                got,
+            });
+        }
+        insert_peer(
+            &self.state,
+            conn,
+            addr.id.clone(),
+            addr.socket_addr().to_string(),
+        )
     }
 }
 
@@ -240,6 +318,143 @@ impl Default for Switch {
 impl Drop for Switch {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn accept_loop(state: Arc<State>, node_key: NodeKey) {
+    loop {
+        if !state.accepting.load(Ordering::SeqCst) {
+            break;
+        }
+        let listener = {
+            let guard = lock(&state.listener);
+            match guard.as_ref() {
+                Some(listener) => match listener.try_clone() {
+                    Ok(listener) => listener,
+                    Err(_) => break,
+                },
+                None => break,
+            }
+        };
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                if !state.accepting.load(Ordering::SeqCst) {
+                    break;
+                }
+                let remote = peer.to_string();
+                if let Ok(conn) = handshake(stream, &node_key.priv_key) {
+                    let id = hex::encode(conn.remote_pub_key().address());
+                    let _ = insert_peer(&state, conn, id, remote);
+                }
+            }
+            Err(_) => {
+                if !state.accepting.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn handshake(
+    stream: TcpStream,
+    key: &eld_tendermint_crypto::PrivKey,
+) -> Result<SecretConnection<TcpStream>, Error> {
+    stream
+        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(Error::Io)?;
+    stream
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(Error::Io)?;
+    let conn = make_secret_connection(stream, key)?;
+    conn.clear_socket_timeouts().map_err(Error::Io)?;
+    Ok(conn)
+}
+
+fn insert_peer<S>(
+    state: &State,
+    conn: SecretConnection<S>,
+    node_id: String,
+    remote_addr: String,
+) -> Result<(), Error>
+where
+    S: SplitIo,
+{
+    if already_connected(&lock(&state.inner), &node_id) {
+        return Ok(());
+    }
+    let (descriptors, routes) = {
+        let inner = lock(&state.inner);
+        let routes = inner
+            .descriptors
+            .iter()
+            .filter_map(|desc| {
+                inner
+                    .by_ch
+                    .get(&desc.id)
+                    .map(|callback| (desc.id, Arc::clone(callback)))
+            })
+            .collect::<HashMap<_, _>>();
+        (inner.descriptors.clone(), routes)
+    };
+
+    let (reader, writer, shutdown) = conn.split()?;
+    let peer_id = node_id.clone();
+    let on_receive = move |ch_id: u8, bytes: Vec<u8>| {
+        if let Some(callback) = routes.get(&ch_id) {
+            callback(&peer_id, ch_id, bytes);
+        }
+    };
+    let started = MConnection::start(
+        reader,
+        writer,
+        shutdown,
+        descriptors,
+        on_receive,
+        |_| {},
+        MConnConfig::default(),
+    )?;
+    let running = started.running_flag();
+    let mut inner = lock(&state.inner);
+    if already_connected(&inner, &node_id) {
+        drop(inner);
+        started.stop();
+        return Ok(());
+    }
+    inner.peers.push(PeerSlot {
+        id: node_id,
+        remote_addr,
+        running,
+        conn: Box::new(started),
+    });
+    Ok(())
+}
+
+fn connected_or_dialing(inner: &Inner, id: &str) -> bool {
+    inner.dialing.contains(id) || already_connected(inner, id)
+}
+
+fn already_connected(inner: &Inner, id: &str) -> bool {
+    inner
+        .peers
+        .iter()
+        .any(|peer| peer.id == id && peer.running.load(Ordering::SeqCst))
+}
+
+fn parse_listen(laddr: &str) -> Result<SocketAddr, Error> {
+    let laddr = laddr.trim().strip_prefix("tcp://").unwrap_or(laddr.trim());
+    laddr
+        .parse::<SocketAddr>()
+        .map_err(|_| Error::InvalidNetAddress {
+            addr: laddr.to_owned(),
+        })
+}
+
+fn wake_addr(addr: SocketAddr) -> SocketAddr {
+    if addr.ip().is_unspecified() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), addr.port())
+    } else {
+        addr
     }
 }
 

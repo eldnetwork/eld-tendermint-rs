@@ -41,6 +41,15 @@ pub enum Error {
     },
     /// Peer did not answer `PacketPing` before `pongTimeout`.
     PongTimeout,
+    /// `ID@host:port` could not be parsed.
+    InvalidNetAddress {
+        addr: String,
+    },
+    /// Secret-connection id is not the id in the dialed URL.
+    IdMismatch {
+        expected: String,
+        got: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -77,6 +86,10 @@ impl fmt::Display for Error {
             }
             Self::UnknownChannel { id } => write!(f, "unknown channel {id:X}"),
             Self::PongTimeout => write!(f, "pong timeout"),
+            Self::InvalidNetAddress { addr } => write!(f, "invalid net address: {addr}"),
+            Self::IdMismatch { expected, got } => {
+                write!(f, "conn.ID ({got}) dialed ID ({expected}) mismatch")
+            }
         }
     }
 }
