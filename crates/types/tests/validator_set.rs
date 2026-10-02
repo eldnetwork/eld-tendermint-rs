@@ -1,6 +1,6 @@
 //! Proposer selection from `types/validator_set_test.go`.
 //!
-//! Random keys, protobuf round-trips, commit checks, and validator updates are not here.
+//! Random keys, protobuf round-trips, and commit checks are not here.
 
 use eld_tendermint_types::{Error, Validator, ValidatorSet};
 
@@ -156,6 +156,104 @@ fn copy_increment_leaves_the_original_unchanged() {
     assert_eq!(after, before);
     assert_eq!(proposer_address(&set), proposer);
     assert_ne!(copied_priorities, before);
+}
+
+fn priority_of(set: &ValidatorSet, address: &[u8]) -> i64 {
+    set.validators()
+        .iter()
+        .find(|validator| validator.address == address)
+        .expect("validator")
+        .proposer_priority
+}
+
+fn power_of(set: &ValidatorSet, address: &[u8]) -> i64 {
+    set.validators()
+        .iter()
+        .find(|validator| validator.address == address)
+        .expect("validator")
+        .voting_power
+}
+
+/// Two equal-power validators after `ValidatorSet::new`: lower address priority -10,
+/// higher address priority 10.
+fn pair() -> (ValidatorSet, Vec<u8>, Vec<u8>) {
+    let low = addr(1);
+    let high = addr(2);
+    let set = ValidatorSet::new(vec![bare(low.clone(), 10), bare(high.clone(), 10)]).expect("set");
+    assert_eq!(
+        priority_of(&set, &low),
+        -10,
+        "low priority before the change"
+    );
+    assert_eq!(
+        priority_of(&set, &high),
+        10,
+        "high priority before the change"
+    );
+    (set, low, high)
+}
+
+#[test]
+fn power_change_keeps_proposer_priority() {
+    let (mut set, low, high) = pair();
+    let before = priority_of(&set, &low);
+    set.update_with_change_set(&[bare(low.clone(), 20)])
+        .expect("power change");
+    let after = priority_of(&set, &low);
+    assert_eq!(
+        after, before,
+        "power change reset priority\n got: {after}\nwant: {before}"
+    );
+    assert_eq!(power_of(&set, &low), 20);
+    assert_eq!(priority_of(&set, &high), 10);
+}
+
+#[test]
+fn new_validator_gets_centered_negative_priority() {
+    let (mut set, low, _high) = pair();
+    let added = addr(3);
+    set.update_with_change_set(&[bare(added.clone(), 10)])
+        .expect("add");
+    // Post-update total is 30. New priority starts at -(30 + 30>>3) = -33, then the
+    // average -11 is subtracted, leaving -22.
+    let got = priority_of(&set, &added);
+    assert_eq!(got, -22, "new validator priority\n got: {got}\nwant: -22");
+    assert_eq!(priority_of(&set, &low), 1);
+}
+
+#[test]
+fn zero_power_removes_the_validator() {
+    let (mut set, low, high) = pair();
+    set.update_with_change_set(&[bare(high.clone(), 0)])
+        .expect("remove");
+    assert!(
+        set.validators()
+            .iter()
+            .all(|validator| validator.address != high),
+        "removed validator is still in the set"
+    );
+    assert_eq!(power_of(&set, &low), 10);
+    assert_eq!(priority_of(&set, &low), 0);
+    assert_eq!(set.total_voting_power(), 10);
+}
+
+#[test]
+fn duplicate_change_is_rejected() {
+    let (mut set, low, _) = pair();
+    let err = set
+        .update_with_change_set(&[bare(low.clone(), 5), bare(low, 6)])
+        .expect_err("duplicate");
+    assert_eq!(err, Error::DuplicateValidator);
+}
+
+#[test]
+fn removing_every_validator_is_rejected() {
+    let (mut set, low, high) = pair();
+    let err = set
+        .update_with_change_set(&[bare(low, 0), bare(high, 0)])
+        .expect_err("empty");
+    assert_eq!(err, Error::EmptyValidatorSet);
+    assert_eq!(set.validators().len(), 2);
 }
 
 #[test]

@@ -1,0 +1,14 @@
+[package]
+name = "eld-tendermint-state"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.34 genesis state and ApplyBlock."
+
+[dependencies]
+eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-proto = { path = "../proto" }
+eld-tendermint-store = { path = "../store" }
+eld-tendermint-types = { path = "../types" }
+prost = "0.13"

@@ -44,6 +44,9 @@ pub enum Error {
     DuplicateValidator,
     MissingProposer,
     VotingPowerTooHigh,
+    ValidatorVotingPowerTooHigh {
+        got: i64,
+    },
     AddressMismatch,
     BlockMaxBytesNotPositive {
         got: i64,
@@ -178,6 +181,11 @@ impl fmt::Display for Error {
             Self::DuplicateValidator => write!(f, "duplicate validator address"),
             Self::MissingProposer => write!(f, "validator set has no proposer"),
             Self::VotingPowerTooHigh => write!(f, "total voting power is too high"),
+            Self::ValidatorVotingPowerTooHigh { got } => write!(
+                f,
+                "to prevent clipping/overflow, voting power can't be higher than {}, got {got}",
+                crate::MAX_TOTAL_VOTING_POWER
+            ),
             Self::AddressMismatch => write!(f, "validator address does not match public key"),
             Self::BlockMaxBytesNotPositive { got } => {
                 write!(f, "block max bytes must be greater than 0, got {got}")

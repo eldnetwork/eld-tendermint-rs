@@ -353,6 +353,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-state"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-crypto",
+ "eld-tendermint-proto",
+ "eld-tendermint-store",
+ "eld-tendermint-types",
+ "prost",
+]
+
+[[package]]
 name = "eld-tendermint-store"
 version = "0.0.1"
 dependencies = [

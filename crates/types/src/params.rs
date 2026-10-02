@@ -1,6 +1,6 @@
 //! Consensus parameters needed by genesis and `Header.ConsensusHash`.
 //!
-//! `UpdateConsensusParams` is left for block execution.
+//! `UpdateConsensusParams` overlays the ABCI sections that are present.
 
 use prost::Message;
 
@@ -168,6 +168,101 @@ impl ConsensusParams {
             }
         }
         Ok(())
+    }
+
+    /// `types.UpdateConsensusParams`. Only a present ABCI section replaces that section.
+    /// `time_iota_ms` is not in the ABCI block params and stays as it was.
+    #[must_use]
+    pub fn update(&self, update: &eld_tendermint_proto::abci::ConsensusParams) -> Self {
+        let mut next = self.clone();
+        if let Some(block) = &update.block {
+            next.block.max_bytes = block.max_bytes;
+            next.block.max_gas = block.max_gas;
+        }
+        if let Some(evidence) = &update.evidence {
+            next.evidence.max_age_num_blocks = evidence.max_age_num_blocks;
+            next.evidence.max_age_duration = match &evidence.max_age_duration {
+                Some(duration) => Duration {
+                    seconds: duration.seconds,
+                    nanos: duration.nanos,
+                },
+                None => Duration {
+                    seconds: 0,
+                    nanos: 0,
+                },
+            };
+            next.evidence.max_bytes = evidence.max_bytes;
+        }
+        if let Some(validator) = &update.validator {
+            next.validator.pub_key_types = validator.pub_key_types.clone();
+        }
+        if let Some(version) = &update.version {
+            next.version.app_version = version.app_version;
+        }
+        next
+    }
+
+    /// Protobuf `tendermint.types.ConsensusParams`.
+    #[must_use]
+    pub fn to_proto(&self) -> eld_tendermint_proto::types::ConsensusParams {
+        eld_tendermint_proto::types::ConsensusParams {
+            block: Some(eld_tendermint_proto::types::BlockParams {
+                max_bytes: self.block.max_bytes,
+                max_gas: self.block.max_gas,
+                time_iota_ms: self.block.time_iota_ms,
+            }),
+            evidence: Some(eld_tendermint_proto::types::EvidenceParams {
+                max_age_num_blocks: self.evidence.max_age_num_blocks,
+                max_age_duration: Some(prost_types::Duration {
+                    seconds: self.evidence.max_age_duration.seconds,
+                    nanos: self.evidence.max_age_duration.nanos,
+                }),
+                max_bytes: self.evidence.max_bytes,
+            }),
+            validator: Some(eld_tendermint_proto::types::ValidatorParams {
+                pub_key_types: self.validator.pub_key_types.clone(),
+            }),
+            version: Some(eld_tendermint_proto::types::VersionParams {
+                app_version: self.version.app_version,
+            }),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::validate`]. A missing section uses the zero value,
+    /// which then fails validation.
+    pub fn try_from_proto(
+        proto: &eld_tendermint_proto::types::ConsensusParams,
+    ) -> Result<Self, Error> {
+        let block = proto.block.unwrap_or_default();
+        let evidence = proto.evidence.unwrap_or_default();
+        let duration = evidence.max_age_duration.unwrap_or_default();
+        let validator = proto.validator.clone().unwrap_or_default();
+        let version = proto.version.unwrap_or_default();
+        let params = Self {
+            block: BlockParams {
+                max_bytes: block.max_bytes,
+                max_gas: block.max_gas,
+                time_iota_ms: block.time_iota_ms,
+            },
+            evidence: EvidenceParams {
+                max_age_num_blocks: evidence.max_age_num_blocks,
+                max_age_duration: Duration {
+                    seconds: duration.seconds,
+                    nanos: duration.nanos,
+                },
+                max_bytes: evidence.max_bytes,
+            },
+            validator: ValidatorParams {
+                pub_key_types: validator.pub_key_types,
+            },
+            version: VersionParams {
+                app_version: version.app_version,
+            },
+        };
+        params.validate()?;
+        Ok(params)
     }
 }
 
