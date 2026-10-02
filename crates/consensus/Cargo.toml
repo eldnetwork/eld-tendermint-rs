@@ -14,4 +14,6 @@ eld-tendermint-proto = { path = "../proto" }
 eld-tendermint-state = { path = "../state" }
 eld-tendermint-store = { path = "../store" }
 eld-tendermint-types = { path = "../types" }
+crc32c = "0.6"
 prost = "0.13"
+prost-types = "0.13"

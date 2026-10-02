@@ -1,19 +1,22 @@
-//! One validator's round state. No WAL and no network.
+//! One validator's round state. No network.
+
+use std::path::Path;
 
 use eld_tendermint_config::ConsensusConfig;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
-use eld_tendermint_privval::FilePV;
+use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::{App as ExecApp, State as ChainState, apply_block};
 use eld_tendermint_store::{BlockStore, MemDb};
 use eld_tendermint_types::{
-    BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal,
+    BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal, Time,
     ValidatorSet, Vote,
 };
 use prost::Message;
 
 use crate::error::Error;
 use crate::votes::HeightVoteSet;
+use crate::wal::{self, Replay, Wal};
 
 /// Round step. Ordered so later steps compare greater, matching the Go checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,6 +29,38 @@ pub enum Step {
     Precommit,
     PrecommitWait,
     Commit,
+}
+
+impl Step {
+    /// Go `RoundStepType`. NewHeight is 1.
+    #[must_use]
+    fn as_wal(self) -> u32 {
+        match self {
+            Self::NewHeight => 1,
+            Self::NewRound => 2,
+            Self::Propose => 3,
+            Self::Prevote => 4,
+            Self::PrevoteWait => 5,
+            Self::Precommit => 6,
+            Self::PrecommitWait => 7,
+            Self::Commit => 8,
+        }
+    }
+
+    #[must_use]
+    fn from_wal(step: u32) -> Option<Self> {
+        match step {
+            1 => Some(Self::NewHeight),
+            2 => Some(Self::NewRound),
+            3 => Some(Self::Propose),
+            4 => Some(Self::Prevote),
+            5 => Some(Self::PrevoteWait),
+            6 => Some(Self::Precommit),
+            7 => Some(Self::PrecommitWait),
+            8 => Some(Self::Commit),
+            _ => None,
+        }
+    }
 }
 
 /// What a validator broadcasts. The group delivers these by method call.
@@ -69,6 +104,8 @@ pub struct Node<E: ExecApp, C: MempoolApp> {
     reap_count: u32,
     outbox: Vec<Msg>,
     pub(crate) timeout: Option<Scheduled>,
+    wal: Option<Wal>,
+    replaying: bool,
 }
 
 impl<E: ExecApp, C: MempoolApp> Node<E, C> {
@@ -83,6 +120,34 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
+    ) -> Result<Self, Error> {
+        Self::boot(config, pv, chain_state, mempool, exec, None)
+    }
+
+    /// [`Self::start`], then replay `wal_path` before round 0 when the file has records.
+    ///
+    /// # Errors
+    ///
+    /// Returns a WAL, replay, or validator-set error.
+    pub fn start_with_wal(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        wal_path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let wal = Wal::open(wal_path)?;
+        Self::boot(config, pv, chain_state, mempool, exec, Some(wal))
+    }
+
+    fn boot(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        wal: Option<Wal>,
     ) -> Result<Self, Error> {
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
@@ -111,9 +176,23 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
             reap_count: 0,
             outbox: Vec::new(),
             timeout: None,
+            wal,
+            replaying: false,
         };
-        node.enter_new_round(height, 0);
+        if node.wal.is_some() {
+            node.catchup()?;
+        }
+        if node.step == Step::NewHeight {
+            let height = node.height;
+            node.enter_new_round(height, 0);
+        }
         Ok(node)
+    }
+
+    /// Signature bytes `FilePV` stored for the last height, round, and step.
+    #[must_use]
+    pub fn last_signature(&self) -> Option<Vec<u8>> {
+        self.pv.last_sign_state.signature.clone()
     }
 
     #[must_use]
@@ -351,6 +430,9 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
     }
 
     fn decide_proposal(&mut self, height: i64, round: i32) {
+        if self.replaying {
+            return;
+        }
         let (block, parts, pol_round) = if let (Some(block), Some(parts)) =
             (self.valid_block.clone(), self.valid_parts.clone())
         {
@@ -385,6 +467,13 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         self.proposal = Some(proposal.clone());
         self.proposal_block = Some(block);
         self.proposal_parts = Some(parts.clone());
+        let now = Time::now();
+        self.wal_sync(&wal::proposal_message(now, &proposal));
+        for index in 0..parts.total() {
+            if let Some(part) = parts.get_part(index) {
+                self.wal_sync(&wal::part_message(now, height, round, part));
+            }
+        }
         self.outbox.push(Msg::Proposal(proposal));
         for index in 0..parts.total() {
             if let Some(part) = parts.get_part(index) {
@@ -636,6 +725,8 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         if self.block_store.save_block(&block, &parts, &seen).is_err() {
             return;
         }
+        let committed = self.height;
+        self.wal_sync(&wal::end_height_message(Time::now(), committed));
         self.last_commit = self.votes.precommits(commit_round).cloned();
         self.chain_state = new_state;
         self.validators = self.chain_state.validators.copy();
@@ -686,7 +777,11 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
     }
 
     fn broadcast_vote(&mut self, vote_type: SignedMsgType, block_id: BlockId) -> Result<(), Error> {
+        if self.replaying {
+            return Ok(());
+        }
         let vote = self.signed_vote(vote_type, block_id)?;
+        self.wal_sync(&wal::vote_message(Time::now(), &vote));
         self.outbox.push(Msg::Vote(vote));
         Ok(())
     }
@@ -711,7 +806,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         };
         self.pv
             .sign_vote(self.chain_state.chain_id.as_str(), &mut vote)
-            .map_err(|err| Error::Privval(err.to_string()))?;
+            .map_err(Error::Privval)?;
         Ok(vote)
     }
 
@@ -728,6 +823,138 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
             round,
             step,
         });
+        if self.replaying {
+            return;
+        }
+        self.wal_sync(&wal::timeout_message(
+            Time::now(),
+            delay.as_nanos(),
+            height,
+            round,
+            step.as_wal(),
+        ));
+    }
+
+    /// `catchupReplay`. An `EndHeight` for this height means the block is stored,
+    /// so the next height starts at round 0 and this height is not replayed.
+    fn catchup(&mut self) -> Result<(), Error> {
+        while self
+            .wal
+            .as_ref()
+            .expect("wal")
+            .messages_after_end_height(self.height)?
+            .is_some()
+        {
+            self.height += 1;
+            self.round = 0;
+            self.step = Step::NewHeight;
+            self.votes = HeightVoteSet::new(
+                self.chain_state.chain_id.as_str(),
+                self.height,
+                self.validators.copy(),
+            );
+        }
+        let end_height = if self.height == self.chain_state.initial_height {
+            0
+        } else {
+            self.height - 1
+        };
+        let Some(messages) = self
+            .wal
+            .as_ref()
+            .expect("wal")
+            .messages_after_end_height(end_height)?
+        else {
+            return Err(Error::MissingEndHeight { height: end_height });
+        };
+        self.replaying = true;
+        for msg in messages {
+            self.read_replay(&msg)?;
+        }
+        self.replaying = false;
+        Ok(())
+    }
+
+    fn read_replay(
+        &mut self,
+        msg: &eld_tendermint_proto::consensus::TimedWalMessage,
+    ) -> Result<(), Error> {
+        match wal::replay_of(msg)? {
+            Replay::Ignored | Replay::EndHeight(_) => Ok(()),
+            Replay::Proposal(proposal) => {
+                self.on_proposal(proposal);
+                Ok(())
+            }
+            Replay::Part { part, .. } => {
+                self.on_part(part);
+                Ok(())
+            }
+            Replay::Vote(vote) => self.replay_vote(vote),
+            Replay::Timeout {
+                height,
+                round,
+                step,
+                ..
+            } => {
+                let Some(step) = Step::from_wal(step) else {
+                    return Ok(());
+                };
+                let scheduled = Scheduled {
+                    delay_nanos: 0,
+                    height,
+                    round,
+                    step,
+                };
+                self.on_timeout(&scheduled);
+                Ok(())
+            }
+        }
+    }
+
+    /// Deliver a WAL vote. Our own vote is not signed again. A different block id
+    /// at the same height, round, and step is `FilePV`'s conflicting-data error.
+    fn replay_vote(&mut self, vote: Vote) -> Result<(), Error> {
+        if vote.validator_address == self.address() {
+            self.reject_conflicting_vote(&vote)?;
+        }
+        self.on_vote(vote);
+        Ok(())
+    }
+
+    fn reject_conflicting_vote(&mut self, vote: &Vote) -> Result<(), Error> {
+        let step = match vote.vote_type {
+            SignedMsgType::Prevote => STEP_PREVOTE,
+            SignedMsgType::Precommit => STEP_PRECOMMIT,
+            _ => return Ok(()),
+        };
+        let stored = {
+            let state = &self.pv.last_sign_state;
+            if state.height != vote.height || state.round != vote.round || state.step != step {
+                return Ok(());
+            }
+            state.sign_bytes.clone()
+        };
+        let chain_id = self.chain_state.chain_id.as_str().to_owned();
+        let sign_bytes = vote.sign_bytes(&chain_id);
+        if stored.as_deref() == Some(sign_bytes.as_slice()) {
+            return Ok(());
+        }
+        let mut copy = vote.clone();
+        self.pv
+            .sign_vote(&chain_id, &mut copy)
+            .map_err(Error::Privval)
+    }
+
+    fn wal_sync(&mut self, msg: &eld_tendermint_proto::consensus::TimedWalMessage) {
+        if self.replaying {
+            return;
+        }
+        let Some(wal) = self.wal.as_mut() else {
+            return;
+        };
+        if let Err(err) = wal.write_message(msg) {
+            panic!("failed to write consensus WAL: {err}");
+        }
     }
 }
 
