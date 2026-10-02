@@ -4,10 +4,14 @@ version = "0.0.1"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-description = "Tendermint 0.34 v0 FIFO mempool."
+description = "Tendermint 0.34 v0 FIFO mempool and the mempool reactor."
 
 [dependencies]
 eld-tendermint-config = { path = "../config" }
+eld-tendermint-p2p = { path = "../p2p" }
 eld-tendermint-proto = { path = "../proto" }
 eld-tendermint-types = { path = "../types" }
 prost = "0.13"
+
+[dev-dependencies]
+eld-tendermint-crypto = { path = "../crypto" }

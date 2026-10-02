@@ -1,6 +1,6 @@
 //! v0 `CListMempool`. FIFO. CheckTx, reap, and recheck are synchronous.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use eld_tendermint_config::{MEMPOOL_V0, MempoolConfig};
@@ -26,6 +26,7 @@ pub trait App {
 struct Entry {
     gas_wanted: i64,
     tx: Tx,
+    senders: HashSet<u16>,
 }
 
 /// Ordered pool of transactions that passed `CheckTx`.
@@ -97,10 +98,34 @@ impl<A: App> Mempool<A> {
     /// Returns [`Error::MempoolIsFull`], [`Error::TxTooLarge`], [`Error::TxInCache`],
     /// or [`Error::PreCheck`].
     pub fn check_tx(&mut self, tx: &Tx) -> Result<(), Error> {
-        self.check_tx_inner(tx, CheckTxType::New)
+        self.check_tx_with_sender(tx, 0)
     }
 
-    fn check_tx_inner(&mut self, tx: &Tx, kind: CheckTxType) -> Result<(), Error> {
+    /// `CheckTx` recording `sender_id` so the reactor does not gossip the tx back.
+    ///
+    /// `0` is the local sender. A cache hit on a tx still in the pool adds
+    /// `sender_id` and returns [`Error::TxInCache`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::check_tx`].
+    pub fn check_tx_with_sender(&mut self, tx: &Tx, sender_id: u16) -> Result<(), Error> {
+        self.check_tx_inner(tx, CheckTxType::New, sender_id)
+    }
+
+    pub(crate) fn broadcasts(&self) -> bool {
+        self.config.broadcast
+    }
+
+    /// Pooled txs in arrival order, each with the peer ids that have sent it.
+    pub(crate) fn pooled(&self) -> Vec<(Tx, HashSet<u16>)> {
+        self.txs
+            .iter()
+            .map(|entry| (entry.tx.clone(), entry.senders.clone()))
+            .collect()
+    }
+
+    fn check_tx_inner(&mut self, tx: &Tx, kind: CheckTxType, sender_id: u16) -> Result<(), Error> {
         let tx_size = i64::try_from(tx.as_bytes().len()).unwrap_or(i64::MAX);
         self.is_full(tx_size)?;
         if tx_size > self.config.max_tx_bytes {
@@ -115,6 +140,7 @@ impl<A: App> Mempool<A> {
             }
         }
         if !self.cache.push(tx) {
+            self.note_sender(tx, sender_id);
             return Err(Error::TxInCache);
         }
         let response = self.app.check_tx(RequestCheckTx {
@@ -132,9 +158,12 @@ impl<A: App> Mempool<A> {
                 return Ok(());
             }
             self.txs_bytes += tx_size;
+            let mut senders = HashSet::new();
+            senders.insert(sender_id);
             self.txs.push_back(Entry {
                 gas_wanted: response.gas_wanted,
                 tx: tx.clone(),
+                senders,
             });
             self.notify_txs_available();
             return Ok(());
@@ -236,6 +265,12 @@ impl<A: App> Mempool<A> {
         }
         if !self.txs.is_empty() {
             self.notify_txs_available();
+        }
+    }
+
+    fn note_sender(&mut self, tx: &Tx, sender_id: u16) {
+        if let Some(entry) = self.txs.iter_mut().find(|entry| entry.tx == *tx) {
+            entry.senders.insert(sender_id);
         }
     }
 
