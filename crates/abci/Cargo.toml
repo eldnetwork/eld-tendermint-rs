@@ -1,0 +1,14 @@
+[package]
+name = "eld-tendermint-abci"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Tendermint 0.17 ABCI socket client."
+
+[dependencies]
+eld-tendermint-proto = { path = "../proto" }
+prost = "0.13"
+
+[dev-dependencies]
+hex = "0.4"
