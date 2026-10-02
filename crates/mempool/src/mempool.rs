@@ -98,7 +98,16 @@ impl<A: App> Mempool<A> {
     /// Returns [`Error::MempoolIsFull`], [`Error::TxTooLarge`], [`Error::TxInCache`],
     /// or [`Error::PreCheck`].
     pub fn check_tx(&mut self, tx: &Tx) -> Result<(), Error> {
-        self.check_tx_with_sender(tx, 0)
+        self.check_tx_response(tx).map(|_| ())
+    }
+
+    /// `CheckTx` returning the ABCI response. A non-zero code is `Ok` and is not pooled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::check_tx`].
+    pub fn check_tx_response(&mut self, tx: &Tx) -> Result<ResponseCheckTx, Error> {
+        self.check_tx_inner(tx, CheckTxType::New, 0)
     }
 
     /// `CheckTx` recording `sender_id` so the reactor does not gossip the tx back.
@@ -111,6 +120,7 @@ impl<A: App> Mempool<A> {
     /// Returns the same errors as [`Self::check_tx`].
     pub fn check_tx_with_sender(&mut self, tx: &Tx, sender_id: u16) -> Result<(), Error> {
         self.check_tx_inner(tx, CheckTxType::New, sender_id)
+            .map(|_| ())
     }
 
     pub(crate) fn broadcasts(&self) -> bool {
@@ -125,7 +135,12 @@ impl<A: App> Mempool<A> {
             .collect()
     }
 
-    fn check_tx_inner(&mut self, tx: &Tx, kind: CheckTxType, sender_id: u16) -> Result<(), Error> {
+    fn check_tx_inner(
+        &mut self,
+        tx: &Tx,
+        kind: CheckTxType,
+        sender_id: u16,
+    ) -> Result<ResponseCheckTx, Error> {
         let tx_size = i64::try_from(tx.as_bytes().len()).unwrap_or(i64::MAX);
         self.is_full(tx_size)?;
         if tx_size > self.config.max_tx_bytes {
@@ -155,7 +170,7 @@ impl<A: App> Mempool<A> {
             if let Err(err) = self.is_full(tx_size) {
                 self.cache.remove(tx);
                 let _ = err;
-                return Ok(());
+                return Ok(response);
             }
             self.txs_bytes += tx_size;
             let mut senders = HashSet::new();
@@ -166,12 +181,12 @@ impl<A: App> Mempool<A> {
                 senders,
             });
             self.notify_txs_available();
-            return Ok(());
+            return Ok(response);
         }
         if !self.config.keep_invalid_txs_in_cache {
             self.cache.remove(tx);
         }
-        Ok(())
+        Ok(response)
     }
 
     /// `ReapMaxBytesMaxGas`. Insertion order. Does not remove txs.

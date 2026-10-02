@@ -347,6 +347,7 @@ dependencies = [
 name = "eld-tendermint-node"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "eld-tendermint-abci",
  "eld-tendermint-config",
  "eld-tendermint-consensus",

@@ -88,6 +88,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let pub_key_json = serde_json::from_str(&marshal_pub_key(&pub_key)).map_err(fail)?;
     let node_id = node_key.id().map_err(fail)?;
 
+    let waiter = app.waiter();
     let mempool = Mempool::new(config.mempool.clone(), app.clone()).map_err(fail)?;
     let wal_path = config.consensus.wal_file();
     let node = if wal_path.is_file() {
@@ -96,7 +97,8 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         Node::start(config.consensus.clone(), pv, state, mempool, app)
     }
     .map_err(fail)?;
-    let mempool_reactor = MempoolReactor::from_shared(node.mempool());
+    let node_mempool = node.mempool();
+    let mempool_reactor = MempoolReactor::from_shared(Arc::clone(&node_mempool));
     let consensus = ConsensusReactor::new(vec![node]);
     let pex = PexReactor::new(
         AddrBook::open(config.p2p.addr_book_file()),
@@ -151,6 +153,9 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             pub_key: pub_key_json,
             voting_power,
             block_store,
+            mempool: node_mempool,
+            waiter,
+            commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
         }),
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };
@@ -237,6 +242,10 @@ fn open_block_store(config: &Config) -> Result<Arc<BlockStore<RocksDb>>, Error> 
     std::fs::create_dir_all(&db_dir).map_err(fail)?;
     let db = RocksDb::open(db_dir.join("blockstore")).map_err(fail)?;
     Ok(Arc::new(BlockStore::new(db)))
+}
+
+fn std_duration(duration: eld_tendermint_config::Duration) -> Duration {
+    Duration::from_nanos(u64::try_from(duration.as_nanos()).unwrap_or(0))
 }
 
 fn open_state_store(config: &Config) -> Result<StateStore<RocksDb>, Error> {

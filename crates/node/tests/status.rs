@@ -9,15 +9,19 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use base64::Engine;
 use eld_tendermint_abci::{read_message, write_message};
-use eld_tendermint_crypto::marshal_pub_key;
+use eld_tendermint_config::MempoolConfig;
+use eld_tendermint_crypto::{PrivKey, marshal_pub_key, sum};
+use eld_tendermint_mempool::{App, Mempool};
 use eld_tendermint_p2p::NodeKey;
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{
-    Request, Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx,
-    ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo, ResponseInitChain, request,
-    response,
+    Request, RequestCheckTx, Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit,
+    ResponseDeliverTx, ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo,
+    ResponseInitChain, request, response,
 };
+use eld_tendermint_types::Tx;
 use serde_json::Value;
 
 const CHAIN_ID: &str = "status-chain";
@@ -53,10 +57,8 @@ fn status_health_and_unknown_method() {
     assert_eq!(health["id"], "abc");
     assert_eq!(health["result"], serde_json::json!({}));
 
-    let (_code, _headers, unknown) = post(
-        &addr,
-        r#"{"jsonrpc":"2.0","id":1,"method":"broadcast_tx_commit"}"#,
-    );
+    let (_code, _headers, unknown) =
+        post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"subscribe"}"#);
     assert_eq!(unknown["error"]["code"], -32601);
     assert_eq!(unknown["error"]["message"], "Method not found");
     assert!(unknown.get("result").is_none());
@@ -81,6 +83,119 @@ fn rpc_bind_failure_exits_1() {
         "stderr: {stderr}"
     );
     drop(hold);
+}
+
+/// `params.tx` is standard base64, the amino JSON encoding of a byte slice.
+#[test]
+fn broadcast_tx_sync_returns_code_and_hash() {
+    let home = TestHome::new("sync-ok");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let tx = b"pay";
+    let (_code, _headers, body) = post(&node.rpc_addr(), &broadcast("broadcast_tx_sync", tx));
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["code"], 0);
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["data"], "");
+}
+
+#[test]
+fn broadcast_tx_sync_returns_reject_code() {
+    let home = TestHome::new("sync-reject");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let tx = b"reject";
+    let (_code, _headers, body) = post(&node.rpc_addr(), &broadcast("broadcast_tx_sync", tx));
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["code"], 9);
+    assert_eq!(body["result"]["log"], "rejected");
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+}
+
+#[test]
+fn rejected_check_tx_is_not_pooled() {
+    struct Reject;
+    impl App for Reject {
+        fn check_tx(&mut self, _request: RequestCheckTx) -> ResponseCheckTx {
+            ResponseCheckTx {
+                code: 9,
+                ..ResponseCheckTx::default()
+            }
+        }
+    }
+    let mut pool = Mempool::new(MempoolConfig::test_config(), Reject).expect("pool");
+    let tx = Tx::new(b"reject".as_slice());
+    let response = pool.check_tx_response(&tx).expect("check");
+    assert_eq!(response.code, 9);
+    assert_eq!(pool.size(), 0);
+}
+
+#[test]
+fn broadcast_tx_commit_returns_deliver_code() {
+    let home = TestHome::new("commit");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"50ms\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = true
+";
+    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    let mut node = NodeChild::spawn(&home.path);
+    let tx = b"pay";
+    let (_code, _headers, body) = post_for(
+        &node.rpc_addr(),
+        &broadcast("broadcast_tx_commit", tx),
+        Duration::from_secs(20),
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["check_tx"]["code"], 0);
+    assert_eq!(body["result"]["deliver_tx"]["code"], 7);
+    assert!(body["result"]["height"].as_i64().unwrap() >= 1);
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+}
+
+#[test]
+fn broadcast_tx_commit_times_out_when_undelivered() {
+    let home = TestHome::new("timeout");
+    let proxy = stub_abci();
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        false,
+        "timeout_broadcast_tx_commit = \"200ms\"",
+        "",
+    );
+    let mut node = NodeChild::spawn(&home.path);
+    let (_code, _headers, body) = post_for(
+        &node.rpc_addr(),
+        &broadcast("broadcast_tx_commit", b"pay"),
+        Duration::from_secs(5),
+    );
+    assert!(body.get("result").is_none(), "{body}");
+    assert_eq!(body["error"]["code"], -32603);
+    assert_eq!(body["error"]["message"], "Internal error");
+    assert_eq!(
+        body["error"]["data"],
+        "timed out waiting for tx to be included in a block"
+    );
+}
+
+fn broadcast(method: &str, tx: &[u8]) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(tx);
+    format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"tx":"{encoded}"}}}}"#)
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
 }
 
 struct TestHome {
@@ -198,13 +313,30 @@ impl Drop for NodeChild {
 }
 
 fn write_home(home: &Path, proxy_app: &str, rpc_laddr: &str) {
+    write_configured(home, proxy_app, rpc_laddr, true, "", "");
+}
+
+fn write_configured(
+    home: &Path,
+    proxy_app: &str,
+    rpc_laddr: &str,
+    own_validator: bool,
+    rpc_extra: &str,
+    consensus: &str,
+) {
     let pv = FilePV::load_or_gen_file_pv(
         home.join("config/priv_validator_key.json"),
         home.join("data/priv_validator_state.json"),
     )
     .unwrap();
     NodeKey::load_or_gen(home.join("config/node_key.json")).unwrap();
-    let pub_key: Value = serde_json::from_str(&marshal_pub_key(&pv.get_pub_key())).unwrap();
+    let own_key: Value = serde_json::from_str(&marshal_pub_key(&pv.get_pub_key())).unwrap();
+    let pub_key = if own_validator {
+        own_key
+    } else {
+        let other = PrivKey::generate().public_key().expect("ed25519 key");
+        serde_json::from_str(&marshal_pub_key(&other)).unwrap()
+    };
     let genesis = serde_json::json!({
         "genesis_time": "2019-10-13T16:14:44Z",
         "chain_id": CHAIN_ID,
@@ -221,7 +353,7 @@ fn write_home(home: &Path, proxy_app: &str, rpc_laddr: &str) {
     )
     .unwrap();
     let config = format!(
-        "proxy_app = {proxy_app:?}\nmoniker = \"status-node\"\n\n[rpc]\nladdr = {rpc_laddr:?}\n\n[p2p]\nladdr = \"tcp://127.0.0.1:0\"\npersistent_peers = \"\"\n"
+        "proxy_app = {proxy_app:?}\nmoniker = \"status-node\"\n\n[rpc]\nladdr = {rpc_laddr:?}\n{rpc_extra}\n\n[p2p]\nladdr = \"tcp://127.0.0.1:0\"\npersistent_peers = \"\"\n\n{consensus}"
     );
     std::fs::write(home.join("config/config.toml"), config).unwrap();
 }
@@ -249,15 +381,25 @@ fn serve_abci(mut stream: TcpStream) {
                 response::Value::InitChain(ResponseInitChain::default())
             }
             Some(request::Value::Flush(_)) => response::Value::Flush(ResponseFlush {}),
-            Some(request::Value::CheckTx(_)) => {
-                response::Value::CheckTx(ResponseCheckTx::default())
+            Some(request::Value::CheckTx(req)) => {
+                let code = if req.tx.as_ref() == b"reject" { 9 } else { 0 };
+                response::Value::CheckTx(ResponseCheckTx {
+                    code,
+                    log: if code == 0 {
+                        String::new()
+                    } else {
+                        "rejected".to_owned()
+                    },
+                    ..ResponseCheckTx::default()
+                })
             }
             Some(request::Value::BeginBlock(_)) => {
                 response::Value::BeginBlock(ResponseBeginBlock::default())
             }
-            Some(request::Value::DeliverTx(_)) => {
-                response::Value::DeliverTx(ResponseDeliverTx::default())
-            }
+            Some(request::Value::DeliverTx(_)) => response::Value::DeliverTx(ResponseDeliverTx {
+                code: 7,
+                ..ResponseDeliverTx::default()
+            }),
             Some(request::Value::EndBlock(_)) => {
                 response::Value::EndBlock(ResponseEndBlock::default())
             }
@@ -286,10 +428,12 @@ fn bin_path() -> PathBuf {
 }
 
 fn post(addr: &str, body: &str) -> (u16, String, Value) {
+    post_for(addr, body, Duration::from_secs(5))
+}
+
+fn post_for(addr: &str, body: &str, timeout: Duration) -> (u16, String, Value) {
     let mut stream = TcpStream::connect(addr).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
     let req = format!(
         "POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()

@@ -1,15 +1,21 @@
-//! `POST /` JSON-RPC for `status` and `health`.
+//! `POST /` JSON-RPC for `status`, `health`, and broadcast tx.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
+use eld_tendermint_crypto::sum;
+use eld_tendermint_mempool::Mempool;
+use eld_tendermint_proto::abci::{Event, EventAttribute, ResponseCheckTx, ResponseDeliverTx};
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::Time;
+use eld_tendermint_types::{Time, Tx};
 use serde_json::{Map, Value};
 
+use crate::app::AbciApp;
 use crate::error::{Error, fail};
+use crate::wait::TxWaiter;
 
 /// Fields `status` reads. Height comes from the RocksDB block store.
 pub struct NodeStatus {
@@ -23,6 +29,9 @@ pub struct NodeStatus {
     pub pub_key: Value,
     pub voting_power: i64,
     pub block_store: Arc<BlockStore<RocksDb>>,
+    pub mempool: Arc<Mutex<Mempool<AbciApp>>>,
+    pub waiter: Arc<TxWaiter>,
+    pub commit_timeout: Duration,
 }
 
 /// Accept JSON-RPC calls until the listener closes.
@@ -66,7 +75,9 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
     match method {
         "health" => rpc_result(id, Value::Object(Map::new())),
         "status" => rpc_result(id, status_result(status)),
-        _ => rpc_error(id, -32601, "Method not found"),
+        "broadcast_tx_sync" => broadcast_tx_sync(&id, request, status),
+        "broadcast_tx_commit" => broadcast_tx_commit(&id, request, status),
+        _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
 
@@ -132,6 +143,157 @@ fn hex_upper(bytes: &[u8]) -> String {
     hex::encode(bytes).to_ascii_uppercase()
 }
 
+fn broadcast_tx_sync(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let tx = match tx_param(request) {
+        Ok(tx) => tx,
+        Err(data) => return rpc_error_data(id.clone(), -32602, "Invalid params", &data),
+    };
+    match check_tx(status, &tx) {
+        Ok(response) => rpc_result(id.clone(), sync_result(&response, &tx)),
+        Err(err) => internal_error(id.clone(), &err),
+    }
+}
+
+fn broadcast_tx_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let tx = match tx_param(request) {
+        Ok(tx) => tx,
+        Err(data) => return rpc_error_data(id.clone(), -32602, "Invalid params", &data),
+    };
+    let hash = sum(&tx);
+    let subscription = status.waiter.subscribe(hash);
+    let response = match check_tx(status, &tx) {
+        Ok(response) => response,
+        Err(err) => {
+            status.waiter.cancel(subscription);
+            return internal_error(id.clone(), &err);
+        }
+    };
+    if response.code != 0 {
+        status.waiter.cancel(subscription);
+        return rpc_result(
+            id.clone(),
+            commit_result(&response, &ResponseDeliverTx::default(), &hash, 0),
+        );
+    }
+    match subscription.recv_timeout(status.commit_timeout) {
+        Ok(delivered) => rpc_result(
+            id.clone(),
+            commit_result(&response, &delivered.response, &hash, delivered.height),
+        ),
+        Err(_) => {
+            status.waiter.cancel(subscription);
+            rpc_error_data(
+                id.clone(),
+                -32603,
+                "Internal error",
+                "timed out waiting for tx to be included in a block",
+            )
+        }
+    }
+}
+
+fn check_tx(
+    status: &NodeStatus,
+    tx: &[u8],
+) -> Result<ResponseCheckTx, eld_tendermint_mempool::Error> {
+    let mut pool = status.mempool.lock().unwrap_or_else(|err| err.into_inner());
+    pool.check_tx_response(&Tx::new(tx.to_vec()))
+}
+
+/// `params.tx` is standard base64, the amino JSON encoding of `[]byte`.
+fn tx_param(request: &Value) -> Result<Vec<u8>, String> {
+    let Some(text) = request
+        .get("params")
+        .and_then(|params| params.get("tx"))
+        .and_then(Value::as_str)
+    else {
+        return Err("missing params.tx".to_owned());
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|_| "params.tx is not base64".to_owned())
+}
+
+fn sync_result(response: &ResponseCheckTx, tx: &[u8]) -> Value {
+    serde_json::json!({
+        "code": response.code,
+        "data": hex_upper(&response.data),
+        "log": response.log,
+        "codespace": response.codespace,
+        "hash": hex_upper(&sum(tx)),
+    })
+}
+
+fn commit_result(
+    check_tx: &ResponseCheckTx,
+    deliver_tx: &ResponseDeliverTx,
+    hash: &[u8; 32],
+    height: i64,
+) -> Value {
+    serde_json::json!({
+        "check_tx": check_tx_json(check_tx),
+        "deliver_tx": deliver_tx_json(deliver_tx),
+        "hash": hex_upper(hash),
+        "height": height,
+    })
+}
+
+fn check_tx_json(response: &ResponseCheckTx) -> Value {
+    serde_json::json!({
+        "code": response.code,
+        "data": b64(&response.data),
+        "log": response.log,
+        "info": response.info,
+        "gas_wanted": response.gas_wanted.to_string(),
+        "gas_used": response.gas_used.to_string(),
+        "events": events_json(&response.events),
+        "codespace": response.codespace,
+        "sender": response.sender,
+        "priority": response.priority.to_string(),
+        "mempoolError": response.mempool_error,
+    })
+}
+
+fn deliver_tx_json(response: &ResponseDeliverTx) -> Value {
+    serde_json::json!({
+        "code": response.code,
+        "data": b64(&response.data),
+        "log": response.log,
+        "info": response.info,
+        "gas_wanted": response.gas_wanted.to_string(),
+        "gas_used": response.gas_used.to_string(),
+        "events": events_json(&response.events),
+        "codespace": response.codespace,
+    })
+}
+
+fn events_json(events: &[Event]) -> Value {
+    Value::Array(events.iter().map(event_json).collect())
+}
+
+fn event_json(event: &Event) -> Value {
+    serde_json::json!({
+        "type": event.r#type,
+        "attributes": event.attributes.iter().map(attribute_json).collect::<Vec<_>>(),
+    })
+}
+
+fn attribute_json(attribute: &EventAttribute) -> Value {
+    serde_json::json!({
+        "key": b64(&attribute.key),
+        "value": b64(&attribute.value),
+        "index": attribute.index,
+    })
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn internal_error(id: Value, err: &impl std::fmt::Display) -> Value {
+    rpc_error_data(id, -32603, "Internal error", &err.to_string())
+}
+
 fn echo_id(request: &Value) -> Value {
     match request.get("id") {
         Some(Value::Number(number)) => Value::Number(number.clone()),
@@ -153,6 +315,14 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
         "jsonrpc": "2.0",
         "id": id,
         "error": { "code": code, "message": message },
+    })
+}
+
+fn rpc_error_data(id: Value, code: i64, message: &str, data: &str) -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message, "data": data },
     })
 }
 
