@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use eld_tendermint_p2p::{ChannelDescriptor, Switch};
 use eld_tendermint_proto::blockchain::{self, Message};
-use eld_tendermint_state::{App, IndexTxs, State, StateStore, apply_block, validate_block};
+use eld_tendermint_state::{
+    App, CommitEvents, IndexTxs, State, StateStore, apply_block, validate_block,
+};
 use eld_tendermint_store::{BlockStore, Db};
 use eld_tendermint_types::{BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, CommitSig};
 use prost::Message as ProstMessage;
@@ -42,6 +44,7 @@ struct Inner<A: App, D: Db> {
     app: A,
     pool: Pool,
     tx_index: Option<Arc<dyn IndexTxs>>,
+    events: Option<Arc<dyn CommitEvents>>,
 }
 
 /// Fast-sync pool on a [`Switch`].
@@ -65,6 +68,7 @@ impl<A: App, D: Db> Reactor<A, D> {
         state: State,
         app: A,
         tx_index: Option<Arc<dyn IndexTxs>>,
+        events: Option<Arc<dyn CommitEvents>>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
@@ -74,6 +78,7 @@ impl<A: App, D: Db> Reactor<A, D> {
                 app,
                 pool: Pool::new(),
                 tx_index,
+                events,
             })),
         }
     }
@@ -301,6 +306,9 @@ impl<A: App, D: Db> Inner<A, D> {
             index
                 .index_committed(&block, &applied.deliver_txs)
                 .map_err(|_| peer_id.to_owned())?;
+        }
+        if let Some(events) = &self.events {
+            events.on_commit(&block, &seen, &applied.deliver_txs);
         }
         self.states
             .save(&applied.state)

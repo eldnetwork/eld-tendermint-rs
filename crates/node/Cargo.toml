@@ -27,6 +27,7 @@ eld-tendermint-types = { path = "../types" }
 base64 = "0.22"
 hex = "0.4"
 serde_json = "1"
+tungstenite = "0.26"
 
 [dev-dependencies]
 base64 = "0.22"

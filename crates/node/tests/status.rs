@@ -1,6 +1,6 @@
 //! `eld-tendermint start` serves genesis `status` at height 0.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -23,6 +23,8 @@ use eld_tendermint_proto::abci::{
 };
 use eld_tendermint_types::Tx;
 use serde_json::Value;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Message, WebSocket};
 
 const CHAIN_ID: &str = "status-chain";
 
@@ -369,6 +371,232 @@ skip_timeout_commit = false
     );
 }
 
+#[test]
+fn websocket_subscribe_new_block_and_tx() {
+    let home = TestHome::new("ws");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"50ms\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = true
+";
+    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let height = chain_height(&addr);
+
+    let (mut socket, _) =
+        tungstenite::connect(format!("ws://{addr}/websocket")).expect("websocket upgrade");
+    socket
+        .send(Message::text(
+            r#"{"jsonrpc":"2.0","id":9,"method":"health"}"#,
+        ))
+        .expect("health");
+    let health = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        value["id"] == 9
+    });
+    assert_eq!(health["error"]["code"], -32601);
+    assert_eq!(health["error"]["message"], "Method not found");
+    assert!(health["error"].get("data").is_none(), "{health}");
+
+    let new_block = "tm.event = 'NewBlock'";
+    socket
+        .send(Message::text(rpc_call(1, "subscribe", new_block)))
+        .expect("subscribe NewBlock");
+    let ack = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        is_ack(value, 1)
+    });
+    assert_eq!(ack["result"], serde_json::json!({}));
+    let event = read_matching(&mut socket, Duration::from_secs(20), |value| {
+        header_height(value).is_some_and(|got| got > height)
+    });
+    assert_eq!(event["id"], 1);
+    assert_eq!(event["result"]["query"], new_block);
+    assert_eq!(event["result"]["data"]["canonical"], false);
+    assert_eq!(event["result"]["events"]["tm.event"][0], "NewBlock");
+
+    socket
+        .send(Message::text(rpc_call(
+            4,
+            "subscribe",
+            "tm.event = 'NewRound'",
+        )))
+        .expect("subscribe NewRound");
+    let unsupported = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        value["id"] == 4
+    });
+    assert_eq!(unsupported["error"]["code"], -32603);
+    assert_eq!(unsupported["error"]["message"], "Internal error");
+
+    socket
+        .send(Message::text(rpc_call(
+            5,
+            "unsubscribe",
+            "tm.event = 'NoSuch'",
+        )))
+        .expect("unsubscribe missing");
+    let missing = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        value["id"] == 5
+    });
+    assert_eq!(missing["error"]["code"], -32603);
+    assert_eq!(missing["error"]["data"], "subscription not found");
+
+    let tx_query = "tm.event = 'Tx'";
+    socket
+        .send(Message::text(rpc_call(2, "subscribe", tx_query)))
+        .expect("subscribe Tx");
+    let tx_ack = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        is_ack(value, 2)
+    });
+    assert_eq!(tx_ack["result"], serde_json::json!({}));
+
+    let tx = b"ws-pay";
+    let hash = hex_upper(&sum(tx));
+    let addr_http = addr.clone();
+    let body = broadcast("broadcast_tx_commit", tx);
+    let http = thread::spawn(move || post_for(&addr_http, &body, Duration::from_secs(20)));
+    let want = hash.clone();
+    let tx_event = read_matching(&mut socket, Duration::from_secs(20), move |value| {
+        value["result"]["data"]["hash"].as_str() == Some(want.as_str())
+    });
+    assert_eq!(tx_event["id"], 2);
+    assert_eq!(tx_event["result"]["query"], tx_query);
+    assert_eq!(tx_event["result"]["events"]["tm.event"][0], "Tx");
+    let (_code, _headers, committed) = http.join().expect("broadcast thread");
+    assert!(committed.get("error").is_none(), "{committed}");
+    assert_eq!(committed["result"]["hash"], hash);
+
+    socket
+        .send(Message::text(rpc_call(3, "unsubscribe", new_block)))
+        .expect("unsubscribe NewBlock");
+    let unsub = read_matching(&mut socket, Duration::from_secs(5), |value| {
+        is_ack(value, 3)
+    });
+    assert_eq!(unsub["result"], serde_json::json!({}));
+
+    let before = chain_height(&addr);
+    let start = Instant::now();
+    let mut moved = false;
+    while start.elapsed() < Duration::from_secs(10) {
+        match read_ws(&mut socket, Duration::from_millis(200)) {
+            Ok(value) => assert_no_new_block(&value),
+            Err(err) if is_timeout(&err) => {}
+            Err(err) => panic!("{err}"),
+        }
+        if chain_height(&addr) > before {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "status height did not move after unsubscribe");
+    match read_ws(&mut socket, Duration::from_millis(400)) {
+        Ok(value) => assert_no_new_block(&value),
+        Err(err) if is_timeout(&err) => {}
+        Err(err) => panic!("{err}"),
+    }
+
+    drop(socket);
+    assert!(node.still_running(), "node exited when the socket dropped");
+    let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    assert!(status.get("error").is_none(), "{status}");
+    assert_eq!(status["result"]["node_info"]["network"], CHAIN_ID);
+    assert!(node.still_running(), "node exited after status");
+}
+
+fn chain_height(addr: &str) -> i64 {
+    let (_code, _headers, status) = post(addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    status["result"]["sync_info"]["latest_block_height"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("height: {status}"))
+}
+
+type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+fn rpc_call(id: i64, method: &str, query: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": { "query": query },
+    })
+    .to_string()
+}
+
+fn is_ack(value: &Value, id: i64) -> bool {
+    value["id"] == id && value.get("error").is_none() && value["result"].get("data").is_none()
+}
+
+fn assert_no_new_block(value: &Value) {
+    assert_ne!(
+        value["result"]["events"]["tm.event"][0].as_str(),
+        Some("NewBlock"),
+        "{value}"
+    );
+}
+
+fn header_height(value: &Value) -> Option<i64> {
+    value["result"]["data"]["signed_header"]["header"]["height"]
+        .as_str()
+        .and_then(|text| text.parse().ok())
+}
+
+fn read_matching(
+    socket: &mut Socket,
+    total: Duration,
+    mut pred: impl FnMut(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + total;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            panic!("timed out waiting for a websocket message");
+        }
+        match read_ws(socket, left.min(Duration::from_secs(2))) {
+            Ok(value) if pred(&value) => return value,
+            Ok(_) => {}
+            Err(err) if is_timeout(&err) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+}
+
+fn read_ws(socket: &mut Socket, timeout: Duration) -> Result<Value, tungstenite::Error> {
+    match socket.get_mut() {
+        MaybeTlsStream::Plain(tcp) => tcp.set_read_timeout(Some(timeout)).expect("timeout"),
+        _ => panic!("expected a plain websocket"),
+    }
+    loop {
+        match socket.read()? {
+            Message::Text(text) => {
+                let text = text.as_ref();
+                return Ok(serde_json::from_str(text).unwrap_or_else(|err| panic!("{err}: {text}")));
+            }
+            Message::Ping(data) => {
+                socket.send(Message::Pong(data))?;
+            }
+            Message::Close(_) => return Err(tungstenite::Error::ConnectionClosed),
+            _ => {}
+        }
+    }
+}
+
+fn is_timeout(err: &tungstenite::Error) -> bool {
+    matches!(
+        err,
+        tungstenite::Error::Io(io)
+            if matches!(
+                io.kind(),
+                ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
+            )
+    )
+}
+
 fn wait_for_height(addr: &str, want: i64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -469,6 +697,10 @@ impl NodeChild {
             panic!("expected rpc address, got {line:?}\n{stderr}");
         };
         addr.to_owned()
+    }
+
+    fn still_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     fn wait_exit(&mut self) -> std::process::ExitStatus {

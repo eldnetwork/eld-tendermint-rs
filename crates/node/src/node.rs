@@ -27,12 +27,13 @@ use eld_tendermint_mempool::{
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::RequestInfo;
-use eld_tendermint_state::{IndexTxs, StateStore, TxIndex, load_or_init_chain};
+use eld_tendermint_state::{CommitEvents, IndexTxs, StateStore, TxIndex, load_or_init_chain};
 use eld_tendermint_store::{BlockStore, RocksDb};
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
+use crate::ws::{CommitPublisher, SubscriptionHub};
 
 /// `eld-tendermint start [--home <dir>]`. Blocks on the RPC accept loop.
 ///
@@ -87,6 +88,9 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let tx_for_reactors = tx_index
         .as_ref()
         .map(|index| Arc::clone(index) as Arc<dyn IndexTxs>);
+    let subscriptions = Arc::new(SubscriptionHub::new());
+    let events: Option<Arc<dyn CommitEvents>> =
+        Some(Arc::new(CommitPublisher::new(Arc::clone(&subscriptions))));
     let blockchain = if fast_sync {
         Some(BlockchainReactor::new(
             Arc::clone(&block_store),
@@ -94,6 +98,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             state.clone(),
             app.clone(),
             tx_for_reactors.clone(),
+            events.clone(),
         ))
     } else {
         None
@@ -129,6 +134,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             wal_path: wal_path.is_file().then_some(wal_path),
             evidence: Some(evidence_for_node),
             tx_index: tx_for_reactors,
+            events,
         },
     )
     .map_err(fail)?;
@@ -207,6 +213,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
             app: rpc_app,
             tx_index,
+            subscriptions,
         }),
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };

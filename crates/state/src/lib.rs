@@ -16,4 +16,4 @@ pub use execution::{App, AppliedBlock, apply_block, validate_block};
 pub use init_chain::load_or_init_chain;
 pub use state::{State, StateVersion, TM_CORE_SEMVER, make_genesis_state};
 pub use store::{STATE_KEY, StateStore};
-pub use txindex::{IndexTxs, TxIndex};
+pub use txindex::{CommitEvents, IndexTxs, TxIndex};

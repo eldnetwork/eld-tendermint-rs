@@ -8,7 +8,9 @@ use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::SignedMsgType;
-use eld_tendermint_state::{App as ExecApp, IndexTxs, State as ChainState, apply_block};
+use eld_tendermint_state::{
+    App as ExecApp, CommitEvents, IndexTxs, State as ChainState, apply_block,
+};
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal, Time,
@@ -65,7 +67,7 @@ impl Step {
     }
 }
 
-/// Optional WAL file, evidence pool, and tx index for [`Node::start_with_store_extras`].
+/// Optional WAL file, evidence pool, tx index, and commit events.
 pub struct NodeExtras {
     /// Replay this file before round 0 when it is set.
     pub wal_path: Option<PathBuf>,
@@ -73,6 +75,8 @@ pub struct NodeExtras {
     pub evidence: Option<Arc<dyn ProposalEvidence>>,
     /// Index DeliverTx results after each saved block.
     pub tx_index: Option<Arc<dyn IndexTxs>>,
+    /// Publish `NewBlock` and `Tx` after each saved block.
+    pub events: Option<Arc<dyn CommitEvents>>,
 }
 
 /// What a validator broadcasts. The group delivers these by method call.
@@ -104,6 +108,7 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     block_store: Arc<BlockStore<D>>,
     evidence: Option<Arc<dyn ProposalEvidence>>,
     tx_index: Option<Arc<dyn IndexTxs>>,
+    events: Option<Arc<dyn CommitEvents>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -146,6 +151,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
                 wal_path: None,
                 evidence: None,
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -174,6 +180,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
                 wal_path: None,
                 evidence: Some(evidence),
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -202,6 +209,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
                 wal_path: Some(wal_path.as_ref().to_path_buf()),
                 evidence: None,
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -232,6 +240,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 wal_path: None,
                 evidence: None,
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -278,6 +287,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 wal_path: None,
                 evidence: Some(evidence),
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -307,6 +317,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 wal_path: Some(wal_path.as_ref().to_path_buf()),
                 evidence: None,
                 tx_index: None,
+                events: None,
             },
         )
     }
@@ -348,6 +359,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             block_store,
             evidence: extras.evidence,
             tx_index: extras.tx_index,
+            events: extras.events,
             exec,
             votes,
             proposal: None,
@@ -959,6 +971,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             if index.index_committed(&block, &applied.deliver_txs).is_err() {
                 return;
             }
+        }
+        if let Some(events) = &self.events {
+            events.on_commit(&block, &seen, &applied.deliver_txs);
         }
         // Drop committed txs before the next height reaps, or the same hash is indexed again.
         let _ = self

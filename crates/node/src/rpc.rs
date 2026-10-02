@@ -1,8 +1,9 @@
-//! `POST /` JSON-RPC for `status`, `health`, broadcast tx, block reads, and the tx index.
+//! `POST /` JSON-RPC, and `GET /websocket` for `subscribe` and `unsubscribe`.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use base64::Engine;
@@ -40,6 +41,8 @@ pub struct NodeStatus {
     pub app: AbciApp,
     /// Open when `[tx_index] indexer` is not `null`.
     pub tx_index: Option<Arc<TxIndex<RocksDb>>>,
+    /// Live `NewBlock` and `Tx` subscriptions.
+    pub subscriptions: Arc<crate::ws::SubscriptionHub>,
 }
 
 /// Accept JSON-RPC calls until the listener closes.
@@ -50,23 +53,35 @@ pub struct NodeStatus {
 /// stop the loop.
 pub fn serve(listener: TcpListener, status: Arc<NodeStatus>) -> Result<(), Error> {
     for incoming in listener.incoming() {
-        let Ok(mut stream) = incoming else {
+        let Ok(stream) = incoming else {
             continue;
         };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-        let _ = handle(&mut stream, &status);
+        let status = Arc::clone(&status);
+        thread::spawn(move || {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+            let _ = handle(stream, &status);
+        });
     }
     Ok(())
 }
 
-fn handle(stream: &mut impl ReadWrite, status: &NodeStatus) -> Result<(), Error> {
-    let (request_line, _headers, body) = read_request(stream)?;
+fn handle(mut stream: TcpStream, status: &NodeStatus) -> Result<(), Error> {
+    let (request_line, headers, body) = read_request(&mut stream)?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
+    if method == "GET" && path == "/websocket" {
+        if upgrade_websocket(&mut stream, &headers)? {
+            let _ = stream.set_read_timeout(None);
+            let _ = stream.set_write_timeout(None);
+            let _ = stream.set_nonblocking(true);
+            crate::ws::run(stream, &status.subscriptions);
+        }
+        return Ok(());
+    }
     if method != "POST" || path != "/" {
-        write_raw(stream, 404, "Not Found", b"")?;
+        write_raw(&mut stream, 404, "Not Found", b"")?;
         return Ok(());
     }
     let response = match serde_json::from_slice::<Value>(&body) {
@@ -74,7 +89,33 @@ fn handle(stream: &mut impl ReadWrite, status: &NodeStatus) -> Result<(), Error>
         Err(_) => rpc_error(Value::Null, -32700, "Parse error. Invalid JSON"),
     };
     let bytes = serde_json::to_vec(&response).map_err(fail)?;
-    write_raw(stream, 200, "OK", &bytes)
+    write_raw(&mut stream, 200, "OK", &bytes)
+}
+
+/// `true` when the stream is a WebSocket. A missing key is HTTP 400 and `false`.
+fn upgrade_websocket(stream: &mut TcpStream, headers: &[String]) -> Result<bool, Error> {
+    let Some(key) = header_value(headers, "sec-websocket-key") else {
+        write_raw(stream, 400, "Bad Request", b"")?;
+        return Ok(false);
+    };
+    let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+    let raw = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {accept}\r\n\
+         \r\n"
+    );
+    stream.write_all(raw.as_bytes()).map_err(fail)?;
+    stream.flush().map_err(fail)?;
+    Ok(true)
+}
+
+fn header_value<'a>(headers: &'a [String], name: &str) -> Option<&'a str> {
+    headers.iter().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name).then_some(value.trim())
+    })
 }
 
 fn dispatch(request: &Value, status: &NodeStatus) -> Value {
@@ -506,6 +547,34 @@ fn block_id_json(block_id: &BlockId) -> Value {
             "hash": hex_upper(&block_id.part_set_header.hash),
         },
     })
+}
+
+/// Commit result for the block that just became the tip. `canonical` is false.
+pub(crate) fn new_block_data(block: &Block, commit: &Commit) -> Value {
+    serde_json::json!({
+        "signed_header": {
+            "header": header_json(&block.header),
+            "commit": commit_json(commit),
+        },
+        "canonical": false,
+    })
+}
+
+/// `ResultTx` for one DeliverTx in the block that just committed.
+pub(crate) fn tx_event_data(
+    height: i64,
+    index: usize,
+    raw: &[u8],
+    deliver: &ResponseDeliverTx,
+) -> Option<Value> {
+    let index = u32::try_from(index).ok()?;
+    let stored = TxResult {
+        height,
+        index,
+        tx: raw.to_vec().into(),
+        result: Some(deliver.clone()),
+    };
+    Some(result_tx_json(&sum(raw), &stored))
 }
 
 fn commit_json(commit: &Commit) -> Value {
@@ -941,7 +1010,3 @@ fn write_raw(stream: &mut impl Write, status: u16, reason: &str, body: &[u8]) ->
     stream.write_all(body).map_err(fail)?;
     stream.flush().map_err(fail)
 }
-
-trait ReadWrite: Read + Write {}
-
-impl<T: Read + Write> ReadWrite for T {}

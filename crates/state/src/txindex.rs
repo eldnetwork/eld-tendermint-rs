@@ -7,7 +7,7 @@
 use eld_tendermint_crypto::sum;
 use eld_tendermint_proto::abci::{ResponseDeliverTx, TxResult};
 use eld_tendermint_store::{Batch, Db};
-use eld_tendermint_types::Block;
+use eld_tendermint_types::{Block, Commit};
 use prost::Message;
 use prost::bytes::Bytes;
 
@@ -21,6 +21,14 @@ pub trait IndexTxs: Send + Sync {
     ///
     /// Returns a database or decode error. A failure must not panic the process.
     fn index_committed(&self, block: &Block, results: &[ResponseDeliverTx]) -> Result<(), Error>;
+}
+
+/// What the node calls after `save_block` and a successful index write.
+pub trait CommitEvents: Send + Sync {
+    /// Publish `NewBlock` for `seen` and one `Tx` per DeliverTx.
+    ///
+    /// A full or closed subscriber is dropped. This must not panic the process.
+    fn on_commit(&self, block: &Block, seen: &Commit, deliver_txs: &[ResponseDeliverTx]);
 }
 
 /// KV tx index over a database that is not the block store.

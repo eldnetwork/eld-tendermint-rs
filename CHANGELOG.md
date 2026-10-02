@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- WebSocket `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. A committed block is pushed as the commit result, and each DeliverTx is pushed as `ResultTx`.
 - Transaction index in `tx_index.db`. JSON-RPC `tx` and `tx_search` return a committed DeliverTx after a restart. The queries served are `tx.height` and `tx.hash`.
 - Evidence pool on channel `0x38`, stored in its own `evidence.db`. A duplicate vote is gossiped, included in the next proposed block once, and omitted after that block commits.
 - v0 blockchain reactor on channel `0x40`. A genesis node catches up to a taller peer when `fast_sync` is on, applying each block as soon as it is the next height.
