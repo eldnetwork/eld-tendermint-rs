@@ -1,0 +1,228 @@
+//! Pending and committed duplicate-vote evidence.
+//!
+//! Keys match `evidence/pool.go`: `0x01` is pending and `0x00` is committed.
+//! The suffix is the vote height, 16 uppercase hex digits, then `/`, then the
+//! uppercase hex of [`DuplicateVoteEvidence::hash`].
+
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use eld_tendermint_state::State;
+use eld_tendermint_store::Db;
+use eld_tendermint_types::{DuplicateVoteEvidence, EvidenceList};
+use prost::Message;
+
+use crate::Error;
+
+const PENDING: u8 = 0x01;
+const COMMITTED: u8 = 0x00;
+
+struct Sets {
+    chain_id: String,
+    validators: eld_tendermint_types::ValidatorSet,
+    last_validators: eld_tendermint_types::ValidatorSet,
+}
+
+struct Inner<D: Db> {
+    db: D,
+    sets: Sets,
+}
+
+/// What the proposer reads. [`Pool`] implements this.
+pub trait ProposalEvidence: Send + Sync {
+    /// Uncommitted evidence that fits in `max_bytes` of an `EvidenceList`.
+    fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence>;
+
+    /// Move `evidence` from pending to committed so it is not proposed again.
+    fn mark_committed(&self, evidence: &EvidenceList);
+
+    /// Replace the validator sets used by the next [`Pool::add`].
+    fn update_state(&self, state: &State);
+}
+
+/// Evidence stored in its own database, separate from the block store.
+pub struct Pool<D: Db> {
+    inner: Arc<Mutex<Inner<D>>>,
+}
+
+impl<D: Db> Clone for Pool<D> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<D: Db + 'static> Pool<D> {
+    /// Share this pool with a consensus node.
+    #[must_use]
+    pub fn for_proposal(self) -> Arc<dyn ProposalEvidence> {
+        Arc::new(self)
+    }
+}
+
+impl<D: Db> Pool<D> {
+    /// Empty pool over `db`, verified against `state`'s current and last sets.
+    #[must_use]
+    pub fn new(db: D, state: &State) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Inner {
+                db,
+                sets: sets_from(state),
+            })),
+        }
+    }
+
+    /// Verify and store `evidence`.
+    ///
+    /// An evidence hash that is already pending or committed is ignored.
+    /// `validate_basic` runs first. `verify` tries the current validator set,
+    /// then the last set when the signer is absent from the current one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] when the evidence fails those checks, and
+    /// [`Error::Db`] when the pending row cannot be written. Nothing is written
+    /// on an invalid vote.
+    pub fn add(&self, evidence: DuplicateVoteEvidence) -> Result<(), Error> {
+        let inner = lock(&self.inner);
+        if row_present(&inner.db, &key_pending(&evidence))?
+            || row_present(&inner.db, &key_committed(&evidence))?
+        {
+            return Ok(());
+        }
+        evidence.validate_basic().map_err(Error::Invalid)?;
+        verify_against_sets(&inner.sets, &evidence)?;
+        let bytes = evidence.to_evidence_proto().encode_to_vec();
+        inner
+            .db
+            .set_sync(&key_pending(&evidence), &bytes)
+            .map_err(|err| Error::Db(err.to_string()))
+    }
+
+    /// Uncommitted evidence that fits in `max_bytes` of an `EvidenceList`.
+    ///
+    /// `max_bytes` below 0 means no cap. The reactor uses that to gossip every
+    /// pending item.
+    #[must_use]
+    pub fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence> {
+        let inner = lock(&self.inner);
+        let Ok(rows) = inner.db.iter_prefix(&[PENDING]) else {
+            return Vec::new();
+        };
+        let mut proto = eld_tendermint_proto::types::EvidenceList {
+            evidence: Vec::new(),
+        };
+        let mut kept = Vec::new();
+        for (_, value) in rows {
+            let Ok(wrapped) = eld_tendermint_proto::types::Evidence::decode(value.as_slice())
+            else {
+                continue;
+            };
+            let Ok(evidence) = DuplicateVoteEvidence::try_from_evidence_proto(&wrapped) else {
+                continue;
+            };
+            proto.evidence.push(evidence.to_evidence_proto());
+            let size = i64::try_from(proto.encoded_len()).unwrap_or(i64::MAX);
+            if max_bytes >= 0 && size > max_bytes {
+                break;
+            }
+            kept.push(evidence);
+        }
+        kept
+    }
+
+    /// Move `evidence` from pending to committed so it is not proposed again.
+    pub fn mark_committed(&self, evidence: &EvidenceList) {
+        let inner = lock(&self.inner);
+        for item in &evidence.evidence {
+            let _ = inner.db.delete(&key_pending(item));
+            let bytes = int64_value(item.vote_a.height);
+            let _ = inner.db.set_sync(&key_committed(item), &bytes);
+        }
+    }
+
+    /// Replace the validator sets used by the next [`Self::add`].
+    pub fn update_state(&self, state: &State) {
+        lock(&self.inner).sets = sets_from(state);
+    }
+}
+
+impl<D: Db> ProposalEvidence for Pool<D> {
+    fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence> {
+        Pool::pending(self, max_bytes)
+    }
+
+    fn mark_committed(&self, evidence: &EvidenceList) {
+        Pool::mark_committed(self, evidence);
+    }
+
+    fn update_state(&self, state: &State) {
+        Pool::update_state(self, state);
+    }
+}
+
+/// Protobuf `google.protobuf.Int64Value`: field 1, varint.
+fn int64_value(value: i64) -> Vec<u8> {
+    let mut out = vec![0x08];
+    let mut n = value as u64;
+    loop {
+        let mut byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if n == 0 {
+            break;
+        }
+    }
+    out
+}
+
+fn sets_from(state: &State) -> Sets {
+    Sets {
+        chain_id: state.chain_id.as_str().to_owned(),
+        validators: state.validators.copy(),
+        last_validators: state.last_validators.copy(),
+    }
+}
+
+fn verify_against_sets(sets: &Sets, evidence: &DuplicateVoteEvidence) -> Result<(), Error> {
+    match evidence.verify(&sets.chain_id, &sets.validators) {
+        Ok(()) => Ok(()),
+        Err(eld_tendermint_types::Error::ValidatorNotInSet) => evidence
+            .verify(&sets.chain_id, &sets.last_validators)
+            .map_err(Error::Invalid),
+        Err(err) => Err(Error::Invalid(err)),
+    }
+}
+
+fn row_present(db: &impl Db, key: &[u8]) -> Result<bool, Error> {
+    db.get(key)
+        .map(|value| value.is_some())
+        .map_err(|err| Error::Db(err.to_string()))
+}
+
+fn key_pending(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
+    key(PENDING, evidence)
+}
+
+fn key_committed(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
+    key(COMMITTED, evidence)
+}
+
+fn key(prefix: u8, evidence: &DuplicateVoteEvidence) -> Vec<u8> {
+    let suffix = format!(
+        "{:016X}/{}",
+        evidence.vote_a.height,
+        hex::encode_upper(evidence.hash().as_bytes())
+    );
+    let mut key = Vec::with_capacity(1 + suffix.len());
+    key.push(prefix);
+    key.extend(suffix.into_bytes());
+    key
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}

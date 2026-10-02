@@ -1,9 +1,10 @@
 //! One validator's round state. No network.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use eld_tendermint_config::ConsensusConfig;
+use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::SignedMsgType;
@@ -64,6 +65,14 @@ impl Step {
     }
 }
 
+/// Optional WAL file and evidence pool for [`Node::start_with_store_extras`].
+pub struct NodeExtras {
+    /// Replay this file before round 0 when it is set.
+    pub wal_path: Option<PathBuf>,
+    /// Pending evidence included in each proposal.
+    pub evidence: Option<Arc<dyn ProposalEvidence>>,
+}
+
 /// What a validator broadcasts. The group delivers these by method call.
 #[derive(Clone, Debug)]
 pub enum Msg {
@@ -91,6 +100,7 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     step: Step,
     mempool: Arc<Mutex<Mempool<C>>>,
     block_store: Arc<BlockStore<D>>,
+    evidence: Option<Arc<dyn ProposalEvidence>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -129,7 +139,37 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
             mempool,
             exec,
             Arc::new(BlockStore::new(MemDb::new())),
-            None,
+            NodeExtras {
+                wal_path: None,
+                evidence: None,
+            },
+        )
+    }
+
+    /// [`Self::start`] with pending evidence included in each proposal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mempool or validator-set error.
+    pub fn start_with_evidence(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        evidence: Arc<dyn ProposalEvidence>,
+    ) -> Result<Self, Error> {
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            Arc::new(BlockStore::new(MemDb::new())),
+            NodeExtras {
+                wal_path: None,
+                evidence: Some(evidence),
+            },
         )
     }
 
@@ -146,7 +186,6 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
         exec: E,
         wal_path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
-        let wal = Wal::open(wal_path)?;
         Self::boot(
             config,
             pv,
@@ -154,7 +193,10 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
             mempool,
             exec,
             Arc::new(BlockStore::new(MemDb::new())),
-            Some(wal),
+            NodeExtras {
+                wal_path: Some(wal_path.as_ref().to_path_buf()),
+                evidence: None,
+            },
         )
     }
 }
@@ -173,7 +215,63 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         exec: E,
         block_store: Arc<BlockStore<D>>,
     ) -> Result<Self, Error> {
-        Self::boot(config, pv, chain_state, mempool, exec, block_store, None)
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            block_store,
+            NodeExtras {
+                wal_path: None,
+                evidence: None,
+            },
+        )
+    }
+
+    /// [`Self::start_with_store`] with an optional WAL and evidence pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a WAL, replay, mempool, or validator-set error.
+    pub fn start_with_store_extras(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        block_store: Arc<BlockStore<D>>,
+        extras: NodeExtras,
+    ) -> Result<Self, Error> {
+        Self::boot(config, pv, chain_state, mempool, exec, block_store, extras)
+    }
+
+    /// [`Self::start_with_store`] with pending evidence included in each proposal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mempool or validator-set error.
+    pub fn start_with_store_and_evidence(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        block_store: Arc<BlockStore<D>>,
+        evidence: Arc<dyn ProposalEvidence>,
+    ) -> Result<Self, Error> {
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            block_store,
+            NodeExtras {
+                wal_path: None,
+                evidence: Some(evidence),
+            },
+        )
     }
 
     /// [`Self::start_with_store`], then replay `wal_path` before round 0.
@@ -190,7 +288,6 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         block_store: Arc<BlockStore<D>>,
         wal_path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
-        let wal = Wal::open(wal_path)?;
         Self::boot(
             config,
             pv,
@@ -198,7 +295,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             mempool,
             exec,
             block_store,
-            Some(wal),
+            NodeExtras {
+                wal_path: Some(wal_path.as_ref().to_path_buf()),
+                evidence: None,
+            },
         )
     }
 }
@@ -217,12 +317,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         mempool: Mempool<C>,
         exec: E,
         block_store: Arc<BlockStore<D>>,
-        wal: Option<Wal>,
+        extras: NodeExtras,
     ) -> Result<Self, Error> {
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
         let mempool = Arc::new(Mutex::new(mempool));
+        let wal = match extras.wal_path {
+            Some(path) => Some(Wal::open(path)?),
+            None => None,
+        };
         let mut node = Self {
             config,
             pv,
@@ -233,6 +337,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             step: Step::NewHeight,
             mempool,
             block_store,
+            evidence: extras.evidence,
             exec,
             votes,
             proposal: None,
@@ -308,6 +413,18 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .load_block(height)
             .and_then(|block| block.header.hash())
             .map(|hash| hash.as_bytes().to_vec())
+    }
+
+    /// Block saved at `height`, including its evidence list.
+    #[must_use]
+    pub fn committed_block(&self, height: i64) -> Option<Block> {
+        self.block_store.load_block(height)
+    }
+
+    /// Block this validator has built for the current round and not yet replaced.
+    #[must_use]
+    pub fn proposal_block(&self) -> Option<Block> {
+        self.proposal_block.clone()
     }
 
     #[must_use]
@@ -595,7 +712,14 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 .as_ref()
                 .and_then(|votes| votes.make_commit().ok())
         }?;
-        let mut block = Block::make_block(height, txs, Some(commit), EvidenceList::new(Vec::new()));
+        let evidence = match &self.evidence {
+            Some(pool) => {
+                let max_bytes = self.chain_state.consensus_params.evidence.max_bytes;
+                EvidenceList::new(pool.pending(max_bytes))
+            }
+            None => EvidenceList::new(Vec::new()),
+        };
+        let mut block = Block::make_block(height, txs, Some(commit), evidence);
         self.fill_header(&mut block);
         let parts = block.make_part_set(BLOCK_PART_SIZE_BYTES).ok()?;
         Some((block, parts))
@@ -820,6 +944,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         };
         if self.block_store.save_block(&block, &parts, &seen).is_err() {
             return;
+        }
+        if let Some(pool) = &self.evidence {
+            pool.mark_committed(&block.evidence);
+            pool.update_state(&new_state);
         }
         let committed = self.height;
         self.wal_sync(&wal::end_height_message(Time::now(), committed));

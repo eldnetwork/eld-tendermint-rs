@@ -6,6 +6,7 @@ members = [
     "crates/config",
     "crates/consensus",
     "crates/crypto",
+    "crates/evidence",
     "crates/mempool",
     "crates/node",
     "crates/p2p",

@@ -2,7 +2,7 @@
 
 Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool and its reactor, the v0 blockchain reactor, and consensus with a write-ahead log and a gossip reactor. `eld-tendermint start` serves JSON-RPC `status` and `health`. The evidence pool, the tx index, WAL rotation, and the rest of RPC are not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool and its reactor, the v0 blockchain reactor, the evidence pool, and consensus with a write-ahead log and a gossip reactor. `eld-tendermint start` serves JSON-RPC `status` and `health`. The tx index, WAL rotation, and the rest of RPC are not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -19,10 +19,11 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-abci` | ABCI 0.17 socket client: `echo`, `info`, `check_tx`, `deliver_tx`, `commit`, `query`, `begin_block`, `end_block`, `init_chain`. The ignored live test is documented in `crates/abci/README.md`. |
 | `eld-tendermint-store` | `store.BlockStore`. Keys are `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`. RocksDB on disk, an in-memory map in tests. A Go goleveldb directory is refused. |
 | `eld-tendermint-state` | `MakeGenesisState`, `InitChain`, and `ApplyBlock`. A missing `stateKey` calls `InitChain` once. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. |
+| `eld-tendermint-evidence` | Evidence pool. A duplicate vote is verified against the current or last validator set, stored in `evidence.db`, and gossiped on channel `0x38`. The next proposal includes it once. |
 | `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. The reactor gossips one tx per message on channel `0x30` and does not echo a tx to the peer that sent it. |
 | `eld-tendermint-blockchain` | v0 fast sync on channel `0x40`. A taller peer is asked for up to 20 blocks. Each block is applied at the next height after its commit matches the previous block. v1 and v2 are not started. |
 | `eld-tendermint-consensus` | In-process rounds and the gossip reactor on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. The WAL is one CRC32C-framed file; a durable prevote is replayed without a second signature. WAL rotation is not implemented. |
-| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, PEX, and the v0 blockchain reactor when `fast_sync` is on) and serves JSON-RPC `status`, `health`, `broadcast_tx_sync`, `broadcast_tx_commit`, `abci_query`, `block`, and `commit`. |
+| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and the v0 blockchain reactor when `fast_sync` is on) and serves JSON-RPC `status`, `health`, `broadcast_tx_sync`, `broadcast_tx_commit`, `abci_query`, `block`, and `commit`. |
 
 ## Database
 
@@ -77,4 +78,4 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 ## Still to do
 
 - **RPC beyond the read and broadcast methods.** `subscribe` is not served. An unknown method returns JSON-RPC `-32601`.
-- **Not in this port yet.** The evidence pool, the tx index, and WAL file rotation. v1 and v2 fast sync are not started.
+- **Not in this port yet.** The tx index, WAL file rotation, and RPC methods other than the ones now served. v1 and v2 fast sync are not started.

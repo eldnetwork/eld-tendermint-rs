@@ -1,7 +1,7 @@
 //! Consensus gossip on the p2p switch.
 //!
 //! Four channels carry `tendermint.consensus.Message`. Proposals, block parts, and
-//! votes are delivered into the local [`Node`]s. There is no catchup, evidence, or
+//! votes are delivered into the local [`Node`]s. There is no catchup or
 //! `VoteSetMaj23` reply.
 
 use std::collections::HashMap;

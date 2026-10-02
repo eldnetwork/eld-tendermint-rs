@@ -15,6 +15,7 @@ eld-tendermint-abci = { path = "../abci" }
 eld-tendermint-blockchain = { path = "../blockchain" }
 eld-tendermint-config = { path = "../config" }
 eld-tendermint-consensus = { path = "../consensus" }
+eld-tendermint-evidence = { path = "../evidence" }
 eld-tendermint-crypto = { path = "../crypto" }
 eld-tendermint-mempool = { path = "../mempool" }
 eld-tendermint-p2p = { path = "../p2p" }

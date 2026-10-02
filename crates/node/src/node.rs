@@ -15,9 +15,12 @@ use eld_tendermint_blockchain::{
 };
 use eld_tendermint_config::{Config, load_home, resolve_home};
 use eld_tendermint_consensus::{
-    Node, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
+    Node, NodeExtras, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
 };
 use eld_tendermint_crypto::marshal_pub_key;
+use eld_tendermint_evidence::{
+    Pool as EvidencePool, Reactor as EvidenceReactor, channel_descriptors as evidence_channels,
+};
 use eld_tendermint_mempool::{
     Mempool, Reactor as MempoolReactor, channel_descriptors as mempool_channels,
 };
@@ -102,30 +105,26 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let pub_key_json = serde_json::from_str(&marshal_pub_key(&pub_key)).map_err(fail)?;
     let node_id = node_key.id().map_err(fail)?;
 
+    let evidence_db = RocksDb::open(config.db_dir().join("evidence.db")).map_err(fail)?;
+    let evidence_pool = EvidencePool::new(evidence_db, &state);
+    let evidence_reactor = EvidenceReactor::new(evidence_pool.clone());
+    let evidence_for_node = evidence_pool.for_proposal();
     let waiter = app.waiter();
     let rpc_app = app.clone();
     let mempool = Mempool::new(config.mempool.clone(), app.clone()).map_err(fail)?;
     let wal_path = config.consensus.wal_file();
-    let node = if wal_path.is_file() {
-        Node::start_with_wal_and_store(
-            config.consensus.clone(),
-            pv,
-            state,
-            mempool,
-            app,
-            Arc::clone(&block_store),
-            &wal_path,
-        )
-    } else {
-        Node::start_with_store(
-            config.consensus.clone(),
-            pv,
-            state,
-            mempool,
-            app,
-            Arc::clone(&block_store),
-        )
-    }
+    let node = Node::start_with_store_extras(
+        config.consensus.clone(),
+        pv,
+        state,
+        mempool,
+        app,
+        Arc::clone(&block_store),
+        NodeExtras {
+            wal_path: wal_path.is_file().then_some(wal_path),
+            evidence: Some(evidence_for_node),
+        },
+    )
     .map_err(fail)?;
     let node_mempool = node.mempool();
     let mempool_reactor = MempoolReactor::from_shared(Arc::clone(&node_mempool));
@@ -143,12 +142,14 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     } else {
         Vec::new()
     };
+    let evidence_desc = evidence_channels();
     let channels = hex::encode(
         mempool_desc
             .iter()
             .chain(consensus_desc.iter())
             .chain(pex_desc.iter())
             .chain(blockchain_desc.iter())
+            .chain(evidence_desc.iter())
             .map(|desc| desc.id)
             .collect::<Vec<_>>(),
     )
@@ -167,6 +168,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     if let Some(blockchain) = &blockchain {
         register_blockchain(&switch, blockchain, blockchain_desc)?;
     }
+    register_evidence(&switch, &evidence_reactor, evidence_desc)?;
 
     let stop = Arc::new(AtomicBool::new(true));
     let poll = spawn_poll(
@@ -176,6 +178,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         mempool_reactor,
         pex,
         blockchain,
+        evidence_reactor,
     );
 
     let process = NodeProcess {
@@ -285,6 +288,26 @@ fn register_blockchain(
     Ok(())
 }
 
+fn register_evidence(
+    switch: &Arc<Switch>,
+    evidence: &EvidenceReactor<RocksDb>,
+    evidence_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
+) -> Result<(), Error> {
+    let evidence_cb = evidence.clone();
+    let evidence_switch = Arc::downgrade(switch);
+    switch
+        .add_reactor("evidence", evidence_desc, move |peer_id, ch_id, bytes| {
+            let Some(switch) = evidence_switch.upgrade() else {
+                return;
+            };
+            if !evidence_cb.handle(peer_id, ch_id, &bytes) {
+                switch.stop_peer(peer_id);
+            }
+        })
+        .map_err(fail)?;
+    Ok(())
+}
+
 fn spawn_poll(
     stop: Arc<AtomicBool>,
     switch: Arc<Switch>,
@@ -292,6 +315,7 @@ fn spawn_poll(
     mempool: MempoolReactor<AbciApp>,
     pex: PexReactor,
     blockchain: Option<BlockchainReactor<AbciApp, RocksDb>>,
+    evidence: EvidenceReactor<RocksDb>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while stop.load(Ordering::SeqCst) {
@@ -301,6 +325,7 @@ fn spawn_poll(
             if let Some(blockchain) = &blockchain {
                 blockchain.poll(&switch);
             }
+            evidence.poll(&switch);
             thread::sleep(Duration::from_millis(5));
         }
     })
