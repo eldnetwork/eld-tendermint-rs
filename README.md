@@ -2,7 +2,7 @@
 
 Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool and its reactor, the v0 blockchain reactor, the evidence pool, and consensus with a write-ahead log and a gossip reactor. `eld-tendermint start` serves JSON-RPC `status` and `health`. The tx index, WAL rotation, and the rest of RPC are not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store, `ApplyBlock`, the v0 mempool and its reactor, the v0 blockchain reactor, the evidence pool, and consensus with a write-ahead log and a gossip reactor. `eld-tendermint start` serves JSON-RPC `status`, `health`, `broadcast_tx_sync`, `broadcast_tx_commit`, `abci_query`, `block`, and `commit`. The tx index, WAL rotation, and the rest of RPC are not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -34,7 +34,7 @@ Both are embedded, single-process key-value stores built on a log-structured mer
 - The files are not interchangeable. A Go data/ directory created with db_backend = "goleveldb" will not open under RocksDB.
 - Key prefixes match the Go block store (H:, P:, C:, SC:, BH:, blockStore). The directory does not.
 - Tests use the in-memory Db. The node writes RocksDB files in its own directory.
-- blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. `eld-tendermint start` opens blockstore and state. Evidence and tx_index are not opened.
+- blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. `eld-tendermint start` opens blockstore, state, and `evidence.db`. The tx index is not opened.
 
 `tools/proto-compiler` is the prost-build binary used by `scripts/gen-proto.sh`.
 
