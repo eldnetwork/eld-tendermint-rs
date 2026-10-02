@@ -157,17 +157,3 @@ where
         }
     }
 }
-
-impl<E, C> Node<E, C>
-where
-    E: eld_tendermint_state::App,
-    C: eld_tendermint_mempool::App,
-{
-    fn deliver(&mut self, msg: Msg) {
-        match msg {
-            Msg::Proposal(proposal) => self.on_proposal(proposal),
-            Msg::Part(part) => self.on_part(part),
-            Msg::Vote(vote) => self.on_vote(vote),
-        }
-    }
-}

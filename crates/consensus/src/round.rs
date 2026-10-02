@@ -34,7 +34,7 @@ pub enum Step {
 impl Step {
     /// Go `RoundStepType`. NewHeight is 1.
     #[must_use]
-    fn as_wal(self) -> u32 {
+    pub(crate) fn as_wal(self) -> u32 {
         match self {
             Self::NewHeight => 1,
             Self::NewRound => 2,
@@ -198,6 +198,27 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
     #[must_use]
     pub fn step(&self) -> Step {
         self.step
+    }
+
+    /// Consensus height. This is the height being decided, not [`Self::store_height`].
+    #[must_use]
+    pub fn height(&self) -> i64 {
+        self.height
+    }
+
+    /// Validators in the set this node is using for the current height.
+    #[must_use]
+    pub fn validator_count(&self) -> usize {
+        self.validators.validators().len()
+    }
+
+    /// Apply one gossip message. A bad signature or a bad part proof returns without voting.
+    pub(crate) fn deliver(&mut self, msg: Msg) {
+        match msg {
+            Msg::Proposal(proposal) => self.on_proposal(proposal),
+            Msg::Part(part) => self.on_part(part),
+            Msg::Vote(vote) => self.on_vote(vote),
+        }
     }
 
     #[must_use]

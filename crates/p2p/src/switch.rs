@@ -23,12 +23,17 @@ struct PeerSlot {
 
 trait PeerConn: Send {
     fn send(&self, ch_id: u8, bytes: &[u8]) -> bool;
+    fn close(&self);
     fn stop(&self);
 }
 
 impl PeerConn for MConnection {
     fn send(&self, ch_id: u8, bytes: &[u8]) -> bool {
         Self::send(self, ch_id, bytes)
+    }
+
+    fn close(&self) {
+        Self::close(self);
     }
 
     fn stop(&self) {
@@ -158,6 +163,34 @@ impl Switch {
             conn: Box::new(conn),
         });
         Ok(())
+    }
+
+    /// Queue `bytes` on `ch_id` for one running peer.
+    ///
+    /// Returns `false` when the peer is unknown, the peer has stopped, or the
+    /// channel is not registered. The peer stays up.
+    pub fn send(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
+        let inner = lock(&self.inner);
+        let Some(peer) = inner
+            .peers
+            .iter()
+            .find(|peer| peer.id == peer_id && peer.running.load(Ordering::SeqCst))
+        else {
+            return false;
+        };
+        peer.conn.send(ch_id, bytes)
+    }
+
+    /// Shut down one peer without joining from the caller.
+    ///
+    /// The connection threads exit on their own. [`Self::stop`] joins them.
+    /// Unknown ids are ignored. Other peers stay up.
+    pub fn stop_peer(&self, peer_id: &str) {
+        let inner = lock(&self.inner);
+        if let Some(peer) = inner.peers.iter().find(|peer| peer.id == peer_id) {
+            peer.running.store(false, Ordering::SeqCst);
+            peer.conn.close();
+        }
     }
 
     /// Queue `bytes` on `ch_id` for every running peer.

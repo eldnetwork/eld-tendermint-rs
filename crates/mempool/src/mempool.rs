@@ -13,10 +13,10 @@ use crate::cache::TxCache;
 use crate::error::Error;
 
 /// Filter run before `CheckTx`. `Err` rejects the tx and the app is not called.
-pub type PreCheck = Box<dyn Fn(&Tx) -> Result<(), String>>;
+pub type PreCheck = Box<dyn Fn(&Tx) -> Result<(), String> + Send>;
 
 /// Filter run after a successful `CheckTx`. `Err` keeps the tx out of the pool.
-pub type PostCheck = Box<dyn Fn(&Tx, &ResponseCheckTx) -> Result<(), String>>;
+pub type PostCheck = Box<dyn Fn(&Tx, &ResponseCheckTx) -> Result<(), String> + Send>;
 
 /// In-process mempool ABCI. Not the socket client.
 pub trait App {

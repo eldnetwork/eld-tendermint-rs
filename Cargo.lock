@@ -307,7 +307,9 @@ version = "0.0.1"
 dependencies = [
  "crc32c",
  "eld-tendermint-config",
+ "eld-tendermint-crypto",
  "eld-tendermint-mempool",
+ "eld-tendermint-p2p",
  "eld-tendermint-privval",
  "eld-tendermint-proto",
  "eld-tendermint-state",

@@ -286,11 +286,19 @@ impl MConnection {
         Arc::clone(&self.shared.running)
     }
 
-    /// Close the socket and join both threads.
-    pub fn stop(&self) {
+    /// Stop the threads without joining them.
+    ///
+    /// The receive callback runs on the receive thread. Joining that thread from
+    /// the callback would deadlock. [`Self::stop`] joins after this returns.
+    pub fn close(&self) {
         self.shared.running.store(false, Ordering::SeqCst);
         let _ = self.shared.wake_tx.send(Wake::Quit);
         let _ = self.shutdown.shutdown_io();
+    }
+
+    /// Close the socket and join both threads.
+    pub fn stop(&self) {
+        self.close();
         let mut panicked = None;
         for slot in [&self.send_thread, &self.recv_thread] {
             let handle = slot.lock().unwrap_or_else(|err| err.into_inner()).take();
