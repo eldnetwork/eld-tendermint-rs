@@ -5,6 +5,8 @@
 //! bytes: a little-endian length, then the chunk. ChaCha20-Poly1305 adds a 16-byte tag.
 
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 
 use chacha20poly1305::aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -88,38 +90,184 @@ impl<S> SecretConnection<S> {
     }
 }
 
-impl<S: Read + Write> SecretConnection<S> {
-    fn open_frame(&mut self) -> Result<Vec<u8>, Error> {
-        let mut sealed = [0u8; SEALED_FRAME_SIZE];
-        self.conn.read_exact(&mut sealed).map_err(Error::Io)?;
-        let plain = self
-            .recv_aead
-            .decrypt(Nonce::from_slice(&self.recv_nonce), sealed.as_ref())
-            .map_err(|_| Error::Decrypt)?;
-        incr_nonce(&mut self.recv_nonce)?;
-        if plain.len() != TOTAL_FRAME_SIZE {
-            return Err(Error::Decrypt);
+impl<S: SplitIo> SecretConnection<S> {
+    /// Split the authenticated connection into a reader, a writer, and a shutdown handle.
+    ///
+    /// `MConnection` reads and writes on two threads. One socket cannot do both: a blocked
+    /// `read` holds the only handle, and the send thread never writes. `UnixStream::try_clone`
+    /// dups the fd so one half reads, one writes, and `shutdown(Both)` unblocks a stuck read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when the socket cannot be duplicated.
+    pub fn split(self) -> Result<SplitParts<S>, Error> {
+        let (read_conn, write_conn, shutdown) = self.conn.split_io().map_err(Error::Io)?;
+        Ok((
+            SecretReader {
+                conn: read_conn,
+                recv_aead: self.recv_aead,
+                recv_nonce: self.recv_nonce,
+                recv_buffer: self.recv_buffer,
+                remote_pub_key: self.remote_pub_key,
+            },
+            SecretWriter {
+                conn: write_conn,
+                send_aead: self.send_aead,
+                send_nonce: self.send_nonce,
+            },
+            shutdown,
+        ))
+    }
+}
+
+/// Read half of a [`SecretConnection`]. Decrypts ChaCha20-Poly1305 frames.
+pub struct SecretReader<R> {
+    conn: R,
+    recv_aead: ChaCha20Poly1305,
+    recv_nonce: [u8; AEAD_NONCE_SIZE],
+    recv_buffer: Vec<u8>,
+    remote_pub_key: PubKey,
+}
+
+impl<R> SecretReader<R> {
+    /// Authenticated remote Ed25519 public key.
+    #[must_use]
+    pub fn remote_pub_key(&self) -> &PubKey {
+        &self.remote_pub_key
+    }
+}
+
+impl<R: Read> Read for SecretReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
         }
-        let chunk_len = u32::from_le_bytes(plain[..DATA_LEN_SIZE].try_into().expect("4 bytes"));
-        if chunk_len > u32::try_from(DATA_MAX_SIZE).expect("1024 fits in u32") {
-            return Err(Error::ChunkTooBig);
+        if self.recv_buffer.is_empty() {
+            self.recv_buffer = open_frame(&mut self.conn, &self.recv_aead, &mut self.recv_nonce)
+                .map_err(Error::into_io)?;
         }
-        let end = DATA_LEN_SIZE + chunk_len as usize;
-        Ok(plain[DATA_LEN_SIZE..end].to_vec())
+        let n = buf.len().min(self.recv_buffer.len());
+        buf[..n].copy_from_slice(&self.recv_buffer[..n]);
+        self.recv_buffer.drain(..n);
+        Ok(n)
+    }
+}
+
+/// Write half of a [`SecretConnection`]. Seals ChaCha20-Poly1305 frames.
+pub struct SecretWriter<W> {
+    conn: W,
+    send_aead: ChaCha20Poly1305,
+    send_nonce: [u8; AEAD_NONCE_SIZE],
+}
+
+impl<W: Write> Write for SecretWriter<W> {
+    fn write(&mut self, mut data: &[u8]) -> io::Result<usize> {
+        let mut written = 0;
+        while !data.is_empty() {
+            let chunk_len = data.len().min(DATA_MAX_SIZE);
+            seal_frame(
+                &mut self.conn,
+                &self.send_aead,
+                &mut self.send_nonce,
+                &data[..chunk_len],
+            )
+            .map_err(Error::into_io)?;
+            data = &data[chunk_len..];
+            written += chunk_len;
+        }
+        Ok(written)
     }
 
-    fn seal_frame(&mut self, chunk: &[u8]) -> Result<(), Error> {
-        let mut frame = [0u8; TOTAL_FRAME_SIZE];
-        let chunk_len = u32::try_from(chunk.len()).expect("chunk fits in u32");
-        frame[..DATA_LEN_SIZE].copy_from_slice(&chunk_len.to_le_bytes());
-        frame[DATA_LEN_SIZE..DATA_LEN_SIZE + chunk.len()].copy_from_slice(chunk);
-        let sealed = self
-            .send_aead
-            .encrypt(Nonce::from_slice(&self.send_nonce), frame.as_slice())
-            .expect("ChaCha20-Poly1305 seals a 12-byte nonce");
-        incr_nonce(&mut self.send_nonce)?;
-        self.conn.write_all(&sealed).map_err(Error::Io)
+    fn flush(&mut self) -> io::Result<()> {
+        self.conn.flush()
     }
+}
+
+/// Duplicates a connected socket so one half can block in `read` while the other writes.
+pub trait SplitIo: Sized {
+    /// Socket used only for reading.
+    type ReadHalf: Read + Send + 'static;
+    /// Socket used only for writing.
+    type WriteHalf: Write + Send + 'static;
+    /// Extra fd used to `shutdown` the connection from a third thread.
+    type Shutdown: IoShutdown + 'static;
+
+    /// # Errors
+    ///
+    /// Returns an error when the file descriptor cannot be duplicated.
+    fn split_io(self) -> io::Result<(Self::ReadHalf, Self::WriteHalf, Self::Shutdown)>;
+}
+
+/// Reader, writer, and shutdown handle from [`SecretConnection::split`].
+type SplitParts<S> = (
+    SecretReader<<S as SplitIo>::ReadHalf>,
+    SecretWriter<<S as SplitIo>::WriteHalf>,
+    <S as SplitIo>::Shutdown,
+);
+
+/// Unblocks a peer thread blocked in `read` or `write`.
+pub trait IoShutdown: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error when the socket is already closed.
+    fn shutdown_io(&self) -> io::Result<()>;
+}
+
+impl SplitIo for UnixStream {
+    type ReadHalf = UnixStream;
+    type WriteHalf = UnixStream;
+    type Shutdown = UnixStream;
+
+    fn split_io(self) -> io::Result<(Self::ReadHalf, Self::WriteHalf, Self::Shutdown)> {
+        let write = self.try_clone()?;
+        let shutdown = self.try_clone()?;
+        Ok((self, write, shutdown))
+    }
+}
+
+impl IoShutdown for UnixStream {
+    fn shutdown_io(&self) -> io::Result<()> {
+        self.shutdown(Shutdown::Both)
+    }
+}
+
+fn open_frame<R: Read>(
+    conn: &mut R,
+    recv_aead: &ChaCha20Poly1305,
+    recv_nonce: &mut [u8; AEAD_NONCE_SIZE],
+) -> Result<Vec<u8>, Error> {
+    let mut sealed = [0u8; SEALED_FRAME_SIZE];
+    conn.read_exact(&mut sealed).map_err(Error::Io)?;
+    let plain = recv_aead
+        .decrypt(Nonce::from_slice(recv_nonce), sealed.as_ref())
+        .map_err(|_| Error::Decrypt)?;
+    incr_nonce(recv_nonce)?;
+    if plain.len() != TOTAL_FRAME_SIZE {
+        return Err(Error::Decrypt);
+    }
+    let chunk_len = u32::from_le_bytes(plain[..DATA_LEN_SIZE].try_into().expect("4 bytes"));
+    if chunk_len > u32::try_from(DATA_MAX_SIZE).expect("1024 fits in u32") {
+        return Err(Error::ChunkTooBig);
+    }
+    let end = DATA_LEN_SIZE + chunk_len as usize;
+    Ok(plain[DATA_LEN_SIZE..end].to_vec())
+}
+
+fn seal_frame<W: Write>(
+    conn: &mut W,
+    send_aead: &ChaCha20Poly1305,
+    send_nonce: &mut [u8; AEAD_NONCE_SIZE],
+    chunk: &[u8],
+) -> Result<(), Error> {
+    let mut frame = [0u8; TOTAL_FRAME_SIZE];
+    let chunk_len = u32::try_from(chunk.len()).expect("chunk fits in u32");
+    frame[..DATA_LEN_SIZE].copy_from_slice(&chunk_len.to_le_bytes());
+    frame[DATA_LEN_SIZE..DATA_LEN_SIZE + chunk.len()].copy_from_slice(chunk);
+    let sealed = send_aead
+        .encrypt(Nonce::from_slice(send_nonce), frame.as_slice())
+        .expect("ChaCha20-Poly1305 seals a 12-byte nonce");
+    incr_nonce(send_nonce)?;
+    conn.write_all(&sealed).map_err(Error::Io)
 }
 
 impl<S: Read + Write> Read for SecretConnection<S> {
@@ -128,7 +276,8 @@ impl<S: Read + Write> Read for SecretConnection<S> {
             return Ok(0);
         }
         if self.recv_buffer.is_empty() {
-            self.recv_buffer = self.open_frame().map_err(Error::into_io)?;
+            self.recv_buffer = open_frame(&mut self.conn, &self.recv_aead, &mut self.recv_nonce)
+                .map_err(Error::into_io)?;
         }
         let n = buf.len().min(self.recv_buffer.len());
         buf[..n].copy_from_slice(&self.recv_buffer[..n]);
@@ -142,8 +291,13 @@ impl<S: Read + Write> Write for SecretConnection<S> {
         let mut written = 0;
         while !data.is_empty() {
             let chunk_len = data.len().min(DATA_MAX_SIZE);
-            self.seal_frame(&data[..chunk_len])
-                .map_err(Error::into_io)?;
+            seal_frame(
+                &mut self.conn,
+                &self.send_aead,
+                &mut self.send_nonce,
+                &data[..chunk_len],
+            )
+            .map_err(Error::into_io)?;
             data = &data[chunk_len..];
             written += chunk_len;
         }
@@ -254,13 +408,16 @@ fn incr_nonce(nonce: &mut [u8; AEAD_NONCE_SIZE]) -> Result<(), Error> {
     Ok(())
 }
 
-fn write_msg<W: Write, M: Message>(writer: &mut W, msg: &M) -> Result<(), Error> {
+pub(crate) fn write_msg<W: Write, M: Message>(writer: &mut W, msg: &M) -> Result<(), Error> {
     writer
         .write_all(&msg.encode_length_delimited_to_vec())
         .map_err(Error::Io)
 }
 
-fn read_msg<R: Read, M: Message + Default>(reader: &mut R, max_size: usize) -> Result<M, Error> {
+pub(crate) fn read_msg<R: Read, M: Message + Default>(
+    reader: &mut R,
+    max_size: usize,
+) -> Result<M, Error> {
     let len = read_uvarint(reader)?;
     if len > u64::try_from(max_size).expect("max size fits in u64") {
         return Err(Error::MessageTooBig { len });
