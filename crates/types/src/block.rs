@@ -4,27 +4,10 @@
 
 use prost::Message;
 
-use eld_tendermint_crypto::hash_from_byte_slices;
-
+use crate::evidence::EvidenceList;
 use crate::{
     BlockId, ChainId, Commit, ConsensusVersion, Error, Hash, Header, PartSet, Time, Tx, Txs,
 };
-
-/// Empty evidence list.
-///
-/// TODO: replace with `DuplicateVoteEvidence` from `types/evidence.go`.
-/// The list has no items, so [`Self::hash`] is the empty Merkle root.
-/// A non-empty hash is not produced here.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EvidenceList;
-
-impl EvidenceList {
-    /// `EvidenceList.Hash` of an empty list: `hash_from_byte_slices(&[])`.
-    #[must_use]
-    pub fn hash(&self) -> Hash {
-        Hash::from_array(hash_from_byte_slices::<&[u8]>(&[]))
-    }
-}
 
 /// `types.Block`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,14 +65,15 @@ impl Block {
     ///
     /// # Errors
     ///
-    /// Returns the header error, [`Error::NilLastCommit`], a commit error, or a
-    /// mismatched `last_commit_hash`, `data_hash`, or `evidence_hash`.
+    /// Returns the header error, [`Error::NilLastCommit`], a commit error, an evidence
+    /// error, or a mismatched `last_commit_hash`, `data_hash`, or `evidence_hash`.
     pub fn validate_basic(&self) -> Result<(), Error> {
         self.header.validate_basic()?;
         let Some(commit) = &self.last_commit else {
             return Err(Error::NilLastCommit);
         };
         commit.validate_basic()?;
+        self.evidence.validate_basic()?;
         if self.header.last_commit_hash.as_slice() != commit.hash().as_bytes().as_slice() {
             return Err(Error::WrongLastCommitHash);
         }
@@ -112,7 +96,8 @@ impl Block {
         self.header.hash()
     }
 
-    /// `Block.ToProto`. A missing last commit omits the field. Evidence is an empty list.
+    /// `Block.ToProto`. A missing last commit omits the field.
+    /// Each evidence item is wrapped as `Evidence { duplicate_vote_evidence }`.
     #[must_use]
     pub fn to_proto(&self) -> eld_tendermint_proto::types::Block {
         eld_tendermint_proto::types::Block {
@@ -125,9 +110,7 @@ impl Block {
                     .map(|tx| tx.as_bytes().to_vec())
                     .collect(),
             }),
-            evidence: Some(eld_tendermint_proto::types::EvidenceList {
-                evidence: Vec::new(),
-            }),
+            evidence: Some(self.evidence.to_proto()),
             last_commit: self.last_commit.as_ref().map(Commit::to_proto),
         }
     }
@@ -136,19 +119,17 @@ impl Block {
     ///
     /// # Errors
     ///
-    /// Returns a header, data, commit, or [`Error::UnsupportedEvidence`] error, then
-    /// the same errors as [`Self::validate_basic`].
+    /// Returns a header, data, commit, or evidence error, then
+    /// the same errors as [`Self::validate_basic`]. A light-client attack is
+    /// [`Error::UnsupportedEvidence`].
     pub fn try_from_proto(proto: &eld_tendermint_proto::types::Block) -> Result<Self, Error> {
         let Some(header) = proto.header.as_ref() else {
             return Err(Error::MissingHeader);
         };
-        if proto
-            .evidence
-            .as_ref()
-            .is_some_and(|list| !list.evidence.is_empty())
-        {
-            return Err(Error::UnsupportedEvidence);
-        }
+        let evidence = match &proto.evidence {
+            Some(list) => EvidenceList::try_from_proto(list)?,
+            None => EvidenceList::default(),
+        };
         let txs = proto
             .data
             .as_ref()
@@ -161,7 +142,7 @@ impl Block {
         let block = Self {
             header: Header::try_from_proto(header)?,
             data: txs,
-            evidence: EvidenceList,
+            evidence,
             last_commit,
         };
         block.validate_basic()?;

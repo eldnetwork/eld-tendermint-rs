@@ -100,8 +100,17 @@ pub enum Error {
     WrongLastCommitHash,
     WrongDataHash,
     WrongEvidenceHash,
-    /// Non-empty evidence cannot be decoded until `DuplicateVoteEvidence` exists.
+    /// Light-client attack evidence is not decoded.
     UnsupportedEvidence,
+    DuplicateVoteOrder,
+    MissingEvidenceVote,
+    ValidatorNotInSet,
+    EvidenceHeightRoundTypeMismatch,
+    EvidenceAddressMismatch,
+    EvidenceSameBlockId,
+    EvidencePubKeyMismatch,
+    EvidenceValidatorPowerMismatch,
+    EvidenceTotalPowerMismatch,
 }
 
 impl fmt::Display for Error {
@@ -226,6 +235,27 @@ impl fmt::Display for Error {
             Self::WrongDataHash => write!(f, "wrong Header.DataHash"),
             Self::WrongEvidenceHash => write!(f, "wrong Header.EvidenceHash"),
             Self::UnsupportedEvidence => write!(f, "evidence is not supported yet"),
+            Self::DuplicateVoteOrder => write!(f, "duplicate votes in invalid order"),
+            Self::MissingEvidenceVote => write!(f, "one or both of the votes are empty"),
+            Self::ValidatorNotInSet => write!(f, "address was not a validator"),
+            Self::EvidenceHeightRoundTypeMismatch => write!(f, "h/r/s does not match"),
+            Self::EvidenceAddressMismatch => write!(f, "validator addresses do not match"),
+            Self::EvidenceSameBlockId => {
+                write!(f, "block IDs are the same - not a real duplicate vote")
+            }
+            Self::EvidencePubKeyMismatch => write!(f, "address doesn't match pubkey"),
+            Self::EvidenceValidatorPowerMismatch => {
+                write!(
+                    f,
+                    "validator power from evidence and our validator set does not match"
+                )
+            }
+            Self::EvidenceTotalPowerMismatch => {
+                write!(
+                    f,
+                    "total voting power from the evidence and our validator set does not match"
+                )
+            }
         }
     }
 }

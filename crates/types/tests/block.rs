@@ -25,7 +25,7 @@ fn hello_world() -> Block {
         3,
         Txs::new(vec![Tx::new(b"Hello World".to_vec())]),
         None,
-        EvidenceList,
+        EvidenceList::default(),
     )
 }
 
@@ -50,20 +50,20 @@ fn valid_commit() -> Commit {
 }
 
 fn valid_block(txs: Txs) -> Block {
-    let mut block = Block::make_block(3, txs, Some(valid_commit()), EvidenceList);
+    let mut block = Block::make_block(3, txs, Some(valid_commit()), EvidenceList::default());
     block.header.proposer_address = vec![0x22; ADDRESS_SIZE];
     block
 }
 
 #[test]
 fn make_block_hashes_match_tx_merkle_roots() {
-    let empty = Block::make_block(3, Txs::new(vec![]), None, EvidenceList);
+    let empty = Block::make_block(3, Txs::new(vec![]), None, EvidenceList::default());
     let one = hello_world();
     let many = Block::make_block(
         3,
         Txs::new(vec![Tx::new(b"foo".to_vec()), Tx::new(b"bar".to_vec())]),
         None,
-        EvidenceList,
+        EvidenceList::default(),
     );
 
     for block in [&empty, &one, &many] {
@@ -73,7 +73,7 @@ fn make_block_hashes_match_tx_merkle_roots() {
         );
         assert_eq!(
             block.header.evidence_hash,
-            EvidenceList.hash().as_bytes().to_vec()
+            EvidenceList::default().hash().as_bytes().to_vec()
         );
         assert!(block.header.last_commit_hash.is_empty());
         assert_eq!(block.hash(), None);
@@ -127,7 +127,7 @@ fn validate_basic_rejects_mutated_data_hash() {
 
 #[test]
 fn validate_basic_rejects_negative_height_and_nil_last_commit() {
-    let negative = Block::make_block(1, Txs::new(vec![]), None, EvidenceList);
+    let negative = Block::make_block(1, Txs::new(vec![]), None, EvidenceList::default());
     let mut negative = negative;
     negative.header.height = -1;
     negative.header.proposer_address = vec![0x22; ADDRESS_SIZE];

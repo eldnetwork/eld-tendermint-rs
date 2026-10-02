@@ -77,6 +77,16 @@ impl BlockId {
         self.part_set_header.validate_basic()
     }
 
+    /// `BlockID.Key`: hash bytes followed by the marshaled part-set header.
+    ///
+    /// Compared as raw bytes. A nil block id has an empty key.
+    #[must_use]
+    pub fn key(&self) -> Vec<u8> {
+        let mut key = self.hash.clone();
+        key.extend(self.part_set_header.to_proto().encode_to_vec());
+        key
+    }
+
     /// Protobuf `BlockID`. `part_set_header` is always present (`gogoproto.nullable = false`).
     #[must_use]
     pub fn to_proto(&self) -> eld_tendermint_proto::types::BlockId {
