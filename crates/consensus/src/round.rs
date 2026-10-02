@@ -8,7 +8,7 @@ use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::{App as ExecApp, State as ChainState, apply_block};
-use eld_tendermint_store::{BlockStore, MemDb};
+use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal, Time,
     ValidatorSet, Vote,
@@ -81,7 +81,7 @@ pub(crate) struct Scheduled {
 }
 
 /// In-process consensus state for one validator.
-pub struct Node<E: ExecApp, C: MempoolApp> {
+pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     config: ConsensusConfig,
     pv: FilePV,
     chain_state: ChainState,
@@ -90,7 +90,7 @@ pub struct Node<E: ExecApp, C: MempoolApp> {
     round: i32,
     step: Step,
     mempool: Arc<Mutex<Mempool<C>>>,
-    block_store: BlockStore<MemDb>,
+    block_store: Arc<BlockStore<D>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -109,8 +109,8 @@ pub struct Node<E: ExecApp, C: MempoolApp> {
     replaying: bool,
 }
 
-impl<E: ExecApp, C: MempoolApp> Node<E, C> {
-    /// Starts at the genesis height (1 when genesis says 0) and enters round 0.
+impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
+    /// `NewNode` with an in-memory block store.
     ///
     /// # Errors
     ///
@@ -122,7 +122,15 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         mempool: Mempool<C>,
         exec: E,
     ) -> Result<Self, Error> {
-        Self::boot(config, pv, chain_state, mempool, exec, None)
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            Arc::new(BlockStore::new(MemDb::new())),
+            None,
+        )
     }
 
     /// [`Self::start`], then replay `wal_path` before round 0 when the file has records.
@@ -139,9 +147,63 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         wal_path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
         let wal = Wal::open(wal_path)?;
-        Self::boot(config, pv, chain_state, mempool, exec, Some(wal))
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            Arc::new(BlockStore::new(MemDb::new())),
+            Some(wal),
+        )
+    }
+}
+
+impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
+    /// [`Self::start`] saving blocks into `block_store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mempool or validator-set error.
+    pub fn start_with_store(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        block_store: Arc<BlockStore<D>>,
+    ) -> Result<Self, Error> {
+        Self::boot(config, pv, chain_state, mempool, exec, block_store, None)
     }
 
+    /// [`Self::start_with_store`], then replay `wal_path` before round 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns a WAL, replay, or validator-set error.
+    pub fn start_with_wal_and_store(
+        config: ConsensusConfig,
+        pv: FilePV,
+        chain_state: ChainState,
+        mempool: Mempool<C>,
+        exec: E,
+        block_store: Arc<BlockStore<D>>,
+        wal_path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let wal = Wal::open(wal_path)?;
+        Self::boot(
+            config,
+            pv,
+            chain_state,
+            mempool,
+            exec,
+            block_store,
+            Some(wal),
+        )
+    }
+}
+
+impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// The pool this node reaps. The mempool reactor must lock this same handle.
     #[must_use]
     pub fn mempool(&self) -> Arc<Mutex<Mempool<C>>> {
@@ -154,6 +216,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
+        block_store: Arc<BlockStore<D>>,
         wal: Option<Wal>,
     ) -> Result<Self, Error> {
         let height = chain_state.last_block_height + 1;
@@ -169,7 +232,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C> {
             round: 0,
             step: Step::NewHeight,
             mempool,
-            block_store: BlockStore::new(MemDb::new()),
+            block_store,
             exec,
             votes,
             proposal: None,

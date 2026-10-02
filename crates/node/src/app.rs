@@ -6,8 +6,8 @@ use eld_tendermint_abci::SocketClient;
 use eld_tendermint_crypto::sum;
 use eld_tendermint_proto::abci::{
     RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, RequestInitChain,
-    ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEndBlock,
-    ResponseInitChain,
+    RequestQuery, ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx,
+    ResponseEndBlock, ResponseInitChain, ResponseQuery,
 };
 use eld_tendermint_state::Error as StateError;
 
@@ -48,6 +48,18 @@ impl AbciApp {
         lock(&self.shared.client)
             .init_chain(request)
             .map_err(abci_err)
+    }
+
+    /// `QuerySync`. Height `0` is passed through; the app treats it as latest.
+    ///
+    /// # Errors
+    ///
+    /// Returns the socket error. The RPC layer turns that into an internal error.
+    pub(crate) fn query(
+        &self,
+        request: RequestQuery,
+    ) -> Result<ResponseQuery, eld_tendermint_abci::Error> {
+        lock(&self.shared.client).query(request)
     }
 }
 

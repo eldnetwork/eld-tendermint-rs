@@ -16,6 +16,7 @@ use eld_tendermint_proto::consensus::{
 };
 use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::App as ExecApp;
+use eld_tendermint_store::{Db, MemDb};
 use eld_tendermint_types::{BitArray, Part, Proposal, Vote};
 use prost::Message as ProstMessage;
 
@@ -108,8 +109,8 @@ struct TimeoutWatch {
     started: Instant,
 }
 
-struct Inner<E: ExecApp, C: MempoolApp> {
-    nodes: Vec<Node<E, C>>,
+struct Inner<E: ExecApp, C: MempoolApp, D: Db> {
+    nodes: Vec<Node<E, C, D>>,
     peers: HashMap<String, PeerState>,
     announced: Vec<Option<(i64, i32, u32)>>,
     proposals: Vec<Proposal>,
@@ -120,14 +121,15 @@ struct Inner<E: ExecApp, C: MempoolApp> {
 }
 
 /// Local validators plus the peer state used to gossip on a [`Switch`].
-pub struct Reactor<E: ExecApp, C: MempoolApp> {
-    inner: Arc<Mutex<Inner<E, C>>>,
+pub struct Reactor<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
+    inner: Arc<Mutex<Inner<E, C, D>>>,
 }
 
-impl<E, C> Clone for Reactor<E, C>
+impl<E, C, D> Clone for Reactor<E, C, D>
 where
     E: ExecApp,
     C: MempoolApp,
+    D: Db,
 {
     fn clone(&self) -> Self {
         Self {
@@ -136,13 +138,14 @@ where
     }
 }
 
-impl<E, C> Reactor<E, C>
+impl<E, C, D> Reactor<E, C, D>
 where
     E: ExecApp + Send,
     C: MempoolApp + Send,
+    D: Db,
 {
     #[must_use]
-    pub fn new(nodes: Vec<Node<E, C>>) -> Self {
+    pub fn new(nodes: Vec<Node<E, C, D>>) -> Self {
         let validator_count = i64::try_from(nodes.first().map(Node::validator_count).unwrap_or(0))
             .unwrap_or(i64::MAX);
         let n = nodes.len();
@@ -216,7 +219,7 @@ where
     }
 }
 
-impl<E: ExecApp, C: MempoolApp> Inner<E, C> {
+impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     fn fire_due_timeouts(&mut self) {
         let now = Instant::now();
         for index in 0..self.nodes.len() {
@@ -567,7 +570,7 @@ fn timeout_key(timeout: &Scheduled) -> (i64, i32, u32, i64) {
     )
 }
 
-fn round_step_message<E: ExecApp, C: MempoolApp>(node: &Node<E, C>) -> Vec<u8> {
+fn round_step_message<E: ExecApp, C: MempoolApp, D: Db>(node: &Node<E, C, D>) -> Vec<u8> {
     Message {
         sum: Some(message::Sum::NewRoundStep(NewRoundStep {
             height: node.height(),

@@ -1,4 +1,4 @@
-//! `POST /` JSON-RPC for `status`, `health`, and broadcast tx.
+//! `POST /` JSON-RPC for `status`, `health`, broadcast tx, and block reads.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -8,9 +8,12 @@ use std::time::Duration;
 use base64::Engine;
 use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
-use eld_tendermint_proto::abci::{Event, EventAttribute, ResponseCheckTx, ResponseDeliverTx};
+use eld_tendermint_proto::abci::{
+    Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseQuery,
+};
+use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::{Time, Tx};
+use eld_tendermint_types::{Block, BlockId, Commit, CommitSig, Header, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
@@ -32,6 +35,7 @@ pub struct NodeStatus {
     pub mempool: Arc<Mutex<Mempool<AbciApp>>>,
     pub waiter: Arc<TxWaiter>,
     pub commit_timeout: Duration,
+    pub app: AbciApp,
 }
 
 /// Accept JSON-RPC calls until the listener closes.
@@ -77,6 +81,9 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "status" => rpc_result(id, status_result(status)),
         "broadcast_tx_sync" => broadcast_tx_sync(&id, request, status),
         "broadcast_tx_commit" => broadcast_tx_commit(&id, request, status),
+        "abci_query" => abci_query(&id, request, status),
+        "block" => rpc_block(&id, request, status),
+        "commit" => rpc_commit(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
@@ -288,6 +295,296 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn abci_query(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let path = match string_param(params, "path") {
+        Ok(path) => path,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let data = match hex_param(params, "data") {
+        Ok(data) => data,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let height = match i64_param(params, "height") {
+        Ok(height) => height.unwrap_or(0),
+        Err(data) => return invalid_params(id, &data),
+    };
+    let prove = match bool_param(params, "prove") {
+        Ok(prove) => prove,
+        Err(data) => return invalid_params(id, &data),
+    };
+    match status.app.query(RequestQuery {
+        data: data.into(),
+        path,
+        height,
+        prove,
+    }) {
+        Ok(response) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "response": query_json(&response) }),
+        ),
+        Err(err) => internal_error(id.clone(), &err),
+    }
+}
+
+fn query_json(response: &ResponseQuery) -> Value {
+    serde_json::json!({
+        "code": response.code,
+        "log": response.log,
+        "info": response.info,
+        "index": response.index.to_string(),
+        "key": b64(&response.key),
+        "value": b64(&response.value),
+        "proofOps": proof_ops_json(response.proof_ops.as_ref()),
+        "height": response.height.to_string(),
+        "codespace": response.codespace,
+    })
+}
+
+fn proof_ops_json(proof: Option<&ProofOps>) -> Value {
+    match proof {
+        None => Value::Null,
+        Some(proof) => serde_json::json!({
+            "ops": proof.ops.iter().map(proof_op_json).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn proof_op_json(op: &ProofOp) -> Value {
+    serde_json::json!({
+        "type": op.r#type,
+        "key": b64(&op.key),
+        "data": b64(&op.data),
+    })
+}
+
+fn rpc_block(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let height = match store_height(id, request, status) {
+        Ok(height) => height,
+        Err(error) => return error,
+    };
+    let Some(meta) = status.block_store.load_block_meta(height) else {
+        return missing_block(id, height);
+    };
+    let Some(block) = status.block_store.load_block(height) else {
+        return missing_block(id, height);
+    };
+    rpc_result(
+        id.clone(),
+        serde_json::json!({
+            "block_id": block_id_json(&meta.block_id),
+            "block": block_json(&block),
+        }),
+    )
+}
+
+fn rpc_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let height = match store_height(id, request, status) {
+        Ok(height) => height,
+        Err(error) => return error,
+    };
+    let Some(meta) = status.block_store.load_block_meta(height) else {
+        return missing_block(id, height);
+    };
+    let latest = status.block_store.height();
+    let commit = if height == latest {
+        status.block_store.load_seen_commit(height)
+    } else {
+        status.block_store.load_block_commit(height)
+    };
+    let Some(commit) = commit else {
+        return internal_message(id, &format!("commit {height} not found"));
+    };
+    rpc_result(
+        id.clone(),
+        serde_json::json!({
+            "signed_header": {
+                "header": header_json(&meta.header),
+                "commit": commit_json(&commit),
+            },
+            "canonical": height != latest,
+        }),
+    )
+}
+
+/// Missing height and `0` mean the latest block. A bad type is invalid params.
+/// A height outside the store is an internal error with Go's text.
+fn store_height(id: &Value, request: &Value, status: &NodeStatus) -> Result<i64, Value> {
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return Err(invalid_params(id, &data)),
+    };
+    let asked = match i64_param(params, "height") {
+        Ok(height) => height,
+        Err(data) => return Err(invalid_params(id, &data)),
+    };
+    let latest = status.block_store.height();
+    let height = match asked {
+        None | Some(0) => latest,
+        Some(height) if height < 0 => {
+            return Err(internal_message(
+                id,
+                &format!("height must be greater than 0, but got {height}"),
+            ));
+        }
+        Some(height) => height,
+    };
+    if height <= 0 {
+        return Err(missing_block(id, height));
+    }
+    if height > latest {
+        return Err(internal_message(
+            id,
+            &format!(
+                "height {height} must be less than or equal to the current blockchain height {latest}"
+            ),
+        ));
+    }
+    let base = status.block_store.base();
+    if height < base {
+        return Err(internal_message(
+            id,
+            &format!("height {height} is not available, lowest height is {base}"),
+        ));
+    }
+    Ok(height)
+}
+
+fn missing_block(id: &Value, height: i64) -> Value {
+    internal_message(id, &format!("block {height} not found"))
+}
+
+fn block_json(block: &Block) -> Value {
+    serde_json::json!({
+        "header": header_json(&block.header),
+        "data": {
+            "txs": block.data.as_slice().iter().map(|tx| b64(tx.as_bytes())).collect::<Vec<_>>(),
+        },
+        "evidence": { "evidence": [] },
+        "last_commit": block.last_commit.as_ref().map(commit_json),
+    })
+}
+
+fn header_json(header: &Header) -> Value {
+    serde_json::json!({
+        "version": {
+            "block": header.version.block.to_string(),
+            "app": header.version.app.to_string(),
+        },
+        "chain_id": header.chain_id.as_str(),
+        "height": header.height.to_string(),
+        "time": header.time.to_rfc3339(),
+        "last_block_id": block_id_json(&header.last_block_id),
+        "last_commit_hash": hex_upper(&header.last_commit_hash),
+        "data_hash": hex_upper(&header.data_hash),
+        "validators_hash": hex_upper(&header.validators_hash),
+        "next_validators_hash": hex_upper(&header.next_validators_hash),
+        "consensus_hash": hex_upper(&header.consensus_hash),
+        "app_hash": hex_upper(&header.app_hash),
+        "last_results_hash": hex_upper(&header.last_results_hash),
+        "evidence_hash": hex_upper(&header.evidence_hash),
+        "proposer_address": hex_upper(&header.proposer_address),
+    })
+}
+
+fn block_id_json(block_id: &BlockId) -> Value {
+    serde_json::json!({
+        "hash": hex_upper(&block_id.hash),
+        "parts": {
+            "total": block_id.part_set_header.total,
+            "hash": hex_upper(&block_id.part_set_header.hash),
+        },
+    })
+}
+
+fn commit_json(commit: &Commit) -> Value {
+    serde_json::json!({
+        "height": commit.height.to_string(),
+        "round": commit.round,
+        "block_id": block_id_json(&commit.block_id),
+        "signatures": commit.signatures.iter().map(commit_sig_json).collect::<Vec<_>>(),
+    })
+}
+
+fn commit_sig_json(sig: &CommitSig) -> Value {
+    serde_json::json!({
+        "block_id_flag": sig.block_id_flag as i32,
+        "validator_address": hex_upper(&sig.validator_address),
+        "timestamp": sig.timestamp.to_rfc3339(),
+        "signature": if sig.signature.is_empty() {
+            Value::Null
+        } else {
+            Value::String(b64(&sig.signature))
+        },
+    })
+}
+
+/// A missing `params` object uses field defaults. Anything else is invalid.
+fn params_object(request: &Value) -> Result<&Value, String> {
+    match request.get("params") {
+        None | Some(Value::Null) => Ok(&Value::Null),
+        Some(params) if params.is_object() => Ok(params),
+        Some(_) => Err("params must be an object".to_owned()),
+    }
+}
+
+fn field<'a>(params: &'a Value, name: &str) -> Option<&'a Value> {
+    params.get(name).filter(|value| !value.is_null())
+}
+
+fn string_param(params: &Value, name: &str) -> Result<String, String> {
+    match field(params, name) {
+        None => Ok(String::new()),
+        Some(Value::String(text)) => Ok(text.clone()),
+        Some(_) => Err(format!("params.{name} is not a string")),
+    }
+}
+
+fn hex_param(params: &Value, name: &str) -> Result<Vec<u8>, String> {
+    match field(params, name) {
+        None => Ok(Vec::new()),
+        Some(Value::String(text)) => {
+            hex::decode(text).map_err(|_| format!("params.{name} is not hex"))
+        }
+        Some(_) => Err(format!("params.{name} is not hex")),
+    }
+}
+
+fn bool_param(params: &Value, name: &str) -> Result<bool, String> {
+    match field(params, name) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("params.{name} is not a bool")),
+    }
+}
+
+/// `None` when the field is missing. `0` is a present zero, not missing.
+fn i64_param(params: &Value, name: &str) -> Result<Option<i64>, String> {
+    match field(params, name) {
+        None => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| format!("params.{name} is not an integer")),
+        Some(Value::String(text)) => text
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("params.{name} is not an integer")),
+        Some(_) => Err(format!("params.{name} is not an integer")),
+    }
+}
+
+fn invalid_params(id: &Value, data: &str) -> Value {
+    rpc_error_data(id.clone(), -32602, "Invalid params", data)
+}
+
+fn internal_message(id: &Value, data: &str) -> Value {
+    rpc_error_data(id.clone(), -32603, "Internal error", data)
 }
 
 fn internal_error(id: Value, err: &impl std::fmt::Display) -> Value {

@@ -89,12 +89,28 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let node_id = node_key.id().map_err(fail)?;
 
     let waiter = app.waiter();
+    let rpc_app = app.clone();
     let mempool = Mempool::new(config.mempool.clone(), app.clone()).map_err(fail)?;
     let wal_path = config.consensus.wal_file();
     let node = if wal_path.is_file() {
-        Node::start_with_wal(config.consensus.clone(), pv, state, mempool, app, &wal_path)
+        Node::start_with_wal_and_store(
+            config.consensus.clone(),
+            pv,
+            state,
+            mempool,
+            app,
+            Arc::clone(&block_store),
+            &wal_path,
+        )
     } else {
-        Node::start(config.consensus.clone(), pv, state, mempool, app)
+        Node::start_with_store(
+            config.consensus.clone(),
+            pv,
+            state,
+            mempool,
+            app,
+            Arc::clone(&block_store),
+        )
     }
     .map_err(fail)?;
     let node_mempool = node.mempool();
@@ -156,6 +172,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             mempool: node_mempool,
             waiter,
             commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
+            app: rpc_app,
         }),
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };
@@ -172,7 +189,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
 
 fn register(
     switch: &Arc<Switch>,
-    consensus: &ConsensusReactor<AbciApp, AbciApp>,
+    consensus: &ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: &MempoolReactor<AbciApp>,
     pex: &PexReactor,
     mempool_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
@@ -223,7 +240,7 @@ fn register(
 fn spawn_poll(
     stop: Arc<AtomicBool>,
     switch: Arc<Switch>,
-    consensus: ConsensusReactor<AbciApp, AbciApp>,
+    consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: MempoolReactor<AbciApp>,
     pex: PexReactor,
 ) -> JoinHandle<()> {

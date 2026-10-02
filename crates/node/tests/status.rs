@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use eld_tendermint_abci::{read_message, write_message};
@@ -19,7 +19,7 @@ use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{
     Request, RequestCheckTx, Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit,
     ResponseDeliverTx, ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo,
-    ResponseInitChain, request, response,
+    ResponseInitChain, ResponseQuery, request, response,
 };
 use eld_tendermint_types::Tx;
 use serde_json::Value;
@@ -187,6 +187,102 @@ fn broadcast_tx_commit_times_out_when_undelivered() {
         body["error"]["data"],
         "timed out waiting for tx to be included in a block"
     );
+}
+
+#[test]
+fn abci_query_returns_the_app_value() {
+    let home = TestHome::new("query");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let (_code, _headers, body) = post(
+        &node.rpc_addr(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"abci_query","params":{"path":"/store","data":"","height":0,"prove":false}}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    let response = &body["result"]["response"];
+    assert_eq!(response["code"], 0);
+    assert_eq!(
+        response["value"],
+        base64::engine::general_purpose::STANDARD.encode(b"queried")
+    );
+    assert_eq!(response["key"], "");
+    assert_eq!(response["height"], "0");
+    assert_eq!(response["index"], "0");
+    assert!(response["proofOps"].is_null());
+}
+
+#[test]
+fn block_and_commit_return_height_one() {
+    let home = TestHome::new("block");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"50ms\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = false
+";
+    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    wait_for_height(&addr, 1);
+
+    let (_code, _headers, block) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"block","params":{"height":1}}"#,
+    );
+    assert!(block.get("error").is_none(), "{block}");
+    assert_eq!(block["result"]["block"]["header"]["height"], "1");
+    let hash = block["result"]["block_id"]["hash"].as_str().unwrap();
+    assert_eq!(hash.len(), 64);
+    assert!(
+        hash.chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase())
+    );
+
+    let (_code, _headers, commit) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"commit","params":{"height":1}}"#,
+    );
+    assert!(commit.get("error").is_none(), "{commit}");
+    assert_eq!(commit["result"]["canonical"], false);
+    assert_eq!(
+        commit["result"]["signed_header"]["commit"]["block_id"]["hash"],
+        hash
+    );
+
+    let (_code, _headers, missing) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"block","params":{"height":99}}"#,
+    );
+    assert!(missing.get("result").is_none(), "{missing}");
+    assert_eq!(missing["error"]["code"], -32603);
+    assert_eq!(missing["error"]["message"], "Internal error");
+    let data = missing["error"]["data"].as_str().unwrap();
+    assert!(
+        data.starts_with("height 99 must be less than or equal to the current blockchain height "),
+        "{data}"
+    );
+}
+
+fn wait_for_height(addr: &str, want: i64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_code, _headers, body) = post(addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+        let height = body["result"]["sync_info"]["latest_block_height"]
+            .as_i64()
+            .unwrap_or(0);
+        if height >= want {
+            return;
+        }
+        assert!(Instant::now() < deadline, "height stayed {height}: {body}");
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn broadcast(method: &str, tx: &[u8]) -> String {
@@ -404,6 +500,10 @@ fn serve_abci(mut stream: TcpStream) {
                 response::Value::EndBlock(ResponseEndBlock::default())
             }
             Some(request::Value::Commit(_)) => response::Value::Commit(ResponseCommit::default()),
+            Some(request::Value::Query(_)) => response::Value::Query(ResponseQuery {
+                value: b"queried".as_slice().into(),
+                ..ResponseQuery::default()
+            }),
             _ => response::Value::Exception(ResponseException {
                 error: "unsupported".to_owned(),
             }),
