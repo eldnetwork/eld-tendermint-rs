@@ -1,6 +1,7 @@
 //! `config.StateSyncConfig`.
 
 use serde::Deserialize;
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
 
 use crate::Error;
 use crate::duration::Duration;
@@ -14,7 +15,8 @@ pub struct StateSyncConfig {
     pub enable: bool,
     #[serde(default)]
     pub temp_dir: String,
-    #[serde(default)]
+    /// A TOML array, or the comma-separated string Go writes into `config.toml`.
+    #[serde(default, deserialize_with = "deserialize_rpc_servers")]
     pub rpc_servers: Vec<String>,
     #[serde(default = "default_trust_period")]
     pub trust_period: Duration,
@@ -117,4 +119,45 @@ fn default_chunk_request_timeout() -> Duration {
 
 fn default_chunk_fetchers() -> i64 {
     4
+}
+
+/// Go's template joins this list with commas, so an empty list is `""`.
+fn deserialize_rpc_servers<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RpcServersVisitor;
+
+    impl<'de> Visitor<'de> for RpcServersVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a comma-separated string or an array of strings for rpc_servers")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value
+                .split(',')
+                .map(str::trim)
+                .filter(|server| !server.is_empty())
+                .map(ToOwned::to_owned)
+                .collect())
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut servers = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(server) = seq.next_element::<String>()? {
+                servers.push(server);
+            }
+            Ok(servers)
+        }
+    }
+
+    deserializer.deserialize_any(RpcServersVisitor)
 }

@@ -278,6 +278,49 @@ fn home_flag_wins_over_tmhome() {
 }
 
 #[test]
+fn rpc_servers_empty_string_loads_as_empty_list() {
+    let loaded = load_toml(b"[statesync]\nrpc_servers = \"\"\n").unwrap();
+    assert!(loaded.statesync.rpc_servers.is_empty());
+}
+
+#[test]
+fn rpc_servers_comma_separated_string_loads_as_two_servers() {
+    let loaded = load_toml(
+        br#"
+[statesync]
+rpc_servers = "http://a:26657,http://b:26657"
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        loaded.statesync.rpc_servers,
+        ["http://a:26657", "http://b:26657"]
+    );
+}
+
+#[test]
+fn rpc_servers_toml_array_stays_a_list() {
+    let loaded = load_toml(
+        br#"
+[statesync]
+rpc_servers = ["http://a:26657", "http://b:26657"]
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        loaded.statesync.rpc_servers,
+        ["http://a:26657", "http://b:26657"]
+    );
+}
+
+#[test]
+fn rpc_servers_rejects_non_string_and_names_the_field() {
+    let err = load_toml(b"[statesync]\nrpc_servers = 1\n").unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("rpc_servers"), "{message}");
+}
+
+#[test]
 fn p2p_addr_book_is_rooted() {
     let mut cfg = P2pConfig::default_config();
     cfg.root_dir = "/foo".to_owned();
