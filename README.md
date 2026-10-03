@@ -23,7 +23,7 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. The reactor gossips one tx per message on channel `0x30` and does not echo a tx to the peer that sent it. |
 | `eld-tendermint-blockchain` | v0 fast sync on channel `0x40`. A taller peer is asked for up to 20 blocks. Each block is applied at the next height after its commit matches the previous block. v1 and v2 are not started. |
 | `eld-tendermint-consensus` | In-process rounds and the gossip reactor on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. A node one or two blocks behind catches up on `0x21` and `0x22` with fast sync off. The WAL is CRC32C-framed. The head stays `cs.wal/wal` and rotates to `wal.NNN` at 10 MiB. A prevote written before rotation is replayed from the older segment without a second signature. |
-| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and the v0 blockchain reactor when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. |
+| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and the v0 blockchain reactor when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
 
 ## Database
 
@@ -35,12 +35,14 @@ Both are embedded, single-process key-value stores built on a log-structured mer
 - Key prefixes match the Go block store (H:, P:, C:, SC:, BH:, blockStore). The directory does not.
 - Tests use the in-memory Db. The node writes RocksDB files in its own directory.
 - blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. `eld-tendermint start` opens blockstore, state, `evidence.db`, and `tx_index.db` unless `[tx_index] indexer` is `null`.
+- `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, and keeps `config.toml`, genesis, and the node and validator keys. `--keep-addr-book` leaves the address book. The reset home itself can be started by either binary. The `data/` files the next Rust `start` creates are RocksDB and cannot be opened by the Go node.
 
 `tools/proto-compiler` is the prost-build binary used by `scripts/gen-proto.sh`.
 
 ```bash
 cargo test --workspace
 eld-tendermint start --home /path/to/node
+eld-tendermint unsafe-reset-all --home /path/to/node
 eld-tendermint-config --home /path/to/node
 ```
 

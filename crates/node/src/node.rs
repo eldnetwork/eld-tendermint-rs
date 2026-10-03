@@ -35,19 +35,32 @@ use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
 use crate::ws::{CommitPublisher, SubscriptionHub};
 
-/// `eld-tendermint start [--home <dir>]`. Blocks on the RPC accept loop.
+/// `eld-tendermint start [--home <dir>]` blocks on the RPC accept loop.
+/// `eld-tendermint unsafe-reset-all` returns after wiping chain data.
 ///
 /// # Errors
 ///
-/// Returns the first startup failure. The caller prints it and exits 1.
+/// Returns the first startup or reset failure. The caller prints it and exits 1.
 pub fn run() -> Result<(), Error> {
-    let home = home_from_args()?;
-    let process = boot(&home)?;
-    let listener = TcpListener::bind(process.rpc_addr).map_err(fail)?;
-    let bound = listener.local_addr().map_err(fail)?;
-    println!("rpc: {bound}");
-    let _ = io::stdout().flush();
-    rpc::serve(listener, Arc::clone(&process.status))
+    match command_from_args()? {
+        Command::Start(home) => {
+            let process = boot(&home)?;
+            let listener = TcpListener::bind(process.rpc_addr).map_err(fail)?;
+            let bound = listener.local_addr().map_err(fail)?;
+            println!("rpc: {bound}");
+            let _ = io::stdout().flush();
+            rpc::serve(listener, Arc::clone(&process.status))
+        }
+        Command::UnsafeResetAll {
+            home,
+            keep_addr_book,
+        } => crate::reset::unsafe_reset_all(&home, keep_addr_book),
+    }
+}
+
+enum Command {
+    Start(PathBuf),
+    UnsafeResetAll { home: PathBuf, keep_addr_book: bool },
 }
 
 struct NodeProcess {
@@ -408,15 +421,20 @@ fn parse_tcp(laddr: &str) -> Result<SocketAddr, Error> {
         .map_err(|_| Error::new(format!("invalid listen address: {laddr}")))
 }
 
-fn home_from_args() -> Result<PathBuf, Error> {
+fn command_from_args() -> Result<Command, Error> {
     let mut args = env::args().skip(1);
     let Some(command) = args.next() else {
-        return Err(Error::new("usage: eld-tendermint start [--home <dir>]"));
+        return Err(Error::new(
+            "usage: eld-tendermint <start|unsafe-reset-all> [--home <dir>]",
+        ));
     };
-    if command != "start" {
-        return Err(Error::new(format!("unknown command {command}")));
-    }
+    let allow_keep_addr_book = match command.as_str() {
+        "start" => false,
+        "unsafe-reset-all" => true,
+        _ => return Err(Error::new(format!("unknown command {command}"))),
+    };
     let mut home = None;
+    let mut keep_addr_book = false;
     while let Some(arg) = args.next() {
         if arg == "--home" {
             let Some(value) = args.next() else {
@@ -428,9 +446,19 @@ fn home_from_args() -> Result<PathBuf, Error> {
                 return Err(Error::new("missing value for --home"));
             }
             home = Some(value.to_owned());
+        } else if allow_keep_addr_book && arg == "--keep-addr-book" {
+            keep_addr_book = true;
         } else {
             return Err(Error::new(format!("unknown argument {arg}")));
         }
     }
-    resolve_home(home.as_deref()).map_err(fail)
+    let home = resolve_home(home.as_deref()).map_err(fail)?;
+    if allow_keep_addr_book {
+        Ok(Command::UnsafeResetAll {
+            home,
+            keep_addr_book,
+        })
+    } else {
+        Ok(Command::Start(home))
+    }
 }

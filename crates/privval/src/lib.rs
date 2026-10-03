@@ -203,6 +203,26 @@ impl FilePV {
         write_atomic(&self.state_path, &self.last_sign_state.to_json())
     }
 
+    /// Writes a height-0 last-sign-state at `state_path`.
+    ///
+    /// Does not read or write a key file. The JSON and the temp-file, `fsync`,
+    /// rename path are the same ones [`Self::save_state`] uses. Empty signature
+    /// and sign bytes are omitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic write fails.
+    pub fn save_reset_state(state_path: impl AsRef<Path>) -> Result<(), Error> {
+        let state = FilePVLastSignState {
+            height: 0,
+            round: 0,
+            step: STEP_NONE,
+            signature: None,
+            sign_bytes: None,
+        };
+        write_atomic(state_path.as_ref(), &state.to_json())
+    }
+
     /// `FilePV.GetPubKey`.
     #[must_use]
     pub fn get_pub_key(&self) -> PubKey {

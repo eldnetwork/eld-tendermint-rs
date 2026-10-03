@@ -4,6 +4,7 @@ use std::io::{BufRead, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
@@ -1046,18 +1047,160 @@ fn refused_privval_dial_stops_startup() {
     assert!(!stderr.contains("priv_validator_key.json"), "{stderr}");
 }
 
+#[test]
+fn unsafe_reset_all_wipes_chain_data_and_keeps_keys() {
+    let home = TestHome::new("reset-wipe");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let key = std::fs::read(home.path.join("config/priv_validator_key.json")).unwrap();
+    let genesis = std::fs::read(home.path.join("config/genesis.json")).unwrap();
+    let config = std::fs::read(home.path.join("config/config.toml")).unwrap();
+    let node_key = std::fs::read(home.path.join("config/node_key.json")).unwrap();
+
+    let blockstore = home.path.join("data/blockstore.db");
+    std::fs::create_dir_all(&blockstore).unwrap();
+    std::fs::write(blockstore.join("CURRENT"), b"MANIFEST-000001\n").unwrap();
+    std::fs::write(blockstore.join("LOG"), b"goleveldb log\n").unwrap();
+    std::fs::write(blockstore.join("000001.ldb"), b"not opened").unwrap();
+    std::fs::write(home.path.join("data/cs.wal"), b"wal bytes").unwrap();
+    std::fs::write(
+        home.path.join("config/addrbook.json"),
+        b"{\"key\":\"addr\"}\n",
+    )
+    .unwrap();
+
+    run_reset(&home.path, &["--home", home.path.to_str().unwrap()]);
+
+    assert!(!blockstore.exists());
+    assert!(!home.path.join("data/cs.wal").exists());
+    assert!(!home.path.join("config/addrbook.json").exists());
+    assert_eq!(data_entries(&home.path), vec!["priv_validator_state.json"]);
+    assert_eq!(
+        std::fs::read(home.path.join("config/priv_validator_key.json")).unwrap(),
+        key
+    );
+    assert_eq!(
+        std::fs::read(home.path.join("config/genesis.json")).unwrap(),
+        genesis
+    );
+    assert_eq!(
+        std::fs::read(home.path.join("config/config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(
+        std::fs::read(home.path.join("config/node_key.json")).unwrap(),
+        node_key
+    );
+    assert_height_zero_state(&home.path);
+}
+
+#[test]
+fn unsafe_reset_all_keep_addr_book_leaves_the_file() {
+    let home = TestHome::new("reset-keep");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let addrbook = b"{\"key\":\"keep\"}\n";
+    std::fs::write(home.path.join("config/addrbook.json"), addrbook).unwrap();
+
+    let home_arg = home.path.to_str().unwrap();
+    run_reset(&home.path, &["--keep-addr-book", "--home", home_arg]);
+
+    assert_eq!(
+        std::fs::read(home.path.join("config/addrbook.json")).unwrap(),
+        addrbook
+    );
+    assert_height_zero_state(&home.path);
+}
+
+#[test]
+fn unsafe_reset_all_missing_data_and_addrbook_still_writes_state() {
+    let home = TestHome::new("reset-missing");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    std::fs::remove_dir_all(home.path.join("data")).unwrap();
+    assert!(!home.path.join("config/addrbook.json").exists());
+
+    run_reset(&home.path, &["--home", home.path.to_str().unwrap()]);
+
+    assert!(home.path.join("data").is_dir());
+    assert_eq!(data_entries(&home.path), vec!["priv_validator_state.json"]);
+    assert_height_zero_state(&home.path);
+}
+
+#[test]
+fn start_after_unsafe_reset_all_calls_init_chain_once() {
+    let home = TestHome::new("reset-init");
+    let init_chain_calls = Arc::new(AtomicU64::new(0));
+    let proxy = stub_abci_counting(Arc::clone(&init_chain_calls));
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let blockstore = home.path.join("data/blockstore.db");
+    std::fs::create_dir_all(&blockstore).unwrap();
+    std::fs::write(blockstore.join("CURRENT"), b"MANIFEST-000001\n").unwrap();
+    std::fs::write(blockstore.join("LOG"), b"goleveldb log\n").unwrap();
+    std::fs::write(blockstore.join("000001.ldb"), b"not opened").unwrap();
+    std::fs::write(home.path.join("data/cs.wal"), b"wal bytes").unwrap();
+
+    run_reset(&home.path, &["--home", home.path.to_str().unwrap()]);
+    assert!(!blockstore.exists());
+
+    let mut node = NodeChild::spawn(&home.path);
+    let _addr = node.rpc_addr();
+    assert_eq!(init_chain_calls.load(Ordering::SeqCst), 1);
+}
+
+fn run_reset(home: &Path, args: &[&str]) {
+    let output = Command::new(bin_path())
+        .arg("unsafe-reset-all")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "reset of {} failed: {}",
+        home.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn data_entries(home: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(home.join("data"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn assert_height_zero_state(home: &Path) {
+    let pv = FilePV::load(
+        home.join("config/priv_validator_key.json"),
+        home.join("data/priv_validator_state.json"),
+    )
+    .expect("priv validator");
+    assert_eq!(pv.last_sign_state.height, 0);
+    assert_eq!(pv.last_sign_state.round, 0);
+    assert_eq!(pv.last_sign_state.step, 0);
+    assert!(pv.last_sign_state.signature.is_none());
+    assert!(pv.last_sign_state.sign_bytes.is_none());
+}
+
 fn stub_abci() -> String {
+    stub_abci_counting(Arc::new(AtomicU64::new(0)))
+}
+
+fn stub_abci_counting(init_chain_calls: Arc<AtomicU64>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            thread::spawn(move || serve_abci(stream));
+            let init_chain_calls = Arc::clone(&init_chain_calls);
+            thread::spawn(move || serve_abci(stream, init_chain_calls));
         }
     });
     format!("tcp://{addr}")
 }
 
-fn serve_abci(mut stream: TcpStream) {
+fn serve_abci(mut stream: TcpStream, init_chain_calls: Arc<AtomicU64>) {
     loop {
         let req: Request = match read_message(&mut stream) {
             Ok(req) => req,
@@ -1066,6 +1209,7 @@ fn serve_abci(mut stream: TcpStream) {
         let value = match req.value {
             Some(request::Value::Info(_)) => response::Value::Info(ResponseInfo::default()),
             Some(request::Value::InitChain(_)) => {
+                init_chain_calls.fetch_add(1, Ordering::SeqCst);
                 response::Value::InitChain(ResponseInitChain::default())
             }
             Some(request::Value::Flush(_)) => response::Value::Flush(ResponseFlush {}),
