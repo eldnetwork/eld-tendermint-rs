@@ -400,6 +400,7 @@ dependencies = [
  "eld-tendermint-store",
  "eld-tendermint-types",
  "hex",
+ "serde",
  "serde_json",
  "tungstenite",
 ]

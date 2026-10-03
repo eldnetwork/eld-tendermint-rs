@@ -4,6 +4,7 @@ mod app;
 mod error;
 mod node;
 mod rpc;
+mod rpc_json;
 mod wait;
 mod ws;
 

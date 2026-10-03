@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- RPC byte fields are standard base64, and Ed25519 public keys use the `tendermint/PubKeyEd25519` Amino envelope.
 - JSON-RPC `genesis`, `validators`, `blockchain`, `net_info`, and `consensus_state`. `broadcast_tx_async` returns the CheckTx code and tx hash without waiting for the next block.
 - Consensus catchup. A peer one or two heights behind is sent that block's parts on `0x21` and its seen-commit precommits on `0x22`, and commits the block once the votes are +2/3 and the block applies. A wider gap is left to fast sync.
 - WebSocket `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. A committed block is pushed as the commit result, and each DeliverTx is pushed as `ResultTx`.

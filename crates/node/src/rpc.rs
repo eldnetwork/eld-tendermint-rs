@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use eld_tendermint_consensus::{Reactor as ConsensusReactor, Step};
-use eld_tendermint_crypto::{marshal_pub_key, sum};
+use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_p2p::Switch;
 use eld_tendermint_proto::abci::{
@@ -18,13 +18,12 @@ use eld_tendermint_proto::abci::{
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_state::{StateStore, TxIndex};
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::{
-    Block, BlockId, Commit, CommitSig, GenesisDoc, Header, Time, Tx, Validator,
-};
+use eld_tendermint_types::{Block, Commit, CommitSig, GenesisDoc, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
+use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64};
 use crate::wait::TxWaiter;
 
 /// Fields `status` reads. Height comes from the RocksDB block store.
@@ -158,35 +157,43 @@ fn status_result(status: &NodeStatus) -> Value {
     };
     let (earliest_hash, earliest_app, earliest_time) =
         block_at(&status.block_store, earliest_height);
-    serde_json::json!({
-        "node_info": {
-            "protocol_version": { "p2p": 8, "block": 11, "app": 0 },
-            "id": status.id,
-            "listen_addr": status.listen_addr,
-            "network": status.network,
-            "version": "0.34.24",
-            "channels": status.channels,
-            "moniker": status.moniker,
-            "other": {
-                "tx_index": if status.tx_index.is_some() { "on" } else { "off" },
-                "rpc_address": status.rpc_address,
+    rpc_json::to_json(&StatusResponse {
+        node_info: rpc_json::NodeInfo {
+            protocol_version: rpc_json::ProtocolVersion {
+                p2p: 8,
+                block: 11,
+                app: 0,
+            },
+            id: status.id.clone(),
+            listen_addr: status.listen_addr.clone(),
+            network: status.network.clone(),
+            version: "0.34.24".to_owned(),
+            channels: status.channels.clone(),
+            moniker: status.moniker.clone(),
+            other: rpc_json::NodeInfoOther {
+                tx_index: if status.tx_index.is_some() {
+                    "on".to_owned()
+                } else {
+                    "off".to_owned()
+                },
+                rpc_address: status.rpc_address.clone(),
             },
         },
-        "sync_info": {
-            "latest_block_hash": latest_hash,
-            "latest_app_hash": latest_app,
-            "latest_block_height": height,
-            "latest_block_time": latest_time,
-            "earliest_block_hash": earliest_hash,
-            "earliest_app_hash": earliest_app,
-            "earliest_block_height": earliest_height,
-            "earliest_block_time": earliest_time,
-            "catching_up": false,
+        sync_info: rpc_json::SyncInfo {
+            latest_block_hash: latest_hash,
+            latest_app_hash: latest_app,
+            latest_block_height: height,
+            latest_block_time: latest_time,
+            earliest_block_hash: earliest_hash,
+            earliest_app_hash: earliest_app,
+            earliest_block_height: earliest_height,
+            earliest_block_time: earliest_time,
+            catching_up: false,
         },
-        "validator_info": {
-            "address": status.address,
-            "pub_key": status.pub_key,
-            "voting_power": status.voting_power,
+        validator_info: rpc_json::ValidatorInfo {
+            address: b64(&hex::decode(&status.address).unwrap_or_default()),
+            pub_key: status.pub_key.clone(),
+            voting_power: status.voting_power,
         },
     })
 }
@@ -200,14 +207,10 @@ fn block_at(store: &BlockStore<RocksDb>, height: i64) -> (String, String, String
         return (String::new(), String::new(), epoch);
     };
     (
-        hex_upper(&meta.block_id.hash),
-        hex_upper(&meta.header.app_hash),
+        b64(&meta.block_id.hash),
+        b64(&meta.header.app_hash),
         meta.header.time.to_rfc3339(),
     )
-}
-
-fn hex_upper(bytes: &[u8]) -> String {
-    hex::encode(bytes).to_ascii_uppercase()
 }
 
 fn broadcast_tx_sync(id: &Value, request: &Value, status: &NodeStatus) -> Value {
@@ -291,7 +294,7 @@ fn rpc_validators(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     } else {
         validators[skip..end]
             .iter()
-            .map(validator_json)
+            .map(|validator| rpc_json::to_json(&RpcValidator::from_validator(validator)))
             .collect::<Vec<_>>()
     };
     rpc_result(
@@ -303,19 +306,6 @@ fn rpc_validators(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             "total": total,
         }),
     )
-}
-
-fn validator_json(validator: &Validator) -> Value {
-    let pub_key = validator
-        .pub_key
-        .as_ref()
-        .and_then(|key| serde_json::from_str::<Value>(&marshal_pub_key(key)).ok());
-    serde_json::json!({
-        "address": hex_upper(&validator.address),
-        "pub_key": pub_key,
-        "voting_power": validator.voting_power,
-        "proposer_priority": validator.proposer_priority,
-    })
 }
 
 fn rpc_blockchain(id: &Value, request: &Value, status: &NodeStatus) -> Value {
@@ -346,9 +336,9 @@ fn rpc_blockchain(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             return internal_message(id, &format!("block meta {height} not found"));
         };
         block_metas.push(serde_json::json!({
-            "block_id": block_id_json(&meta.block_id),
+            "block_id": rpc_json::to_json(&RpcBlockId::from_block_id(&meta.block_id)),
             "block_size": meta.block_size,
-            "header": header_json(&meta.header),
+            "header": rpc_json::to_json(&RpcHeader::from_header(&meta.header)),
             "num_txs": meta.num_txs,
         }));
     }
@@ -477,10 +467,10 @@ fn tx_param(request: &Value) -> Result<Vec<u8>, String> {
 fn sync_result(response: &ResponseCheckTx, tx: &[u8]) -> Value {
     serde_json::json!({
         "code": response.code,
-        "data": hex_upper(&response.data),
+        "data": b64(&response.data),
         "log": response.log,
         "codespace": response.codespace,
-        "hash": hex_upper(&sum(tx)),
+        "hash": b64(&sum(tx)),
     })
 }
 
@@ -493,7 +483,7 @@ fn commit_result(
     serde_json::json!({
         "check_tx": check_tx_json(check_tx),
         "deliver_tx": deliver_tx_json(deliver_tx),
-        "hash": hex_upper(hash),
+        "hash": b64(hash),
         "height": height,
     })
 }
@@ -544,10 +534,6 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
         "value": b64(&attribute.value),
         "index": attribute.index,
     })
-}
-
-fn b64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 fn abci_query(id: &Value, request: &Value, status: &NodeStatus) -> Value {
@@ -630,7 +616,7 @@ fn rpc_block(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     rpc_result(
         id.clone(),
         serde_json::json!({
-            "block_id": block_id_json(&meta.block_id),
+            "block_id": rpc_json::to_json(&RpcBlockId::from_block_id(&meta.block_id)),
             "block": block_json(&block),
         }),
     )
@@ -657,7 +643,7 @@ fn rpc_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
         id.clone(),
         serde_json::json!({
             "signed_header": {
-                "header": header_json(&meta.header),
+                "header": rpc_json::to_json(&RpcHeader::from_header(&meta.header)),
                 "commit": commit_json(&commit),
             },
             "canonical": height != latest,
@@ -714,7 +700,7 @@ fn missing_block(id: &Value, height: i64) -> Value {
 
 fn block_json(block: &Block) -> Value {
     serde_json::json!({
-        "header": header_json(&block.header),
+        "header": rpc_json::to_json(&RpcHeader::from_header(&block.header)),
         "data": {
             "txs": block.data.as_slice().iter().map(|tx| b64(tx.as_bytes())).collect::<Vec<_>>(),
         },
@@ -723,43 +709,11 @@ fn block_json(block: &Block) -> Value {
     })
 }
 
-fn header_json(header: &Header) -> Value {
-    serde_json::json!({
-        "version": {
-            "block": header.version.block.to_string(),
-            "app": header.version.app.to_string(),
-        },
-        "chain_id": header.chain_id.as_str(),
-        "height": header.height.to_string(),
-        "time": header.time.to_rfc3339(),
-        "last_block_id": block_id_json(&header.last_block_id),
-        "last_commit_hash": hex_upper(&header.last_commit_hash),
-        "data_hash": hex_upper(&header.data_hash),
-        "validators_hash": hex_upper(&header.validators_hash),
-        "next_validators_hash": hex_upper(&header.next_validators_hash),
-        "consensus_hash": hex_upper(&header.consensus_hash),
-        "app_hash": hex_upper(&header.app_hash),
-        "last_results_hash": hex_upper(&header.last_results_hash),
-        "evidence_hash": hex_upper(&header.evidence_hash),
-        "proposer_address": hex_upper(&header.proposer_address),
-    })
-}
-
-fn block_id_json(block_id: &BlockId) -> Value {
-    serde_json::json!({
-        "hash": hex_upper(&block_id.hash),
-        "parts": {
-            "total": block_id.part_set_header.total,
-            "hash": hex_upper(&block_id.part_set_header.hash),
-        },
-    })
-}
-
 /// Commit result for the block that just became the tip. `canonical` is false.
 pub(crate) fn new_block_data(block: &Block, commit: &Commit) -> Value {
     serde_json::json!({
         "signed_header": {
-            "header": header_json(&block.header),
+            "header": rpc_json::to_json(&RpcHeader::from_header(&block.header)),
             "commit": commit_json(commit),
         },
         "canonical": false,
@@ -787,7 +741,7 @@ fn commit_json(commit: &Commit) -> Value {
     serde_json::json!({
         "height": commit.height.to_string(),
         "round": commit.round,
-        "block_id": block_id_json(&commit.block_id),
+        "block_id": rpc_json::to_json(&RpcBlockId::from_block_id(&commit.block_id)),
         "signatures": commit.signatures.iter().map(commit_sig_json).collect::<Vec<_>>(),
     })
 }
@@ -795,7 +749,7 @@ fn commit_json(commit: &Commit) -> Value {
 fn commit_sig_json(sig: &CommitSig) -> Value {
     serde_json::json!({
         "block_id_flag": sig.block_id_flag as i32,
-        "validator_address": hex_upper(&sig.validator_address),
+        "validator_address": b64(&sig.validator_address),
         "timestamp": sig.timestamp.to_rfc3339(),
         "signature": if sig.signature.is_empty() {
             Value::Null
@@ -829,7 +783,7 @@ fn rpc_tx(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     };
     match index.get(&hash) {
         Ok(Some(tx)) => rpc_result(id.clone(), result_tx_json(&hash, &tx)),
-        Ok(None) => internal_message(id, &format!("tx ({}) not found", hex_upper(&hash))),
+        Ok(None) => internal_message(id, &format!("tx ({}) not found", b64(&hash))),
         Err(err) => internal_error(id.clone(), &err),
     }
 }
@@ -906,7 +860,7 @@ fn rpc_tx_search(id: &Value, request: &Value, status: &NodeStatus) -> Value {
 fn result_tx_json(hash: &[u8], tx: &TxResult) -> Value {
     let deliver = tx.result.clone().unwrap_or_default();
     serde_json::json!({
-        "hash": hex_upper(hash),
+        "hash": b64(hash),
         "height": tx.height,
         "index": tx.index,
         "tx_result": deliver_tx_json(&deliver),

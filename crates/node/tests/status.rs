@@ -53,6 +53,17 @@ fn status_health_and_unknown_method() {
         status["result"]["sync_info"]["latest_block_time"],
         "1970-01-01T00:00:00Z"
     );
+    let pv = FilePV::load(
+        home.path.join("config/priv_validator_key.json"),
+        home.path.join("data/priv_validator_state.json"),
+    )
+    .expect("priv validator");
+    let pub_key = &status["result"]["validator_info"]["pub_key"];
+    assert_eq!(pub_key["type"], "tendermint/PubKeyEd25519");
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(pub_key["value"].as_str().expect("pubkey value"))
+        .expect("pubkey bytes");
+    assert_eq!(decoded, pv.get_pub_key().as_bytes().as_slice());
 
     let (_code, _headers, health) =
         post(&addr, r#"{"jsonrpc":"2.0","id":"abc","method":"health"}"#);
@@ -98,7 +109,7 @@ fn broadcast_tx_sync_returns_code_and_hash() {
     let (_code, _headers, body) = post(&node.rpc_addr(), &broadcast("broadcast_tx_sync", tx));
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 0);
-    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
     assert_eq!(body["result"]["data"], "");
 }
 
@@ -113,7 +124,7 @@ fn broadcast_tx_sync_returns_reject_code() {
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 9);
     assert_eq!(body["result"]["log"], "rejected");
-    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
 }
 
 #[test]
@@ -169,7 +180,7 @@ skip_timeout_commit = true
     assert_eq!(body["result"]["check_tx"]["code"], 0);
     assert_eq!(body["result"]["deliver_tx"]["code"], 7);
     assert!(body["result"]["height"].as_i64().unwrap() >= 1);
-    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
 }
 
 #[test]
@@ -210,7 +221,7 @@ skip_timeout_commit = true
     let height = committed["result"]["height"].as_i64().unwrap();
     assert!(height >= 1, "{committed}");
     let hash = committed["result"]["hash"].as_str().unwrap().to_owned();
-    assert_eq!(hash, hex_upper(&sum(tx)));
+    assert_eq!(hash, b64(&sum(tx)));
     let found = wait_for_tx(&addr, &hash);
     assert_eq!(found["result"]["height"], height);
     assert_eq!(found["result"]["index"], 0);
@@ -247,7 +258,7 @@ skip_timeout_commit = true
     assert_eq!(missing["error"]["code"], -32603);
     assert_eq!(
         missing["error"]["data"],
-        "tx (0000000000000000000000000000000000000000000000000000000000000000) not found"
+        "tx (AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=) not found"
     );
 
     let (_code, _headers, tag) = post(
@@ -365,11 +376,19 @@ skip_timeout_commit = false
     assert!(block.get("error").is_none(), "{block}");
     assert_eq!(block["result"]["block"]["header"]["height"], "1");
     let hash = block["result"]["block_id"]["hash"].as_str().unwrap();
-    assert_eq!(hash.len(), 64);
-    assert!(
-        hash.chars()
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase())
-    );
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(hash)
+        .expect("block hash");
+    assert_eq!(decoded.len(), 32);
+    let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    let latest = base64::engine::general_purpose::STANDARD
+        .decode(
+            status["result"]["sync_info"]["latest_block_hash"]
+                .as_str()
+                .expect("latest hash"),
+        )
+        .expect("latest hash bytes");
+    assert_eq!(decoded, latest);
 
     let (_code, _headers, commit) = post(
         &addr,
@@ -490,7 +509,7 @@ skip_timeout_commit = true
     assert_eq!(tx_ack["result"], serde_json::json!({}));
 
     let tx = b"ws-pay";
-    let hash = hex_upper(&sum(tx));
+    let hash = b64(&sum(tx));
     let addr_http = addr.clone();
     let body = broadcast("broadcast_tx_commit", tx);
     let http = thread::spawn(move || post_for(&addr_http, &body, Duration::from_secs(20)));
@@ -680,6 +699,7 @@ fn validators_at_height_one_are_the_genesis_set() {
     );
     assert_eq!(validator["voting_power"], 10);
     assert_eq!(validator["pub_key"], file["validators"][0]["pub_key"]);
+    assert_eq!(validator["pub_key"]["type"], "tendermint/PubKeyEd25519");
     assert!(validator["proposer_priority"].is_number());
 }
 
@@ -724,7 +744,10 @@ skip_timeout_commit = true
     let metas = body["result"]["block_metas"].as_array().expect("metas");
     assert_eq!(metas.len(), 1);
     assert_eq!(metas[0]["header"]["height"], "1");
-    assert_eq!(metas[0]["block_id"]["hash"].as_str().unwrap().len(), 64);
+    let meta_hash = base64::engine::general_purpose::STANDARD
+        .decode(metas[0]["block_id"]["hash"].as_str().unwrap())
+        .expect("meta hash");
+    assert_eq!(meta_hash.len(), 32);
 }
 
 #[test]
@@ -806,7 +829,7 @@ fn broadcast_tx_async_returns_before_the_next_block() {
     let (_code, _headers, body) = post(&addr, &broadcast("broadcast_tx_async", tx));
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 0);
-    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
     assert_eq!(body["result"]["data"], "");
     let (_code, _headers, after) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
     assert_eq!(after["result"]["sync_info"]["latest_block_height"], 0);
@@ -832,8 +855,8 @@ fn broadcast(method: &str, tx: &[u8]) -> String {
     format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"tx":"{encoded}"}}}}"#)
 }
 
-fn hex_upper(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 struct TestHome {
