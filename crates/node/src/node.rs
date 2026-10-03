@@ -4,8 +4,8 @@ use std::env;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -485,26 +485,13 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
         .strip_prefix("tcp://")
         .filter(|addr| !addr.is_empty())
         .ok_or_else(|| Error::new(format!("proxy_app is not tcp: {proxy_app}")))?;
-    // `socketClient.OnStart` with `mustConnect == false`.
-    let mut client = loop {
-        match SocketClient::connect(addr) {
-            Ok(client) => break client,
-            Err(err) => {
-                let reason = err.to_string();
-                let message = format!(
-                    "abci.socketClient failed to connect to {proxy_app}. Retrying after 3s..."
-                );
-                log_line(
-                    Level::Error,
-                    "abci-client",
-                    &message,
-                    &[("err", reason.as_str())],
-                );
-                thread::sleep(DIAL_RETRY_INTERVAL);
-            }
-        }
-    };
-    let info = match client.info(RequestInfo {
+    // `multiAppConn.OnStart` order: query, snapshot, mempool, consensus.
+    // Each dial is `socketClient.OnStart` with `mustConnect == false`.
+    let mut query = dial_abci(proxy_app, addr, "query");
+    let snapshot = dial_abci(proxy_app, addr, "snapshot");
+    let mempool = dial_abci(proxy_app, addr, "mempool");
+    let consensus = dial_abci(proxy_app, addr, "consensus");
+    let info = match query.info(RequestInfo {
         version: TM_CORE_SEMVER.to_owned(),
         block_version: BLOCK_PROTOCOL,
         p2p_version: 8,
@@ -533,7 +520,28 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
             ("appHash", app_hash.as_str()),
         ],
     );
-    Ok(AbciApp::new(Arc::new(Mutex::new(client))))
+    Ok(AbciApp::new(query, snapshot, mempool, consensus))
+}
+
+fn dial_abci(proxy_app: &str, addr: &str, connection: &'static str) -> SocketClient {
+    loop {
+        match SocketClient::connect(addr) {
+            Ok(client) => return client,
+            Err(err) => {
+                let reason = err.to_string();
+                let message = format!(
+                    "abci.socketClient failed to connect to {proxy_app}. Retrying after 3s..."
+                );
+                log_line(
+                    Level::Error,
+                    "abci-client",
+                    &message,
+                    &[("connection", connection), ("err", reason.as_str())],
+                );
+                thread::sleep(DIAL_RETRY_INTERVAL);
+            }
+        }
+    }
 }
 
 fn abci_failed(err: impl std::fmt::Display) -> Error {

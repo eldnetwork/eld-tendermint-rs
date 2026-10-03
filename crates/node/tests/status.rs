@@ -1103,7 +1103,7 @@ fn proxy_app_dial_succeeds_after_retry() {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let calls = Arc::new(AtomicU64::new(0));
-            thread::spawn(move || serve_abci(stream, calls));
+            thread::spawn(move || serve_abci(stream, calls, None));
         }
     });
     let _addr = node.rpc_addr();
@@ -1113,6 +1113,52 @@ fn proxy_app_dial_succeeds_after_retry() {
         "{stderr}"
     );
     assert!(stderr.contains("ABCI Handshake"), "{stderr}");
+}
+
+#[test]
+fn info_and_init_chain_use_different_sockets() {
+    let conns = Arc::new(std::sync::Mutex::new(Vec::<Arc<OpenSocket>>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let init_chain_calls = Arc::new(AtomicU64::new(0));
+    let accepted = Arc::clone(&conns);
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let seen = Arc::new(OpenSocket {
+                requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+            });
+            accepted.lock().unwrap().push(Arc::clone(&seen));
+            let init_chain_calls = Arc::clone(&init_chain_calls);
+            thread::spawn(move || {
+                serve_abci(stream, init_chain_calls, Some(Arc::clone(&seen.requests)));
+            });
+        }
+    });
+    let home = TestHome::new("abci-sockets");
+    write_home(&home.path, &format!("tcp://{addr}"), "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let _addr = node.rpc_addr();
+    let conns = conns.lock().unwrap();
+    assert_eq!(
+        conns.len(),
+        4,
+        "Go opens query, snapshot, mempool, and consensus"
+    );
+    let mut saw_info = false;
+    let mut saw_init = false;
+    for conn in conns.iter() {
+        let requests = conn.requests.lock().unwrap();
+        let info = requests.contains(&"info");
+        let init = requests.contains(&"init_chain");
+        assert!(
+            !(info && init),
+            "Info and InitChain share a socket: {requests:?}"
+        );
+        saw_info |= info;
+        saw_init |= init;
+    }
+    assert!(saw_info, "query socket did not receive Info");
+    assert!(saw_init, "consensus socket did not receive InitChain");
 }
 
 #[test]
@@ -1262,56 +1308,88 @@ fn stub_abci_counting(init_chain_calls: Arc<AtomicU64>) -> String {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let init_chain_calls = Arc::clone(&init_chain_calls);
-            thread::spawn(move || serve_abci(stream, init_chain_calls));
+            thread::spawn(move || serve_abci(stream, init_chain_calls, None));
         }
     });
     format!("tcp://{addr}")
 }
 
-fn serve_abci(mut stream: TcpStream, init_chain_calls: Arc<AtomicU64>) {
+struct OpenSocket {
+    requests: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+fn serve_abci(
+    mut stream: TcpStream,
+    init_chain_calls: Arc<AtomicU64>,
+    seen: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+) {
     loop {
         let req: Request = match read_message(&mut stream) {
             Ok(req) => req,
             Err(_) => return,
         };
-        let value = match req.value {
-            Some(request::Value::Info(_)) => response::Value::Info(ResponseInfo::default()),
+        let (name, value) = match req.value {
+            Some(request::Value::Info(_)) => {
+                ("info", response::Value::Info(ResponseInfo::default()))
+            }
             Some(request::Value::InitChain(_)) => {
                 init_chain_calls.fetch_add(1, Ordering::SeqCst);
-                response::Value::InitChain(ResponseInitChain::default())
+                (
+                    "init_chain",
+                    response::Value::InitChain(ResponseInitChain::default()),
+                )
             }
-            Some(request::Value::Flush(_)) => response::Value::Flush(ResponseFlush {}),
+            Some(request::Value::Flush(_)) => ("flush", response::Value::Flush(ResponseFlush {})),
             Some(request::Value::CheckTx(req)) => {
                 let code = if req.tx.as_ref() == b"reject" { 9 } else { 0 };
-                response::Value::CheckTx(ResponseCheckTx {
-                    code,
-                    log: if code == 0 {
-                        String::new()
-                    } else {
-                        "rejected".to_owned()
-                    },
-                    ..ResponseCheckTx::default()
-                })
+                (
+                    "check_tx",
+                    response::Value::CheckTx(ResponseCheckTx {
+                        code,
+                        log: if code == 0 {
+                            String::new()
+                        } else {
+                            "rejected".to_owned()
+                        },
+                        ..ResponseCheckTx::default()
+                    }),
+                )
             }
-            Some(request::Value::BeginBlock(_)) => {
-                response::Value::BeginBlock(ResponseBeginBlock::default())
+            Some(request::Value::BeginBlock(_)) => (
+                "begin_block",
+                response::Value::BeginBlock(ResponseBeginBlock::default()),
+            ),
+            Some(request::Value::DeliverTx(_)) => (
+                "deliver_tx",
+                response::Value::DeliverTx(ResponseDeliverTx {
+                    code: 7,
+                    ..ResponseDeliverTx::default()
+                }),
+            ),
+            Some(request::Value::EndBlock(_)) => (
+                "end_block",
+                response::Value::EndBlock(ResponseEndBlock::default()),
+            ),
+            Some(request::Value::Commit(_)) => {
+                ("commit", response::Value::Commit(ResponseCommit::default()))
             }
-            Some(request::Value::DeliverTx(_)) => response::Value::DeliverTx(ResponseDeliverTx {
-                code: 7,
-                ..ResponseDeliverTx::default()
-            }),
-            Some(request::Value::EndBlock(_)) => {
-                response::Value::EndBlock(ResponseEndBlock::default())
-            }
-            Some(request::Value::Commit(_)) => response::Value::Commit(ResponseCommit::default()),
-            Some(request::Value::Query(_)) => response::Value::Query(ResponseQuery {
-                value: b"queried".as_slice().into(),
-                ..ResponseQuery::default()
-            }),
-            _ => response::Value::Exception(ResponseException {
-                error: "unsupported".to_owned(),
-            }),
+            Some(request::Value::Query(_)) => (
+                "query",
+                response::Value::Query(ResponseQuery {
+                    value: b"queried".as_slice().into(),
+                    ..ResponseQuery::default()
+                }),
+            ),
+            _ => (
+                "other",
+                response::Value::Exception(ResponseException {
+                    error: "unsupported".to_owned(),
+                }),
+            ),
         };
+        if let Some(seen) = &seen {
+            seen.lock().unwrap().push(name);
+        }
         if write_message(&mut stream, &Response { value: Some(value) }).is_err() {
             return;
         }

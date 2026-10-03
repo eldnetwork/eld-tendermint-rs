@@ -1,4 +1,4 @@
-//! One ABCI socket used as both the mempool app and the block executor.
+//! Go's four ABCI sockets: query, snapshot, mempool, and consensus.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -14,23 +14,36 @@ use eld_tendermint_state::Error as StateError;
 use crate::wait::{DeliveredTx, TxWaiter};
 
 struct Shared {
-    client: Arc<Mutex<SocketClient>>,
+    query: Mutex<SocketClient>,
+    mempool: Mutex<SocketClient>,
+    consensus: Mutex<SocketClient>,
+    /// Kept open. Go dials this client even when state sync is off.
+    #[allow(dead_code)]
+    snapshot: Mutex<SocketClient>,
     waiter: Arc<TxWaiter>,
     /// Height from the latest `BeginBlock` header. `DeliverTx` reports this height.
     height: Mutex<i64>,
 }
 
-/// Shared socket client. Consensus and the mempool each hold a clone.
+/// Query, mempool, and consensus sockets. Consensus and the mempool each hold a clone.
 #[derive(Clone)]
 pub struct AbciApp {
     shared: Arc<Shared>,
 }
 
 impl AbciApp {
-    pub(crate) fn new(client: Arc<Mutex<SocketClient>>) -> Self {
+    pub(crate) fn new(
+        query: SocketClient,
+        snapshot: SocketClient,
+        mempool: SocketClient,
+        consensus: SocketClient,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
-                client,
+                query: Mutex::new(query),
+                snapshot: Mutex::new(snapshot),
+                mempool: Mutex::new(mempool),
+                consensus: Mutex::new(consensus),
                 waiter: Arc::new(TxWaiter::new()),
                 height: Mutex::new(0),
             }),
@@ -45,7 +58,7 @@ impl AbciApp {
         &self,
         request: RequestInitChain,
     ) -> Result<ResponseInitChain, StateError> {
-        lock(&self.shared.client)
+        lock(&self.shared.consensus)
             .init_chain(request)
             .map_err(abci_err)
     }
@@ -59,13 +72,13 @@ impl AbciApp {
         &self,
         request: RequestQuery,
     ) -> Result<ResponseQuery, eld_tendermint_abci::Error> {
-        lock(&self.shared.client).query(request)
+        lock(&self.shared.query).query(request)
     }
 }
 
 impl eld_tendermint_mempool::App for AbciApp {
     fn check_tx(&mut self, request: RequestCheckTx) -> ResponseCheckTx {
-        match lock(&self.shared.client).check_tx(request) {
+        match lock(&self.shared.mempool).check_tx(request) {
             Ok(response) => response,
             Err(err) => ResponseCheckTx {
                 code: 1,
@@ -84,14 +97,14 @@ impl eld_tendermint_state::App for AbciApp {
         if let Some(header) = &request.header {
             *lock_height(&self.shared.height) = header.height;
         }
-        lock(&self.shared.client)
+        lock(&self.shared.consensus)
             .begin_block(request)
             .map_err(abci_err)
     }
 
     fn deliver_tx(&mut self, request: RequestDeliverTx) -> Result<ResponseDeliverTx, StateError> {
         let hash = sum(request.tx.as_ref());
-        let response = lock(&self.shared.client)
+        let response = lock(&self.shared.consensus)
             .deliver_tx(request)
             .map_err(abci_err)?;
         let height = *lock_height(&self.shared.height);
@@ -106,13 +119,13 @@ impl eld_tendermint_state::App for AbciApp {
     }
 
     fn end_block(&mut self, request: RequestEndBlock) -> Result<ResponseEndBlock, StateError> {
-        lock(&self.shared.client)
+        lock(&self.shared.consensus)
             .end_block(request)
             .map_err(abci_err)
     }
 
     fn commit(&mut self) -> Result<ResponseCommit, StateError> {
-        lock(&self.shared.client).commit().map_err(abci_err)
+        lock(&self.shared.consensus).commit().map_err(abci_err)
     }
 }
 
@@ -120,7 +133,7 @@ fn abci_err(err: eld_tendermint_abci::Error) -> StateError {
     StateError::Abci(err.to_string())
 }
 
-fn lock(client: &Arc<Mutex<SocketClient>>) -> MutexGuard<'_, SocketClient> {
+fn lock(client: &Mutex<SocketClient>) -> MutexGuard<'_, SocketClient> {
     client.lock().unwrap_or_else(|err| err.into_inner())
 }
 
