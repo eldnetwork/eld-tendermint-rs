@@ -1068,14 +1068,51 @@ fn fresh_start_logs_handshake_and_init_chain_once() {
 }
 
 #[test]
-fn refused_proxy_app_logs_connection_failed() {
+fn refused_proxy_app_retries_without_exiting() {
     let home = TestHome::new("proxy-refused");
     write_home(&home.path, "tcp://127.0.0.1:1", "tcp://127.0.0.1:0");
     let mut node = NodeChild::spawn(&home.path);
-    let status = node.wait_exit();
-    assert!(!status.success(), "startup continued after a refused app");
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(1) {
+        assert!(
+            node.still_running(),
+            "node exited while the ABCI app was down"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
     let stderr = node.stderr();
-    assert!(stderr.contains("ABCI connection failed"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "abci.socketClient failed to connect to tcp://127.0.0.1:1. Retrying after 3s..."
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn proxy_app_dial_succeeds_after_retry() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let home = TestHome::new("proxy-retry");
+    write_home(&home.path, &format!("tcp://{addr}"), "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    thread::sleep(Duration::from_secs(1));
+    assert!(node.still_running(), "node exited before the app listened");
+    let listener = TcpListener::bind(addr).unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let calls = Arc::new(AtomicU64::new(0));
+            thread::spawn(move || serve_abci(stream, calls));
+        }
+    });
+    let _addr = node.rpc_addr();
+    let stderr = node.stderr();
+    assert!(
+        stderr.contains("abci.socketClient failed to connect to"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("ABCI Handshake"), "{stderr}");
 }
 
 #[test]

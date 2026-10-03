@@ -471,6 +471,9 @@ fn open_state_store(config: &Config) -> Result<StateStore<RocksDb>, Error> {
     Ok(StateStore::new(db))
 }
 
+/// `dialRetryIntervalSeconds`. `mustConnect` is false, so a failed dial retries.
+const DIAL_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+
 fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
     log_line(
         Level::Info,
@@ -482,9 +485,24 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
         .strip_prefix("tcp://")
         .filter(|addr| !addr.is_empty())
         .ok_or_else(|| Error::new(format!("proxy_app is not tcp: {proxy_app}")))?;
-    let mut client = match SocketClient::connect(addr) {
-        Ok(client) => client,
-        Err(err) => return Err(abci_failed(err)),
+    // `socketClient.OnStart` with `mustConnect == false`.
+    let mut client = loop {
+        match SocketClient::connect(addr) {
+            Ok(client) => break client,
+            Err(err) => {
+                let reason = err.to_string();
+                let message = format!(
+                    "abci.socketClient failed to connect to {proxy_app}. Retrying after 3s..."
+                );
+                log_line(
+                    Level::Error,
+                    "abci-client",
+                    &message,
+                    &[("err", reason.as_str())],
+                );
+                thread::sleep(DIAL_RETRY_INTERVAL);
+            }
+        }
     };
     let info = match client.info(RequestInfo {
         version: TM_CORE_SEMVER.to_owned(),
