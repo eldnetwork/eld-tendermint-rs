@@ -183,6 +183,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     register_evidence(&switch, &evidence_reactor, evidence_desc)?;
 
     let stop = Arc::new(AtomicBool::new(true));
+    let consensus_status = consensus.clone();
     let poll = spawn_poll(
         Arc::clone(&stop),
         Arc::clone(&switch),
@@ -193,6 +194,7 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         evidence_reactor,
     );
 
+    let status_switch = Arc::clone(&switch);
     let process = NodeProcess {
         switch,
         stop,
@@ -214,6 +216,10 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
             app: rpc_app,
             tx_index,
             subscriptions,
+            genesis,
+            state_store,
+            switch: status_switch,
+            consensus: consensus_status,
         }),
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };

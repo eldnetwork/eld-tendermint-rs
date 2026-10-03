@@ -247,6 +247,26 @@ where
             .unwrap_or(Step::NewHeight)
     }
 
+    /// Consensus height of the first local validator, or 0 when there is none.
+    #[must_use]
+    pub fn height(&self) -> i64 {
+        lock(&self.inner)
+            .nodes
+            .first()
+            .map(Node::height)
+            .unwrap_or(0)
+    }
+
+    /// Round of the first local validator, or 0 when there is none.
+    #[must_use]
+    pub fn round(&self) -> i32 {
+        lock(&self.inner)
+            .nodes
+            .first()
+            .map(Node::round)
+            .unwrap_or(0)
+    }
+
     /// Block hash of the first local validator's current proposal.
     #[must_use]
     pub fn proposal_hash(&self) -> Option<Vec<u8>> {

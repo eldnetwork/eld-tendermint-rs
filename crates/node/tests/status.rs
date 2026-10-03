@@ -149,7 +149,15 @@ timeout_precommit_delta = \"0s\"
 timeout_commit = \"50ms\"
 skip_timeout_commit = true
 ";
-    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
     let mut node = NodeChild::spawn(&home.path);
     let tx = b"pay";
     let (_code, _headers, body) = post_for(
@@ -179,7 +187,15 @@ timeout_precommit_delta = \"0s\"
 timeout_commit = \"50ms\"
 skip_timeout_commit = true
 ";
-    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
     let tx = b"pay";
     let mut node = NodeChild::spawn(&home.path);
     let addr = node.rpc_addr();
@@ -274,6 +290,7 @@ fn broadcast_tx_commit_times_out_when_undelivered() {
         false,
         "timeout_broadcast_tx_commit = \"200ms\"",
         "",
+        "",
     );
     let mut node = NodeChild::spawn(&home.path);
     let (_code, _headers, body) = post_for(
@@ -328,7 +345,15 @@ timeout_precommit_delta = \"0s\"
 timeout_commit = \"50ms\"
 skip_timeout_commit = false
 ";
-    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
     let mut node = NodeChild::spawn(&home.path);
     let addr = node.rpc_addr();
     wait_for_height(&addr, 1);
@@ -386,7 +411,15 @@ timeout_precommit_delta = \"0s\"
 timeout_commit = \"50ms\"
 skip_timeout_commit = true
 ";
-    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", true, "", consensus);
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
     let mut node = NodeChild::spawn(&home.path);
     let addr = node.rpc_addr();
     let height = chain_height(&addr);
@@ -597,6 +630,188 @@ fn is_timeout(err: &tungstenite::Error) -> bool {
     )
 }
 
+#[test]
+fn genesis_chain_id_matches_the_file() {
+    let home = TestHome::new("genesis");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let file: Value = serde_json::from_slice(
+        &std::fs::read(home.path.join("config/genesis.json")).expect("genesis file"),
+    )
+    .expect("genesis json");
+    let mut node = NodeChild::spawn(&home.path);
+    let (_code, _headers, body) = post(
+        &node.rpc_addr(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"genesis"}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    let genesis = &body["result"]["genesis"];
+    assert_eq!(genesis["chain_id"], file["chain_id"]);
+    assert!(genesis.get("genesis_time").is_some());
+    assert!(genesis.get("validators").is_some());
+    assert!(genesis.get("app_hash").is_some());
+    assert!(genesis.get("consensus_params").is_some());
+}
+
+#[test]
+fn validators_at_height_one_are_the_genesis_set() {
+    let home = TestHome::new("validators");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let file: Value = serde_json::from_slice(
+        &std::fs::read(home.path.join("config/genesis.json")).expect("genesis file"),
+    )
+    .expect("genesis json");
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    let (_code, _headers, body) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"validators","params":{"height":1,"page":1}}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["block_height"], 1);
+    assert_eq!(body["result"]["count"], 1);
+    assert_eq!(body["result"]["total"], 1);
+    let validator = &body["result"]["validators"][0];
+    assert_eq!(
+        validator["address"],
+        status["result"]["validator_info"]["address"]
+    );
+    assert_eq!(validator["voting_power"], 10);
+    assert_eq!(validator["pub_key"], file["validators"][0]["pub_key"]);
+    assert!(validator["proposer_priority"].is_number());
+}
+
+#[test]
+fn blockchain_one_through_one_returns_one_meta() {
+    let home = TestHome::new("blockchain");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"50ms\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = true
+";
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let (_code, _headers, committed) = post_for(
+        &addr,
+        &broadcast("broadcast_tx_commit", b"pay"),
+        Duration::from_secs(20),
+    );
+    assert!(committed.get("error").is_none(), "{committed}");
+    let (_code, _headers, body) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"blockchain","params":{"minHeight":1,"maxHeight":1}}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    assert!(body["result"]["last_height"].as_i64().unwrap() >= 1);
+    let metas = body["result"]["block_metas"].as_array().expect("metas");
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0]["header"]["height"], "1");
+    assert_eq!(metas[0]["block_id"]["hash"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn net_info_counts_a_persistent_peer() {
+    let proxy = stub_abci();
+    let home_a = TestHome::new("net-a");
+    write_home(&home_a.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node_a = NodeChild::spawn(&home_a.path);
+    let addr_a = node_a.rpc_addr();
+    let (_code, _headers, status) = post(&addr_a, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    let id = status["result"]["node_info"]["id"]
+        .as_str()
+        .expect("node id")
+        .to_owned();
+    let (_code, _headers, info) = post(&addr_a, r#"{"jsonrpc":"2.0","id":1,"method":"net_info"}"#);
+    assert!(info.get("error").is_none(), "{info}");
+    assert_eq!(info["result"]["listening"], true);
+    assert_eq!(info["result"]["n_peers"], 0);
+    let listener = info["result"]["listeners"][0]
+        .as_str()
+        .expect("listener")
+        .to_owned();
+    let host = listener
+        .strip_prefix("tcp://")
+        .expect("tcp listener")
+        .to_owned();
+    let home_b = TestHome::new("net-b");
+    write_configured(
+        &home_b.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        &format!("{id}@{host}"),
+        "",
+    );
+    let mut node_b = NodeChild::spawn(&home_b.path);
+    let addr_b = node_b.rpc_addr();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let body = loop {
+        let (_code, _headers, body) =
+            post(&addr_b, r#"{"jsonrpc":"2.0","id":1,"method":"net_info"}"#);
+        if body["result"]["n_peers"] == 1 {
+            break body;
+        }
+        assert!(Instant::now() < deadline, "peer did not connect: {body}");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(body["result"]["peers"][0]["node_info"]["id"], id);
+}
+
+#[test]
+fn consensus_state_on_a_fresh_home_is_height_one() {
+    let home = TestHome::new("consensus-state");
+    let proxy = stub_abci();
+    // This key is not in the genesis set, so the round stays open at height 1.
+    write_configured(&home.path, &proxy, "tcp://127.0.0.1:0", false, "", "", "");
+    let mut node = NodeChild::spawn(&home.path);
+    let (_code, _headers, body) = post(
+        &node.rpc_addr(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"consensus_state"}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["height"], 1);
+    assert!(body["result"]["round"].is_number());
+    assert!(body["result"]["step"].as_i64().unwrap() > 1);
+}
+
+#[test]
+fn broadcast_tx_async_returns_before_the_next_block() {
+    let home = TestHome::new("async");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let addr = node.rpc_addr();
+    let (_code, _headers, before) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    assert_eq!(before["result"]["sync_info"]["latest_block_height"], 0);
+    let tx = b"pay";
+    let (_code, _headers, body) = post(&addr, &broadcast("broadcast_tx_async", tx));
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["code"], 0);
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
+    assert_eq!(body["result"]["data"], "");
+    let (_code, _headers, after) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
+    assert_eq!(after["result"]["sync_info"]["latest_block_height"], 0);
+}
+
 fn wait_for_height(addr: &str, want: i64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -740,7 +955,7 @@ impl Drop for NodeChild {
 }
 
 fn write_home(home: &Path, proxy_app: &str, rpc_laddr: &str) {
-    write_configured(home, proxy_app, rpc_laddr, true, "", "");
+    write_configured(home, proxy_app, rpc_laddr, true, "", "", "");
 }
 
 fn write_configured(
@@ -749,6 +964,7 @@ fn write_configured(
     rpc_laddr: &str,
     own_validator: bool,
     rpc_extra: &str,
+    persistent_peers: &str,
     consensus: &str,
 ) {
     let pv = FilePV::load_or_gen_file_pv(
@@ -780,7 +996,7 @@ fn write_configured(
     )
     .unwrap();
     let config = format!(
-        "proxy_app = {proxy_app:?}\nmoniker = \"status-node\"\n\n[rpc]\nladdr = {rpc_laddr:?}\n{rpc_extra}\n\n[p2p]\nladdr = \"tcp://127.0.0.1:0\"\npersistent_peers = \"\"\n\n{consensus}"
+        "proxy_app = {proxy_app:?}\nmoniker = \"status-node\"\n\n[rpc]\nladdr = {rpc_laddr:?}\n{rpc_extra}\n\n[p2p]\nladdr = \"tcp://127.0.0.1:0\"\npersistent_peers = {persistent_peers:?}\n\n{consensus}"
     );
     std::fs::write(home.join("config/config.toml"), config).unwrap();
 }

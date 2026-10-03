@@ -36,6 +36,12 @@ pub enum Step {
 }
 
 impl Step {
+    /// Go `RoundStepType`. `NewHeight` is 1.
+    #[must_use]
+    pub fn round_step(self) -> u32 {
+        self.as_wal()
+    }
+
     /// Go `RoundStepType`. NewHeight is 1.
     #[must_use]
     pub(crate) fn as_wal(self) -> u32 {

@@ -275,6 +275,21 @@ impl Switch {
             .all(|peer| peer.conn.send(ch_id, bytes))
     }
 
+    /// `true` after [`Self::listen`] until [`Self::stop`].
+    #[must_use]
+    pub fn is_listening(&self) -> bool {
+        self.state.accepting.load(Ordering::SeqCst)
+    }
+
+    /// Bound `tcp://` addresses. Empty until [`Self::listen`] returns.
+    #[must_use]
+    pub fn listeners(&self) -> Vec<String> {
+        lock(&self.state.local_addr)
+            .map(|addr| format!("tcp://{addr}"))
+            .into_iter()
+            .collect()
+    }
+
     /// Running peers. A peer that hit a fatal receive error is omitted.
     #[must_use]
     pub fn peers(&self) -> Vec<PeerInfo> {

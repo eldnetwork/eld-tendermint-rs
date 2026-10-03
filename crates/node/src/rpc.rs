@@ -7,16 +7,20 @@ use std::thread;
 use std::time::Duration;
 
 use base64::Engine;
-use eld_tendermint_crypto::sum;
+use eld_tendermint_consensus::{Reactor as ConsensusReactor, Step};
+use eld_tendermint_crypto::{marshal_pub_key, sum};
 use eld_tendermint_mempool::Mempool;
+use eld_tendermint_p2p::Switch;
 use eld_tendermint_proto::abci::{
     Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseQuery,
     TxResult,
 };
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
-use eld_tendermint_state::TxIndex;
+use eld_tendermint_state::{StateStore, TxIndex};
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::{Block, BlockId, Commit, CommitSig, Header, Time, Tx};
+use eld_tendermint_types::{
+    Block, BlockId, Commit, CommitSig, GenesisDoc, Header, Time, Tx, Validator,
+};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
@@ -43,6 +47,10 @@ pub struct NodeStatus {
     pub tx_index: Option<Arc<TxIndex<RocksDb>>>,
     /// Live `NewBlock` and `Tx` subscriptions.
     pub subscriptions: Arc<crate::ws::SubscriptionHub>,
+    pub genesis: GenesisDoc,
+    pub state_store: Arc<StateStore<RocksDb>>,
+    pub switch: Arc<Switch>,
+    pub consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
 }
 
 /// Accept JSON-RPC calls until the listener closes.
@@ -124,7 +132,12 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
     match method {
         "health" => rpc_result(id, Value::Object(Map::new())),
         "status" => rpc_result(id, status_result(status)),
-        "broadcast_tx_sync" => broadcast_tx_sync(&id, request, status),
+        "broadcast_tx_sync" | "broadcast_tx_async" => broadcast_tx_sync(&id, request, status),
+        "genesis" => rpc_result(id, genesis_result(status)),
+        "validators" => rpc_validators(&id, request, status),
+        "blockchain" => rpc_blockchain(&id, request, status),
+        "net_info" => rpc_result(id, net_info_result(status)),
+        "consensus_state" => rpc_result(id, consensus_state_result(status)),
         "broadcast_tx_commit" => broadcast_tx_commit(&id, request, status),
         "abci_query" => abci_query(&id, request, status),
         "block" => rpc_block(&id, request, status),
@@ -206,6 +219,199 @@ fn broadcast_tx_sync(id: &Value, request: &Value, status: &NodeStatus) -> Value 
         Ok(response) => rpc_result(id.clone(), sync_result(&response, &tx)),
         Err(err) => internal_error(id.clone(), &err),
     }
+}
+
+fn genesis_result(status: &NodeStatus) -> Value {
+    let genesis = serde_json::from_str::<Value>(&status.genesis.to_json())
+        .unwrap_or(Value::Object(Map::new()));
+    serde_json::json!({ "genesis": genesis })
+}
+
+fn rpc_validators(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let asked = match i64_param(params, "height") {
+        Ok(height) => height,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let page = match i64_param(params, "page") {
+        Ok(page) => page,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let per_page = match i64_param(params, "per_page") {
+        Ok(per_page) => per_page,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let Some(state) = status.state_store.load() else {
+        return internal_message(id, "state not found");
+    };
+    let uncommitted = status.block_store.height() + 1;
+    let height = match asked {
+        None => uncommitted,
+        Some(height) if height <= 0 => {
+            return internal_message(
+                id,
+                &format!("height must be greater than 0, but got {height}"),
+            );
+        }
+        Some(height) if height > uncommitted => {
+            return internal_message(
+                id,
+                &format!(
+                    "height {height} must be less than or equal to the current blockchain height {uncommitted}"
+                ),
+            );
+        }
+        Some(height) => height,
+    };
+    let set = if height == state.last_block_height + 1 {
+        &state.validators
+    } else if state.last_block_height >= 1 && height == state.last_block_height {
+        &state.last_validators
+    } else {
+        return internal_message(
+            id,
+            &format!("could not find validator set for height {height}"),
+        );
+    };
+    let validators = set.validators();
+    let total = i64::try_from(validators.len()).unwrap_or(i64::MAX);
+    let per_page = validate_per_page(per_page);
+    let page = match validate_page(page, per_page, total) {
+        Ok(page) => page,
+        Err(data) => return internal_message(id, &data),
+    };
+    let skip = usize::try_from((page - 1) * per_page).unwrap_or(0);
+    let end = skip + usize::try_from(per_page).unwrap_or(0);
+    let end = end.min(validators.len());
+    let page_validators = if skip >= validators.len() {
+        Vec::new()
+    } else {
+        validators[skip..end]
+            .iter()
+            .map(validator_json)
+            .collect::<Vec<_>>()
+    };
+    rpc_result(
+        id.clone(),
+        serde_json::json!({
+            "block_height": height,
+            "validators": page_validators,
+            "count": page_validators.len(),
+            "total": total,
+        }),
+    )
+}
+
+fn validator_json(validator: &Validator) -> Value {
+    let pub_key = validator
+        .pub_key
+        .as_ref()
+        .and_then(|key| serde_json::from_str::<Value>(&marshal_pub_key(key)).ok());
+    serde_json::json!({
+        "address": hex_upper(&validator.address),
+        "pub_key": pub_key,
+        "voting_power": validator.voting_power,
+        "proposer_priority": validator.proposer_priority,
+    })
+}
+
+fn rpc_blockchain(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let params = match params_object(request) {
+        Ok(params) => params,
+        Err(data) => return invalid_params(id, &data),
+    };
+    let min_height = match i64_param(params, "minHeight") {
+        Ok(height) => height.unwrap_or(0),
+        Err(data) => return invalid_params(id, &data),
+    };
+    let max_height = match i64_param(params, "maxHeight") {
+        Ok(height) => height.unwrap_or(0),
+        Err(data) => return invalid_params(id, &data),
+    };
+    let (min_height, max_height) = match filter_min_max(
+        status.block_store.base(),
+        status.block_store.height(),
+        min_height,
+        max_height,
+    ) {
+        Ok(range) => range,
+        Err(data) => return internal_message(id, &data),
+    };
+    let mut block_metas = Vec::new();
+    for height in (min_height..=max_height).rev() {
+        let Some(meta) = status.block_store.load_block_meta(height) else {
+            return internal_message(id, &format!("block meta {height} not found"));
+        };
+        block_metas.push(serde_json::json!({
+            "block_id": block_id_json(&meta.block_id),
+            "block_size": meta.block_size,
+            "header": header_json(&meta.header),
+            "num_txs": meta.num_txs,
+        }));
+    }
+    rpc_result(
+        id.clone(),
+        serde_json::json!({
+            "last_height": status.block_store.height(),
+            "block_metas": block_metas,
+        }),
+    )
+}
+
+/// Go `filterMinMax`. At most 20 block metas.
+fn filter_min_max(
+    base: i64,
+    height: i64,
+    mut min: i64,
+    mut max: i64,
+) -> Result<(i64, i64), String> {
+    const LIMIT: i64 = 20;
+    if min < 0 || max < 0 {
+        return Err("heights must be non-negative".to_owned());
+    }
+    if min == 0 {
+        min = 1;
+    }
+    if max == 0 {
+        max = height;
+    }
+    max = max.min(height);
+    min = min.max(base);
+    min = min.max(max - LIMIT + 1);
+    if min > max {
+        return Err(format!(
+            "min height {min} can't be greater than max height {max}"
+        ));
+    }
+    Ok((min, max))
+}
+
+fn net_info_result(status: &NodeStatus) -> Value {
+    let peers = status.switch.peers();
+    serde_json::json!({
+        "listening": status.switch.is_listening(),
+        "listeners": status.switch.listeners(),
+        "n_peers": peers.len(),
+        "peers": peers
+            .iter()
+            .map(|peer| serde_json::json!({
+                "node_info": { "id": peer.id },
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn consensus_state_result(status: &NodeStatus) -> Value {
+    let step = status.consensus.step();
+    let started = step != Step::NewHeight;
+    serde_json::json!({
+        "height": if started { status.consensus.height() } else { 0 },
+        "round": if started { status.consensus.round() } else { 0 },
+        "step": step.round_step(),
+    })
 }
 
 fn broadcast_tx_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
