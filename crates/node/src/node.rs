@@ -27,8 +27,11 @@ use eld_tendermint_mempool::{
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
 use eld_tendermint_privval::{FilePV, PrivValidator, RemoteSigner};
 use eld_tendermint_proto::abci::RequestInfo;
-use eld_tendermint_state::{CommitEvents, IndexTxs, StateStore, TxIndex, load_or_init_chain};
+use eld_tendermint_state::{
+    CommitEvents, IndexTxs, StateStore, TM_CORE_SEMVER, TxIndex, load_or_init_chain,
+};
 use eld_tendermint_store::{BlockStore, RocksDb};
+use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line};
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
@@ -49,6 +52,13 @@ pub fn run() -> Result<(), Error> {
             let bound = listener.local_addr().map_err(fail)?;
             println!("rpc: {bound}");
             let _ = io::stdout().flush();
+            let rpc_addr = bound.to_string();
+            log_line(
+                Level::Info,
+                "rpc",
+                "RPC listener",
+                &[("addr", rpc_addr.as_str())],
+            );
             rpc::serve(listener, Arc::clone(&process.status))
         }
         Command::UnsafeResetAll {
@@ -82,8 +92,27 @@ impl Drop for NodeProcess {
 
 fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let config = load_home(home).map_err(fail)?;
+    let block = BLOCK_PROTOCOL.to_string();
+    log_line(
+        Level::Info,
+        "main",
+        "Version info",
+        &[
+            ("tendermint_version", TM_CORE_SEMVER),
+            ("block", block.as_str()),
+            ("p2p", "8"),
+        ],
+    );
     let mut genesis = config.load_genesis().map_err(fail)?;
     let node_key = NodeKey::load(config.node_key_file()).map_err(fail)?;
+    let node_id = node_key.id().map_err(fail)?;
+    let key_file = config.node_key_file().display().to_string();
+    log_line(
+        Level::Info,
+        "p2p",
+        "P2P Node ID",
+        &[("ID", node_id.as_str()), ("file", key_file.as_str())],
+    );
     let pv: Box<dyn PrivValidator> = if config.base.priv_validator_laddr.is_empty() {
         Box::new(
             FilePV::load(
@@ -105,6 +134,19 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         app.init_chain(request)
     })
     .map_err(fail)?;
+    if state.version.consensus.block != BLOCK_PROTOCOL {
+        let software = BLOCK_PROTOCOL.to_string();
+        let state_block = state.version.consensus.block.to_string();
+        log_line(
+            Level::Info,
+            "main",
+            "Software and state have different block protocols",
+            &[
+                ("software", software.as_str()),
+                ("state", state_block.as_str()),
+            ],
+        );
+    }
     let fast_sync = config.base.fast_sync && config.fastsync.version == "v0";
     let tx_index = open_tx_index(&config)?;
     let tx_for_reactors = tx_index
@@ -134,8 +176,22 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         .map(|validator| validator.power)
         .unwrap_or(0);
     let validator_address = hex::encode(address_bytes).to_ascii_uppercase();
+    let validator_message = if genesis
+        .validators
+        .iter()
+        .any(|validator| validator.address.as_slice() == address_bytes.as_slice())
+    {
+        "This node is a validator"
+    } else {
+        "This node is not a validator"
+    };
+    log_line(
+        Level::Info,
+        "consensus",
+        validator_message,
+        &[("addr", validator_address.as_str())],
+    );
     let pub_key_json = serde_json::from_str(&marshal_pub_key(&pub_key)).map_err(fail)?;
-    let node_id = node_key.id().map_err(fail)?;
 
     let evidence_db = RocksDb::open(config.db_dir().join("evidence.db")).map_err(fail)?;
     let evidence_pool = EvidencePool::new(evidence_db, &state);
@@ -249,10 +305,17 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
         .switch
         .dial_persistent(&node_key, &config.p2p.persistent_peers)
         .map_err(fail)?;
-    process
+    let p2p_bound = process
         .switch
         .listen(&node_key, &config.p2p.laddr)
         .map_err(fail)?;
+    let p2p_addr = format!("tcp://{p2p_bound}");
+    log_line(
+        Level::Info,
+        "p2p",
+        "Listening",
+        &[("addr", p2p_addr.as_str())],
+    );
     Ok(process)
 }
 
@@ -273,7 +336,7 @@ fn register(
                 return;
             }
             if let Some(switch) = mempool_switch.upgrade() {
-                switch.stop_peer(peer_id);
+                stop_bad_peer(&switch, peer_id);
             }
         })
         .map_err(fail)?;
@@ -286,7 +349,7 @@ fn register(
                 return;
             }
             if let Some(switch) = consensus_switch.upgrade() {
-                switch.stop_peer(peer_id);
+                stop_bad_peer(&switch, peer_id);
             }
         })
         .map_err(fail)?;
@@ -299,7 +362,7 @@ fn register(
                 return;
             };
             if !pex_cb.handle(&switch, peer_id, &bytes) {
-                switch.stop_peer(peer_id);
+                stop_bad_peer(&switch, peer_id);
             }
         })
         .map_err(fail)?;
@@ -322,7 +385,7 @@ fn register_blockchain(
                     return;
                 };
                 if !blockchain_cb.handle(&switch, peer_id, ch_id, &bytes) {
-                    switch.stop_peer(peer_id);
+                    stop_bad_peer(&switch, peer_id);
                 }
             },
         )
@@ -343,11 +406,21 @@ fn register_evidence(
                 return;
             };
             if !evidence_cb.handle(peer_id, ch_id, &bytes) {
-                switch.stop_peer(peer_id);
+                stop_bad_peer(&switch, peer_id);
             }
         })
         .map_err(fail)?;
     Ok(())
+}
+
+fn stop_bad_peer(switch: &Switch, peer_id: &str) {
+    log_line(
+        Level::Info,
+        "p2p",
+        "Peer stopped",
+        &[("id", peer_id), ("err", "bad message")],
+    );
+    switch.stop_peer(peer_id);
 }
 
 fn spawn_poll(
@@ -398,19 +471,52 @@ fn open_state_store(config: &Config) -> Result<StateStore<RocksDb>, Error> {
 }
 
 fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
+    log_line(
+        Level::Info,
+        "proxy",
+        "Connecting to ABCI app",
+        &[("proxy_app", proxy_app)],
+    );
     let addr = proxy_app
         .strip_prefix("tcp://")
         .filter(|addr| !addr.is_empty())
         .ok_or_else(|| Error::new(format!("proxy_app is not tcp: {proxy_app}")))?;
-    let mut client = SocketClient::connect(addr).map_err(fail)?;
-    client
-        .info(RequestInfo {
-            version: "0.34.24".to_owned(),
-            block_version: 11,
-            p2p_version: 8,
-        })
-        .map_err(fail)?;
+    let mut client = match SocketClient::connect(addr) {
+        Ok(client) => client,
+        Err(err) => return Err(abci_failed(err)),
+    };
+    let info = match client.info(RequestInfo {
+        version: TM_CORE_SEMVER.to_owned(),
+        block_version: BLOCK_PROTOCOL,
+        p2p_version: 8,
+    }) {
+        Ok(info) => info,
+        Err(err) => return Err(abci_failed(err)),
+    };
+    let app_version = info.app_version.to_string();
+    let last_block_height = info.last_block_height.to_string();
+    log_line(
+        Level::Info,
+        "consensus",
+        "ABCI Handshake",
+        &[
+            ("app_version", app_version.as_str()),
+            ("last_block_height", last_block_height.as_str()),
+        ],
+    );
     Ok(AbciApp::new(Arc::new(Mutex::new(client))))
+}
+
+fn abci_failed(err: impl std::fmt::Display) -> Error {
+    let failed = fail(err);
+    let reason = failed.to_string();
+    log_line(
+        Level::Error,
+        "proxy",
+        "ABCI connection failed",
+        &[("err", reason.as_str())],
+    );
+    failed
 }
 
 fn parse_tcp(laddr: &str) -> Result<SocketAddr, Error> {

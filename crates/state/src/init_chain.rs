@@ -9,7 +9,7 @@ use eld_tendermint_proto::abci::{
     ValidatorUpdate,
 };
 use eld_tendermint_store::Db;
-use eld_tendermint_types::{ConsensusParams, GenesisDoc, ValidatorSet};
+use eld_tendermint_types::{ConsensusParams, GenesisDoc, Level, ValidatorSet, log_line};
 use prost::bytes::Bytes;
 
 use crate::error::Error;
@@ -40,6 +40,12 @@ where
     if let Some(state) = store.load() {
         return Ok(state);
     }
+    log_line(
+        Level::Info,
+        "consensus",
+        "InitChain",
+        &[("chain_id", genesis.chain_id.as_str())],
+    );
     let state = make_genesis_state(genesis)?;
     let request = request_init_chain(genesis)?;
     let response = init(request)?;

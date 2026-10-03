@@ -1048,6 +1048,37 @@ fn refused_privval_dial_stops_startup() {
 }
 
 #[test]
+fn fresh_start_logs_handshake_and_init_chain_once() {
+    let home = TestHome::new("operator-logs");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+
+    let mut node = NodeChild::spawn(&home.path);
+    let _addr = node.rpc_addr();
+    let stderr = node.stderr();
+    assert!(stderr.contains("ABCI Handshake"), "{stderr}");
+    assert!(stderr.contains("InitChain"), "{stderr}");
+    assert!(stderr.contains(&format!("chain_id={CHAIN_ID}")), "{stderr}");
+
+    let mut again = NodeChild::spawn(&home.path);
+    let _addr = again.rpc_addr();
+    let stderr = again.stderr();
+    assert!(stderr.contains("ABCI Handshake"), "{stderr}");
+    assert!(!stderr.contains("InitChain"), "{stderr}");
+}
+
+#[test]
+fn refused_proxy_app_logs_connection_failed() {
+    let home = TestHome::new("proxy-refused");
+    write_home(&home.path, "tcp://127.0.0.1:1", "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let status = node.wait_exit();
+    assert!(!status.success(), "startup continued after a refused app");
+    let stderr = node.stderr();
+    assert!(stderr.contains("ABCI connection failed"), "{stderr}");
+}
+
+#[test]
 fn unsafe_reset_all_wipes_chain_data_and_keeps_keys() {
     let home = TestHome::new("reset-wipe");
     let proxy = stub_abci();

@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use eld_tendermint_types::{Level, log_line};
+
 use crate::address::{NetAddress, parse_persistent_peers};
 use crate::connection::{ChannelDescriptor, MConnConfig, MConnection};
 use crate::error::Error;
@@ -329,13 +331,22 @@ impl Switch {
     fn dial_locked(&self, node_key: &NodeKey, addr: &NetAddress) -> Result<(), Error> {
         let stream =
             TcpStream::connect_timeout(&addr.socket_addr(), DIAL_TIMEOUT).map_err(Error::Io)?;
-        let conn = handshake(stream, &node_key.priv_key)?;
+        let remote = addr.socket_addr().to_string();
+        let conn = match handshake(stream, &node_key.priv_key) {
+            Ok(conn) => conn,
+            Err(err) => {
+                log_handshake_failed(&remote, &err);
+                return Err(err);
+            }
+        };
         let got = hex::encode(conn.remote_pub_key().address());
         if got != addr.id {
-            return Err(Error::IdMismatch {
+            let err = Error::IdMismatch {
                 expected: addr.id.clone(),
                 got,
-            });
+            };
+            log_handshake_failed(&remote, &err);
+            return Err(err);
         }
         insert_peer(
             &self.state,
@@ -379,9 +390,12 @@ fn accept_loop(state: Arc<State>, node_key: NodeKey) {
                     break;
                 }
                 let remote = peer.to_string();
-                if let Ok(conn) = handshake(stream, &node_key.priv_key) {
-                    let id = hex::encode(conn.remote_pub_key().address());
-                    let _ = insert_peer(&state, conn, id, remote);
+                match handshake(stream, &node_key.priv_key) {
+                    Ok(conn) => {
+                        let id = hex::encode(conn.remote_pub_key().address());
+                        let _ = insert_peer(&state, conn, id, remote);
+                    }
+                    Err(err) => log_handshake_failed(&remote, &err),
                 }
             }
             Err(_) => {
@@ -458,13 +472,32 @@ where
         started.stop();
         return Ok(());
     }
+    let log_id = node_id.clone();
+    let log_addr = remote_addr.clone();
     inner.peers.push(PeerSlot {
         id: node_id,
         remote_addr,
         running,
         conn: Box::new(started),
     });
+    drop(inner);
+    log_line(
+        Level::Info,
+        "p2p",
+        "Peer connected",
+        &[("id", log_id.as_str()), ("addr", log_addr.as_str())],
+    );
     Ok(())
+}
+
+fn log_handshake_failed(addr: &str, err: &impl std::fmt::Display) {
+    let reason = err.to_string();
+    log_line(
+        Level::Error,
+        "p2p",
+        "Secret handshake failed",
+        &[("addr", addr), ("err", reason.as_str())],
+    );
 }
 
 fn connected_or_dialing(inner: &Inner, id: &str) -> bool {

@@ -5,7 +5,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use eld_tendermint_config::{MEMPOOL_V0, MempoolConfig};
 use eld_tendermint_proto::abci::{CheckTxType, RequestCheckTx, ResponseCheckTx, ResponseDeliverTx};
-use eld_tendermint_types::{Tx, Txs};
+use eld_tendermint_types::{Level, Tx, Txs, log_line, upper_hex};
 use prost::Message;
 use prost::bytes::Bytes;
 
@@ -166,6 +166,16 @@ impl<A: App> Mempool<A> {
             .post_check
             .as_ref()
             .and_then(|post| post(tx, &response).err());
+        if response.code != 0 {
+            let code = response.code.to_string();
+            let hash = upper_hex(tx.hash().as_bytes());
+            log_line(
+                Level::Error,
+                "mempool",
+                "CheckTx failed",
+                &[("code", code.as_str()), ("hash", hash.as_str())],
+            );
+        }
         if response.code == 0 && post_err.is_none() {
             if let Err(err) = self.is_full(tx_size) {
                 self.cache.remove(tx);
@@ -225,7 +235,7 @@ impl<A: App> Mempool<A> {
     /// Returns [`Error::MismatchedDeliverResponses`] when the slices differ in length.
     pub fn update(
         &mut self,
-        _height: i64,
+        height: i64,
         block_txs: &[Tx],
         deliver_responses: &[ResponseDeliverTx],
         new_pre_check: Option<PreCheck>,
@@ -247,8 +257,23 @@ impl<A: App> Mempool<A> {
         for (tx, response) in block_txs.iter().zip(deliver_responses.iter()) {
             if response.code == 0 {
                 let _ = self.cache.push(tx);
-            } else if !self.config.keep_invalid_txs_in_cache {
-                self.cache.remove(tx);
+            } else {
+                let code = response.code.to_string();
+                let height = height.to_string();
+                let hash = upper_hex(tx.hash().as_bytes());
+                log_line(
+                    Level::Error,
+                    "mempool",
+                    "DeliverTx failed",
+                    &[
+                        ("code", code.as_str()),
+                        ("height", height.as_str()),
+                        ("hash", hash.as_str()),
+                    ],
+                );
+                if !self.config.keep_invalid_txs_in_cache {
+                    self.cache.remove(tx);
+                }
             }
             self.remove_tx(tx, false);
         }

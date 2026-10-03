@@ -1,6 +1,7 @@
 //! In-process rounds. No sockets and no sleeps.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
@@ -12,7 +13,9 @@ use eld_tendermint_proto::abci::{
 };
 use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::{App as ExecApp, make_genesis_state};
-use eld_tendermint_types::{BlockId, ChainId, GenesisDoc, GenesisValidator, Time, Vote};
+use eld_tendermint_types::{
+    BlockId, ChainId, GenesisDoc, GenesisValidator, Time, Vote, set_log_capture, upper_hex,
+};
 use prost::bytes::Bytes;
 
 use eld_tendermint_consensus::{Group, Msg, Node, Step};
@@ -145,9 +148,35 @@ fn is_prevote(msg: &Msg) -> bool {
 
 #[test]
 fn one_validator_commits_height_one() {
+    let capture = LogCapture::start();
     let mut validators = group(1);
     validators.run_until_height(1);
     assert_committed(&mut validators);
+    let logs = capture.text();
+    let hash = upper_hex(&validators.nodes()[0].committed_hash(1).expect("block"));
+    assert!(logs.contains("Committed block"), "{logs}");
+    assert!(logs.contains(&hash), "{logs}");
+}
+
+/// Records operator lines for one test, then stops recording.
+struct LogCapture(Arc<Mutex<String>>);
+
+impl LogCapture {
+    fn start() -> Self {
+        let buf = Arc::new(Mutex::new(String::new()));
+        set_log_capture(Some(Arc::clone(&buf)));
+        Self(buf)
+    }
+
+    fn text(&self) -> String {
+        self.0.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+}
+
+impl Drop for LogCapture {
+    fn drop(&mut self) {
+        set_log_capture(None);
+    }
 }
 
 #[test]

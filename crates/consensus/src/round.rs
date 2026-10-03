@@ -13,8 +13,8 @@ use eld_tendermint_state::{
 };
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
-    BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Part, PartSet, Proposal, Time,
-    ValidatorSet, Vote,
+    BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet, Proposal,
+    Time, ValidatorSet, Vote, log_line, upper_hex,
 };
 use prost::Message;
 
@@ -69,6 +69,19 @@ impl Step {
             7 => Some(Self::PrecommitWait),
             8 => Some(Self::Commit),
             _ => None,
+        }
+    }
+
+    fn log_name(self) -> &'static str {
+        match self {
+            Self::NewHeight => "RoundStepNewHeight",
+            Self::NewRound => "RoundStepNewRound",
+            Self::Propose => "RoundStepPropose",
+            Self::Prevote => "RoundStepPrevote",
+            Self::PrevoteWait => "RoundStepPrevoteWait",
+            Self::Precommit => "RoundStepPrecommit",
+            Self::PrecommitWait => "RoundStepPrecommitWait",
+            Self::Commit => "RoundStepCommit",
         }
     }
 }
@@ -776,6 +789,21 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         }
     }
 
+    fn log_step(&self, message: &str) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            message,
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("step", self.step.log_name()),
+            ],
+        );
+    }
+
     fn enter_new_round(&mut self, height: i64, round: i32) {
         if self.height != height || round < self.round {
             return;
@@ -792,6 +820,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.round = round;
         self.step = Step::NewRound;
         self.votes.set_round(round);
+        self.log_step("enterNewRound");
         if round != 0 {
             self.proposal = None;
             self.proposal_block = None;
@@ -808,6 +837,24 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             return;
         }
         self.step = Step::Propose;
+        let proposer = self
+            .validators
+            .proposer()
+            .map(|validator| upper_hex(&validator.address))
+            .unwrap_or_default();
+        let height_field = self.height.to_string();
+        let round_field = self.round.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "enterPropose",
+            &[
+                ("height", height_field.as_str()),
+                ("round", round_field.as_str()),
+                ("step", self.step.log_name()),
+                ("proposer", proposer.as_str()),
+            ],
+        );
         self.schedule(self.config.propose(round), height, round, Step::Propose);
         if self.is_proposer() {
             self.decide_proposal(height, round);
@@ -949,6 +996,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         };
         let _ = self.broadcast_vote(SignedMsgType::Prevote, block_id.unwrap_or_default());
         self.step = Step::Prevote;
+        self.log_step("enterPrevote");
     }
 
     fn after_prevote(&mut self, round: i32) {
@@ -1007,6 +1055,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let Some(block_id) = majority else {
             let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
             self.step = Step::Precommit;
+            self.log_step("enterPrecommit");
             return;
         };
         if block_id.hash.is_empty() {
@@ -1014,6 +1063,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             self.locked_parts = None;
             let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
             self.step = Step::Precommit;
+            self.log_step("enterPrecommit");
             return;
         }
         let proposal_matches = self
@@ -1038,6 +1088,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
         }
         self.step = Step::Precommit;
+        self.log_step("enterPrecommit");
     }
 
     fn after_precommit(&mut self, round: i32) {
@@ -1167,8 +1218,31 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             hash: block_hash.as_bytes().to_vec(),
             part_set_header: parts.header(),
         };
-        let Ok(applied) = apply_block(&self.chain_state, &id, &block, &mut self.exec) else {
-            return;
+        let hash = upper_hex(block_hash.as_bytes());
+        let height = self.height.to_string();
+        let round = commit_round.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "Finalizing commit",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("hash", hash.as_str()),
+            ],
+        );
+        let applied = match apply_block(&self.chain_state, &id, &block, &mut self.exec) {
+            Ok(applied) => applied,
+            Err(err) => {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "failed to apply block",
+                    &[("err", err.as_str())],
+                );
+                return;
+            }
         };
         let seen = self
             .votes
@@ -1209,6 +1283,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             pool.update_state(&applied.state);
         }
         let committed = self.height;
+        let committed_height = committed.to_string();
+        let committed_hash = upper_hex(block_hash.as_bytes());
+        let app_hash = upper_hex(&applied.state.app_hash);
+        let num_txs = block.data.as_slice().len().to_string();
         self.commit_round = None;
         self.pending_parts.clear();
         self.wal_sync(&wal::end_height_message(Time::now(), committed));
@@ -1231,6 +1309,17 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             self.chain_state.chain_id.as_str(),
             self.height,
             self.validators.copy(),
+        );
+        log_line(
+            Level::Info,
+            "consensus",
+            "Committed block",
+            &[
+                ("height", committed_height.as_str()),
+                ("hash", committed_hash.as_str()),
+                ("app_hash", app_hash.as_str()),
+                ("num_txs", num_txs.as_str()),
+            ],
         );
     }
 
