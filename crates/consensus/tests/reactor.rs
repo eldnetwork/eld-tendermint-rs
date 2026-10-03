@@ -1,4 +1,5 @@
-//! Two switches gossiping consensus. No catchup.
+//! Two switches gossiping consensus. A node one or two blocks behind catches up
+//! from block-store parts and seen-commit votes, with the blockchain reactor off.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -17,7 +18,8 @@ use eld_tendermint_proto::abci::{
     ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEndBlock,
 };
 use eld_tendermint_proto::consensus::{self, BlockPart, Message, message};
-use eld_tendermint_state::{App as ExecApp, make_genesis_state};
+use eld_tendermint_state::{App as ExecApp, State as ChainState, make_genesis_state};
+use eld_tendermint_store::{BlockStore, MemDb};
 use eld_tendermint_types::{ChainId, GenesisDoc, GenesisValidator, Part, Time};
 use prost::Message as ProstMessage;
 use prost::bytes::Bytes;
@@ -148,10 +150,10 @@ fn secret_pair() -> (
     let key_b = PrivKey::generate();
     let (sock_a, sock_b) = UnixStream::pair().expect("socket pair");
     sock_a
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("timeout");
     sock_b
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("timeout");
     let handle = thread::spawn(move || make_secret_connection(sock_b, &key_b).expect("handshake"));
     let conn_a = make_secret_connection(sock_a, &key_a).expect("handshake");
@@ -178,9 +180,13 @@ fn switch_for(reactor: &Reactor<Exec, Check>) -> Arc<Switch> {
 }
 
 fn link(left: &Switch, right: &Switch) {
+    link_ids(left, "left", right, "right");
+}
+
+fn link_ids(left: &Switch, left_id: &str, right: &Switch, right_id: &str) {
     let (conn_left, conn_right) = secret_pair();
-    left.add_peer(conn_left, "right").expect("peer");
-    right.add_peer(conn_right, "left").expect("peer");
+    left.add_peer(conn_left, right_id).expect("peer");
+    right.add_peer(conn_right, left_id).expect("peer");
 }
 
 fn encode_proposal(proposal: &eld_tendermint_types::Proposal) -> Vec<u8> {
@@ -305,4 +311,256 @@ fn bad_part_proof_is_dropped_and_peer_stays() {
     assert_eq!(reactor.prevote_count(0), 0);
     assert!(reactor.proposal_hash().is_some());
     assert_eq!(receiver.peers().len(), 1);
+}
+
+fn poll_until(reactors: &[(&Reactor<Exec, Check>, &Switch)], height: i64, limit: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if reactors
+            .iter()
+            .all(|(reactor, _)| reactor.committed(height))
+        {
+            return true;
+        }
+        for (reactor, switch) in reactors {
+            reactor.poll(switch);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+fn bad_catchup_part(height: i64) -> Vec<u8> {
+    let part = Part {
+        index: 0,
+        bytes: b"not-the-block".to_vec(),
+        proof: eld_tendermint_crypto::Proof {
+            total: 1,
+            index: 0,
+            leaf_hash: vec![0x11; 32],
+            aunts: Vec::new(),
+        },
+    };
+    Message {
+        sum: Some(message::Sum::BlockPart(BlockPart {
+            height,
+            round: 0,
+            part: Some(part.to_proto()),
+        })),
+    }
+    .encode_to_vec()
+}
+
+struct CatchupNodes {
+    ahead: Vec<Node<Exec, Check>>,
+    behind: Node<Exec, Check>,
+    store: Arc<BlockStore<MemDb>>,
+    state: ChainState,
+    config: ConsensusConfig,
+    wal_path: std::path::PathBuf,
+    key_path: std::path::PathBuf,
+    state_path: std::path::PathBuf,
+}
+
+/// A holds three of four equal-power validators. B holds the other and a file WAL.
+fn catchup_validators() -> CatchupNodes {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "eld-catchup-{}-{}-{}",
+        std::process::id(),
+        stamp,
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut keys = Vec::with_capacity(4);
+    let mut paths = Vec::with_capacity(4);
+    for index in 0..4 {
+        let key_path = dir.join(format!("priv_validator_key_{index}.json"));
+        let state_path = dir.join(format!("priv_validator_state_{index}.json"));
+        let pv = FilePV::load_or_gen_file_pv(&key_path, &state_path).expect("file pv");
+        paths.push((key_path, state_path));
+        keys.push(pv);
+    }
+    let mut genesis = GenesisDoc {
+        genesis_time: Time::from_unix_parts(1_600_000_000, 0),
+        chain_id: ChainId::new("test-chain"),
+        initial_height: 0,
+        consensus_params: None,
+        validators: keys
+            .iter()
+            .map(|pv| GenesisValidator {
+                address: Vec::new(),
+                pub_key: pv.get_pub_key(),
+                power: 10,
+                name: String::new(),
+            })
+            .collect(),
+        app_hash: vec![0x11; 32],
+        app_state: None,
+    };
+    let state = make_genesis_state(&mut genesis).expect("genesis");
+    let config = ConsensusConfig::test_config();
+    let wal_path = dir.join("cs.wal");
+    let store = Arc::new(BlockStore::new(MemDb::new()));
+    let (b_key, b_state) = paths.pop().expect("behind paths");
+    let behind_key = keys.pop().expect("behind key");
+    let behind = Node::start_with_wal_and_store(
+        config.clone(),
+        behind_key,
+        state.clone(),
+        Mempool::new(MempoolConfig::test_config(), Check).expect("mempool"),
+        Exec,
+        Arc::clone(&store),
+        &wal_path,
+    )
+    .expect("behind node");
+    let ahead = keys
+        .into_iter()
+        .map(|pv| {
+            let mempool = Mempool::new(MempoolConfig::test_config(), Check).expect("mempool");
+            Node::start(config.clone(), pv, state.clone(), mempool, Exec).expect("node")
+        })
+        .collect();
+    CatchupNodes {
+        ahead,
+        behind,
+        store,
+        state,
+        config,
+        wal_path,
+        key_path: b_key,
+        state_path: b_state,
+    }
+}
+
+#[test]
+fn lagging_node_catches_up_from_height_one_to_three() {
+    let CatchupNodes {
+        ahead: ahead_nodes,
+        behind: behind_node,
+        store,
+        state,
+        config,
+        wal_path,
+        key_path,
+        state_path,
+    } = catchup_validators();
+    let ahead = Reactor::new(ahead_nodes);
+    let behind = Reactor::new(vec![behind_node]);
+    let ahead_switch = switch_for(&ahead);
+    let behind_switch = switch_for(&behind);
+    link(&ahead_switch, &behind_switch);
+
+    let start = Instant::now();
+    while !ahead.committed(1) && start.elapsed() < Duration::from_secs(5) {
+        ahead.poll(&ahead_switch);
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(ahead.committed(1), "ahead did not commit height 1");
+    // B's height is in A's peer state. One more poll sends block 1 and only
+    // arms the next round; a further poll would commit height 2.
+    behind.poll(&behind_switch);
+    thread::sleep(Duration::from_millis(30));
+    let start = Instant::now();
+    while !behind.committed(1) && start.elapsed() < Duration::from_secs(5) {
+        ahead.gossip(&ahead_switch);
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        ahead.committed(1) && behind.committed(1),
+        "height 1 ahead={} behind={}",
+        ahead.committed(1),
+        behind.committed(1)
+    );
+    behind.poll(&behind_switch);
+    thread::sleep(Duration::from_millis(30));
+    ahead_switch.stop_peer("right");
+    behind_switch.stop_peer("left");
+    assert!(
+        !ahead.committed(2),
+        "ahead left height 1 before the partition"
+    );
+
+    let start = Instant::now();
+    while !has_prevote(&behind) && start.elapsed() < Duration::from_secs(2) {
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    let lagging_prevote = behind
+        .last_signature()
+        .expect("prevote at the lagging height");
+    assert!(!lagging_prevote.is_empty());
+
+    assert!(
+        poll_until(&[(&ahead, &ahead_switch)], 3, Duration::from_secs(8)),
+        "ahead did not reach store height 3"
+    );
+    assert!(!behind.committed(2), "behind advanced while partitioned");
+
+    link(&ahead_switch, &behind_switch);
+    assert!(ahead_switch.send("right", DATA_CHANNEL, &bad_catchup_part(2)));
+    thread::sleep(Duration::from_millis(30));
+    assert!(
+        !behind.committed(2),
+        "a bad part proof advanced the behind node"
+    );
+    assert_eq!(behind_switch.peers().len(), 1, "bad part stopped the peer");
+
+    let start = Instant::now();
+    while !behind.committed(2) && start.elapsed() < Duration::from_secs(8) {
+        ahead.gossip(&ahead_switch);
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        behind.committed(2),
+        "behind did not apply block 2 peers={}",
+        behind_switch.peers().len()
+    );
+    for _ in 0..20 {
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let start = Instant::now();
+    while !behind.committed(3) && start.elapsed() < Duration::from_secs(8) {
+        ahead.gossip(&ahead_switch);
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        behind.committed(3),
+        "behind did not catch up to store height 3"
+    );
+    assert_eq!(behind.committed_hash(3), ahead.committed_hash(3));
+    assert!(behind.committed_hash(3).is_some());
+
+    let start = Instant::now();
+    while !has_prevote(&behind) && start.elapsed() < Duration::from_secs(2) {
+        behind.poll(&behind_switch);
+        thread::sleep(Duration::from_millis(2));
+    }
+    let before_restart = behind.last_signature().expect("signature on disk");
+    drop(behind_switch);
+    drop(behind);
+    let restarted = Node::start_with_wal_and_store(
+        config,
+        FilePV::load_or_gen_file_pv(&key_path, &state_path).expect("reload pv"),
+        state,
+        Mempool::new(MempoolConfig::test_config(), Check).expect("mempool"),
+        Exec,
+        store,
+        &wal_path,
+    )
+    .expect("wal replay");
+    assert_eq!(restarted.last_signature(), Some(before_restart));
+}
+
+fn has_prevote(reactor: &Reactor<Exec, Check>) -> bool {
+    (0..32).any(|round| reactor.prevote_count(round) > 0)
 }

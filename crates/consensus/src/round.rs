@@ -7,7 +7,7 @@ use eld_tendermint_config::ConsensusConfig;
 use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
-use eld_tendermint_proto::types::SignedMsgType;
+use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::{
     App as ExecApp, CommitEvents, IndexTxs, State as ChainState, apply_block,
 };
@@ -125,6 +125,10 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     pub(crate) timeout: Option<Scheduled>,
     wal: Option<Wal>,
     replaying: bool,
+    /// Round of the +2/3 precommits while `step` is [`Step::Commit`].
+    commit_round: Option<i32>,
+    /// Parts that arrived before the commit block's part-set header.
+    pending_parts: Vec<Part>,
 }
 
 impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
@@ -376,6 +380,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             timeout: None,
             wal,
             replaying: false,
+            commit_round: None,
+            pending_parts: Vec::new(),
         };
         if node.wal.is_some() {
             node.catchup()?;
@@ -427,6 +433,62 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     #[must_use]
     pub fn store_height(&self) -> i64 {
         self.block_store.height()
+    }
+
+    /// One part of a saved block. `None` when that part was not stored.
+    #[must_use]
+    pub(crate) fn block_part(&self, height: i64, index: u32) -> Option<Part> {
+        self.block_store.load_block_part(height, index)
+    }
+
+    /// Part-set size of a saved block.
+    #[must_use]
+    pub(crate) fn block_part_count(&self, height: i64) -> Option<u32> {
+        self.block_store
+            .load_block_meta(height)
+            .map(|meta| meta.block_id.part_set_header.total)
+    }
+
+    /// Precommits from the seen commit saved with `height`.
+    ///
+    /// Signers are [`ChainState::last_validators`], which matches the set that
+    /// signed the block when the validator set has not changed. Absent signatures
+    /// are skipped.
+    #[must_use]
+    pub(crate) fn seen_commit_votes(&self, height: i64) -> Vec<Vote> {
+        let Some(commit) = self.block_store.load_seen_commit(height) else {
+            return Vec::new();
+        };
+        let validators = self.chain_state.last_validators.validators();
+        commit
+            .signatures
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sig)| {
+                if sig.is_absent() {
+                    return None;
+                }
+                let validator = validators.get(index)?;
+                if validator.address != sig.validator_address {
+                    return None;
+                }
+                let block_id = if sig.block_id_flag == BlockIdFlag::Nil {
+                    BlockId::default()
+                } else {
+                    commit.block_id.clone()
+                };
+                Some(Vote {
+                    vote_type: SignedMsgType::Precommit,
+                    height: commit.height,
+                    round: commit.round,
+                    block_id,
+                    timestamp: sig.timestamp,
+                    validator_address: sig.validator_address.clone(),
+                    validator_index: i32::try_from(index).unwrap_or(i32::MAX),
+                    signature: sig.signature.clone(),
+                })
+            })
+            .collect()
     }
 
     #[must_use]
@@ -528,9 +590,11 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         {
             return;
         }
+        self.stash_current_parts();
         self.proposal_parts = Some(PartSet::from_header(
             proposal.block_id.part_set_header.clone(),
         ));
+        self.apply_pending_parts(true);
         self.proposal = Some(proposal);
         if self.step <= Step::Propose && self.is_proposal_complete() {
             self.enter_prevote(self.height, self.round);
@@ -538,43 +602,127 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     }
 
     pub fn on_part(&mut self, part: Part) {
-        let complete = {
-            let Some(parts) = self.proposal_parts.as_mut() else {
-                return;
-            };
-            let added = parts.add_part(part).ok() == Some(true);
-            if !added && !parts.is_complete() {
-                return;
+        let before = self.height;
+        if !self.add_proposal_part(part) {
+            return;
+        }
+        self.note_complete_proposal();
+        self.advance_after_commit(before);
+    }
+
+    /// `true` when the part set is complete. A part that arrives before the commit
+    /// header is kept and retried when that header is installed. A bad proof
+    /// against the commit header is dropped.
+    fn add_proposal_part(&mut self, part: Part) -> bool {
+        let Some(parts) = self.proposal_parts.as_mut() else {
+            self.buffer_part(part);
+            return false;
+        };
+        match parts.add_part(part.clone()) {
+            Ok(_) => parts.is_complete(),
+            Err(_) => {
+                if self.step != Step::Commit {
+                    self.buffer_part(part);
+                }
+                false
             }
-            parts.is_complete()
+        }
+    }
+
+    /// Keep parts from a part set that is about to be replaced.
+    fn stash_current_parts(&mut self) {
+        let Some(parts) = self.proposal_parts.take() else {
+            return;
         };
-        if !complete {
+        for index in 0..parts.total() {
+            if let Some(part) = parts.get_part(index) {
+                self.buffer_part(part.clone());
+            }
+        }
+    }
+
+    fn buffer_part(&mut self, part: Part) {
+        // Keep earlier parts too. A bad proof can arrive after the real part and
+        // must not be the only one left when the commit header shows up.
+        let cap = self
+            .proposal_parts
+            .as_ref()
+            .map(|parts| {
+                usize::try_from(parts.total())
+                    .unwrap_or(1)
+                    .saturating_mul(2)
+            })
+            .unwrap_or(64)
+            .max(8);
+        if self.pending_parts.len() >= cap {
             return;
         }
-        if self.proposal_block.is_some() {
-            return;
+        self.pending_parts.push(part);
+    }
+
+    fn apply_pending_parts(&mut self, keep_rejected: bool) {
+        let pending = std::mem::take(&mut self.pending_parts);
+        let mut rejected = Vec::new();
+        for part in pending {
+            let Some(parts) = self.proposal_parts.as_mut() else {
+                rejected.push(part);
+                continue;
+            };
+            if parts.add_part(part.clone()).is_err() {
+                rejected.push(part);
+            }
         }
+        if keep_rejected {
+            for part in rejected {
+                self.buffer_part(part);
+            }
+        }
+        if self.proposal_block.is_none() {
+            self.decode_proposal_block();
+        }
+    }
+
+    fn decode_proposal_block(&mut self) -> bool {
         let Some(parts) = self.proposal_parts.as_ref() else {
-            return;
+            return false;
         };
+        if !parts.is_complete() {
+            return false;
+        }
         let mut bytes = Vec::new();
         for index in 0..parts.total() {
             let Some(part) = parts.get_part(index) else {
-                return;
+                return false;
             };
             bytes.extend_from_slice(&part.bytes);
         }
         let Ok(proto) = eld_tendermint_proto::types::Block::decode(bytes.as_slice()) else {
-            return;
+            return false;
         };
         let Ok(block) = Block::try_from_proto(&proto) else {
-            return;
+            return false;
         };
         self.proposal_block = Some(block);
+        true
+    }
+
+    fn note_complete_proposal(&mut self) {
+        if self.proposal_block.is_some() {
+            if self.step == Step::Commit {
+                self.try_finalize_commit();
+            }
+            return;
+        }
+        if !self.decode_proposal_block() {
+            return;
+        }
         if self.step <= Step::Propose && self.is_proposal_complete() {
             self.enter_prevote(self.height, self.round);
         }
         self.after_prevote(self.round);
+        if self.step == Step::Commit {
+            self.try_finalize_commit();
+        }
     }
 
     pub fn on_vote(&mut self, vote: Vote) {
@@ -614,6 +762,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             }
             Step::PrecommitWait if self.step == Step::PrecommitWait => {
                 self.enter_new_round(self.height, self.round + 1);
+            }
+            Step::NewHeight if self.step == Step::NewHeight => {
+                self.enter_new_round(self.height, 0);
             }
             _ => {}
         }
@@ -892,18 +1043,13 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .votes
             .precommits(round)
             .is_some_and(eld_tendermint_types::VoteSet::has_two_thirds_any);
-        let all = self
-            .votes
-            .precommits(round)
-            .is_some_and(eld_tendermint_types::VoteSet::has_all);
         if let Some(block_id) = majority {
             if block_id.hash.is_empty() {
                 self.enter_precommit_wait(self.height, round);
             } else {
+                let before = self.height;
                 self.enter_commit(self.height, round);
-                if self.config.skip_timeout_commit && all {
-                    self.enter_new_round(self.height, 0);
-                }
+                self.advance_after_commit(before);
             }
         } else if self.round <= round && any {
             self.enter_precommit_wait(self.height, round);
@@ -923,11 +1069,72 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         );
     }
 
+    /// Start the next height only after this one has been saved.
+    ///
+    /// The round starts on the following tick, so one reactor poll commits one
+    /// block when the local validators already have a quorum.
+    fn advance_after_commit(&mut self, before: i64) {
+        if self.height != before && self.config.skip_timeout_commit {
+            self.schedule(
+                eld_tendermint_config::Duration::from_nanos(0),
+                self.height,
+                0,
+                Step::NewHeight,
+            );
+        }
+    }
+
     fn enter_commit(&mut self, height: i64, commit_round: i32) {
         if self.height != height || self.step >= Step::Commit {
             return;
         }
+        let Some(block_id) = self
+            .votes
+            .precommits(commit_round)
+            .and_then(eld_tendermint_types::VoteSet::two_thirds_majority)
+        else {
+            return;
+        };
+        if block_id.hash.is_empty() {
+            return;
+        }
+        // A PrecommitWait timeout must not start another round and drop this header.
         self.step = Step::Commit;
+        self.commit_round = Some(commit_round);
+        self.install_commit_header(&block_id);
+        self.try_finalize_commit();
+    }
+
+    fn install_commit_header(&mut self, block_id: &BlockId) {
+        let block_matches = self
+            .proposal_block
+            .as_ref()
+            .and_then(Block::hash)
+            .is_some_and(|hash| hash.as_bytes() == block_id.hash.as_slice());
+        let header_matches = self.proposal_parts.as_ref().is_some_and(|parts| {
+            let header = parts.header();
+            header.total == block_id.part_set_header.total
+                && header.hash == block_id.part_set_header.hash
+        });
+        if !(block_matches && header_matches) {
+            if !header_matches {
+                self.stash_current_parts();
+                self.proposal_block = None;
+                self.proposal_parts = Some(PartSet::from_header(block_id.part_set_header.clone()));
+            } else {
+                self.proposal_block = None;
+            }
+        }
+        self.apply_pending_parts(false);
+    }
+
+    fn try_finalize_commit(&mut self) {
+        if self.step != Step::Commit {
+            return;
+        }
+        let Some(commit_round) = self.commit_round else {
+            return;
+        };
         let Some(block_id) = self
             .votes
             .precommits(commit_round)
@@ -992,6 +1199,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             pool.update_state(&applied.state);
         }
         let committed = self.height;
+        self.commit_round = None;
+        self.pending_parts.clear();
         self.wal_sync(&wal::end_height_message(Time::now(), committed));
         self.last_commit = self.votes.precommits(commit_round).cloned();
         self.chain_state = applied.state;

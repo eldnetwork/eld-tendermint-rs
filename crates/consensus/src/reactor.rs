@@ -1,8 +1,9 @@
 //! Consensus gossip on the p2p switch.
 //!
 //! Four channels carry `tendermint.consensus.Message`. Proposals, block parts, and
-//! votes are delivered into the local [`Node`]s. There is no catchup or
-//! `VoteSetMaj23` reply.
+//! votes are delivered into the local [`Node`]s. A peer one or two consensus
+//! heights behind is sent that block's parts on `0x21` and its seen-commit
+//! precommits on `0x22`. There is no `VoteSetMaj23` reply.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -69,6 +70,8 @@ struct PeerState {
     parts: Option<BitArray>,
     prevotes: Option<BitArray>,
     precommits: Option<BitArray>,
+    catchup_parts: Option<BitArray>,
+    catchup_votes: Option<BitArray>,
 }
 
 impl PeerState {
@@ -82,6 +85,8 @@ impl PeerState {
             parts: None,
             prevotes: None,
             precommits: None,
+            catchup_parts: None,
+            catchup_votes: None,
         }
     }
 
@@ -90,9 +95,14 @@ impl PeerState {
             return;
         }
         let reset = msg.height != self.height || msg.round != self.round;
+        let height_changed = msg.height != self.height;
         self.height = msg.height;
         self.round = msg.round;
         self.step = msg.step;
+        if height_changed {
+            self.catchup_parts = None;
+            self.catchup_votes = None;
+        }
         if reset {
             self.proposal_hash = None;
             self.has_proposal = false;
@@ -173,6 +183,16 @@ where
         inner.gossip(switch);
     }
 
+    /// Send rounds, proposals, and catchup without firing timeouts.
+    ///
+    /// [`Self::poll`] is what starts the next round. This only pushes messages.
+    pub fn gossip(&self, switch: &Switch) {
+        let mut inner = lock(&self.inner);
+        inner.sync_peers(switch);
+        inner.announce(switch);
+        inner.gossip(switch);
+    }
+
     /// Decode one reactor message and feed the local validators.
     ///
     /// Returns `false` when `bytes` is not a `consensus.Message`. The caller stops
@@ -180,6 +200,24 @@ where
     pub fn handle(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let mut inner = lock(&self.inner);
         inner.handle(peer_id, ch_id, bytes)
+    }
+
+    /// Header hash of the block saved at `height` on the first local node that has it.
+    #[must_use]
+    pub fn committed_hash(&self, height: i64) -> Option<Vec<u8>> {
+        lock(&self.inner)
+            .nodes
+            .iter()
+            .find_map(|node| node.committed_hash(height))
+    }
+
+    /// Latest signature stored by a local validator, if one has signed.
+    #[must_use]
+    pub fn last_signature(&self) -> Option<Vec<u8>> {
+        lock(&self.inner)
+            .nodes
+            .iter()
+            .find_map(Node::last_signature)
     }
 
     /// Every local block store is at least `height`.
@@ -311,7 +349,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             }
             self.peers.insert(info.id.clone(), PeerState::new());
             for node in &self.nodes {
-                let _ = switch.send(&info.id, STATE_CHANNEL, &round_step_message(node));
+                let _ = switch.try_send(&info.id, STATE_CHANNEL, &round_step_message(node));
             }
         }
     }
@@ -323,16 +361,130 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 continue;
             }
             self.announced[index] = Some(state);
-            switch.broadcast(STATE_CHANNEL, &round_step_message(node));
+            for info in switch.peers() {
+                let _ = switch.try_send(&info.id, STATE_CHANNEL, &round_step_message(node));
+            }
         }
     }
 
     fn gossip(&mut self, switch: &Switch) {
         let peer_ids: Vec<String> = self.peers.keys().cloned().collect();
         for peer_id in peer_ids {
+            // Catchup goes out before the live round so a full data queue cannot
+            // drop the block the peer is missing.
+            self.send_catchup(switch, &peer_id);
             self.send_proposals(switch, &peer_id);
             self.send_parts(switch, &peer_id);
             self.send_votes(switch, &peer_id);
+        }
+    }
+
+    /// Parts and seen-commit votes for the block a peer is still deciding.
+    ///
+    /// Only a gap of one or two consensus heights is filled here. A wider gap is
+    /// left to fast sync. Nothing is sent for a height the peer has already passed.
+    fn send_catchup(&mut self, switch: &Switch, peer_id: &str) {
+        let (peer_height, peer_round, our_height) = {
+            let Some(peer) = self.peers.get(peer_id) else {
+                return;
+            };
+            let our_height = self.nodes.iter().map(Node::height).max().unwrap_or(0);
+            (peer.height, peer.round, our_height)
+        };
+        if peer_height <= 0 {
+            return;
+        }
+        let gap = our_height.saturating_sub(peer_height);
+        if gap != 1 && gap != 2 {
+            return;
+        }
+        let Some(source) = self.nodes.iter().position(|node| {
+            node.store_height() >= peer_height && node.block_part_count(peer_height).is_some()
+        }) else {
+            return;
+        };
+        let Some(total) = self.nodes[source].block_part_count(peer_height) else {
+            return;
+        };
+        if total == 0 {
+            return;
+        }
+        let votes = self.nodes[source].seen_commit_votes(peer_height);
+        if votes.is_empty() {
+            return;
+        }
+        let vote_bits = votes
+            .iter()
+            .map(|vote| i64::from(vote.validator_index) + 1)
+            .max()
+            .unwrap_or(1);
+        {
+            let Some(peer) = self.peers.get_mut(peer_id) else {
+                return;
+            };
+            if peer
+                .catchup_parts
+                .as_ref()
+                .is_none_or(|bits| bits.size() < i64::from(total))
+            {
+                peer.catchup_parts = BitArray::new(i64::from(total));
+            }
+            if peer
+                .catchup_votes
+                .as_ref()
+                .is_none_or(|bits| bits.size() < vote_bits)
+            {
+                peer.catchup_votes = BitArray::new(vote_bits);
+            }
+        }
+        let pending_votes: Vec<Vote> = {
+            let Some(peer) = self.peers.get(peer_id) else {
+                return;
+            };
+            votes
+                .into_iter()
+                .filter(|vote| {
+                    peer.catchup_votes
+                        .as_ref()
+                        .is_none_or(|bits| !bits.get_index(i64::from(vote.validator_index)))
+                })
+                .collect()
+        };
+        for vote in pending_votes {
+            let index = vote.validator_index;
+            if send_vote(switch, peer_id, &vote) {
+                self.mark_catchup_vote(peer_id, index);
+            }
+        }
+        // There is no part-request message. Send every part again each gossip so
+        // a copy that missed the commit header is not the last copy. The bit
+        // array still records the send and is cleared when the peer's height
+        // changes. Duplicates are ignored once that index is in the part set.
+        for index in 0..total {
+            let Some(part) = self.nodes[source].block_part(peer_height, index) else {
+                continue;
+            };
+            if send_block_part(switch, peer_id, peer_height, peer_round, &part) {
+                self.mark_catchup_part(peer_id, index);
+            }
+        }
+    }
+
+    fn mark_catchup_part(&mut self, peer_id: &str, index: u32) {
+        let Some(peer) = self.peers.get_mut(peer_id) else {
+            return;
+        };
+        if let Some(bits) = peer.catchup_parts.as_mut() {
+            bits.set_index(i64::from(index), true);
+        }
+    }
+
+    fn mark_catchup_vote(&mut self, peer_id: &str, index: i32) {
+        let Some(peer) = self.peers.get_mut(peer_id) else {
+            return;
+        };
+        if let Some(bits) = peer.catchup_votes.as_mut() {
+            bits.set_index(i64::from(index), true);
         }
     }
 
@@ -355,7 +507,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 })),
             }
             .encode_to_vec();
-            if switch.send(peer_id, DATA_CHANNEL, &bytes) {
+            if switch.try_send(peer_id, DATA_CHANNEL, &bytes) {
                 if let Some(peer) = self.peers.get_mut(peer_id) {
                     peer.has_proposal = true;
                     peer.proposal_hash = Some(proposal.block_id.hash.clone());
@@ -390,7 +542,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 })),
             }
             .encode_to_vec();
-            if switch.send(peer_id, DATA_CHANNEL, &bytes) {
+            if switch.try_send(peer_id, DATA_CHANNEL, &bytes) {
                 self.mark_part(peer_id, part.index);
             }
         }
@@ -416,7 +568,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 })),
             }
             .encode_to_vec();
-            if switch.send(peer_id, VOTE_CHANNEL, &bytes) {
+            if switch.try_send(peer_id, VOTE_CHANNEL, &bytes) {
                 self.mark_vote(peer_id, &vote);
             }
         }
@@ -513,7 +665,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         };
         self.mark_part(peer_id, part.index);
         for node in &mut self.nodes {
-            if node.height() == msg.height && node.round() == msg.round {
+            if node.height() == msg.height {
                 node.deliver(Msg::Part(part.clone()));
             }
         }
@@ -568,6 +720,28 @@ fn timeout_key(timeout: &Scheduled) -> (i64, i32, u32, i64) {
         timeout.step.as_wal(),
         timeout.delay_nanos,
     )
+}
+
+fn send_vote(switch: &Switch, peer_id: &str, vote: &Vote) -> bool {
+    let bytes = Message {
+        sum: Some(message::Sum::Vote(ProtoVote {
+            vote: Some(vote.to_proto()),
+        })),
+    }
+    .encode_to_vec();
+    switch.try_send(peer_id, VOTE_CHANNEL, &bytes)
+}
+
+fn send_block_part(switch: &Switch, peer_id: &str, height: i64, round: i32, part: &Part) -> bool {
+    let bytes = Message {
+        sum: Some(message::Sum::BlockPart(BlockPart {
+            height,
+            round,
+            part: Some(part.to_proto()),
+        })),
+    }
+    .encode_to_vec();
+    switch.try_send(peer_id, DATA_CHANNEL, &bytes)
 }
 
 fn round_step_message<E: ExecApp, C: MempoolApp, D: Db>(node: &Node<E, C, D>) -> Vec<u8> {

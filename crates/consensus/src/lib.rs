@@ -4,7 +4,8 @@
 //! [`Reactor`] gossips `tendermint.consensus.Message` on the p2p switch.
 //! The WAL is one append-only file of CRC32C-framed `TimedWALMessage` records.
 //! A proposer with an evidence pool puts pending duplicate votes in the block.
-//! There is no catchup or fast sync.
+//! A peer one or two blocks behind catches up on the consensus reactor. Fast sync
+//! and state sync are not in this crate.
 
 mod error;
 mod group;

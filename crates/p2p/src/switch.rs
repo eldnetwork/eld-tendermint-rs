@@ -31,6 +31,7 @@ struct PeerSlot {
 
 trait PeerConn: Send {
     fn send(&self, ch_id: u8, bytes: &[u8]) -> bool;
+    fn try_send(&self, ch_id: u8, bytes: &[u8]) -> bool;
     fn close(&self);
     fn stop(&self);
 }
@@ -38,6 +39,10 @@ trait PeerConn: Send {
 impl PeerConn for MConnection {
     fn send(&self, ch_id: u8, bytes: &[u8]) -> bool {
         Self::send(self, ch_id, bytes)
+    }
+
+    fn try_send(&self, ch_id: u8, bytes: &[u8]) -> bool {
+        Self::try_send(self, ch_id, bytes)
     }
 
     fn close(&self) {
@@ -215,7 +220,8 @@ impl Switch {
     /// Queue `bytes` on `ch_id` for one running peer.
     ///
     /// Returns `false` when the peer is unknown, the peer has stopped, or the
-    /// channel is not registered. The peer stays up.
+    /// channel is not registered. The peer stays up. Waits up to the connection
+    /// send timeout when that channel queue is full.
     pub fn send(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let inner = lock(&self.state.inner);
         let Some(peer) = inner
@@ -226,6 +232,22 @@ impl Switch {
             return false;
         };
         peer.conn.send(ch_id, bytes)
+    }
+
+    /// [`Self::send`] that returns `false` immediately when the channel queue is full.
+    ///
+    /// A reactor poll holds its own lock while it gossips. Waiting on a full queue
+    /// would block the receive thread that drains it.
+    pub fn try_send(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
+        let inner = lock(&self.state.inner);
+        let Some(peer) = inner
+            .peers
+            .iter()
+            .find(|peer| peer.id == peer_id && peer.running.load(Ordering::SeqCst))
+        else {
+            return false;
+        };
+        peer.conn.try_send(ch_id, bytes)
     }
 
     /// Shut down one peer without joining from the caller.

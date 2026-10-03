@@ -1,6 +1,6 @@
 //! N validators in one process. Messages are method calls. Time is virtual.
 
-use crate::round::{Msg, Node, Scheduled};
+use crate::round::{Msg, Node, Scheduled, Step};
 
 /// In-process validators. `stop_at` ends [`Self::run_until_height`] once every
 /// block store has reached that height, before a later height is committed.
@@ -42,9 +42,13 @@ where
     }
 
     /// [`Self::pump`] everything, then fire the soonest timeout, until `height` is stored.
+    ///
+    /// The next height's round is started so its proposal exists. Those votes stay
+    /// queued, so a later height is not committed.
     pub fn run_until_height(&mut self, height: i64) {
         for _ in 0..10_000 {
             if self.all_at_least(height) {
+                self.start_next_height();
                 return;
             }
             if !self.pump_once(height, &|_| true) {
@@ -130,6 +134,18 @@ where
         };
         self.nodes[index].timeout = None;
         self.nodes[index].on_timeout(&timeout);
+    }
+
+    fn start_next_height(&mut self) {
+        for node in &mut self.nodes {
+            let Some(timeout) = node.timeout.clone() else {
+                continue;
+            };
+            if timeout.step == Step::NewHeight {
+                node.timeout = None;
+                node.on_timeout(&timeout);
+            }
+        }
     }
 
     fn fire_timeouts(&mut self) {
