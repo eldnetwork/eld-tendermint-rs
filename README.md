@@ -6,7 +6,7 @@ eld-tendermint-rs is a Rust port of the Tendermint consensus engine Eld runs. En
 
 The port is the base for later Eld network work. We will extend and modify this Tendermint node in Rust — consensus, state, and the peer-to-peer parts around them — starting from that Go-compatible line.
 
-## Quickstarts
+## Quickstart
 
 Check out: `39f16d0190877f8f0771c3905fdeb578ae5ab3bd` (latest tested)
 
