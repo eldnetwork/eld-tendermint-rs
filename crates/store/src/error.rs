@@ -24,6 +24,18 @@ pub enum Error {
         message: String,
     },
     Db(String),
+    /// `PruneBlocks` was asked for a height that is not positive.
+    PruneHeight,
+    /// `PruneBlocks` was asked to pass the latest saved height.
+    BeyondLatest {
+        height: i64,
+        latest: i64,
+    },
+    /// `PruneBlocks` was asked for a height below the current base.
+    BelowBase {
+        height: i64,
+        base: i64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -43,6 +55,14 @@ impl fmt::Display for Error {
             ),
             Self::Io { path, message } => write!(f, "{message}: {}", path.display()),
             Self::Db(message) => write!(f, "block store db: {message}"),
+            Self::PruneHeight => write!(f, "height must be greater than 0"),
+            Self::BeyondLatest { latest, .. } => {
+                write!(f, "cannot prune beyond the latest height {latest}")
+            }
+            Self::BelowBase { height, base } => write!(
+                f,
+                "cannot prune to height {height}, it is lower than base height {base}"
+            ),
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Cases from `store/store_test.go` that do not need pruning or a genesis file.
+//! Cases from `store/store_test.go`, including `PruneBlocks`. No genesis file.
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -54,6 +54,43 @@ fn test_block(height: i64, last_commit: Option<Commit>, tx: u8) -> (Block, PartS
     let parts = block.make_part_set(8).expect("part set");
     assert!(parts.total() > 1, "part size 8 should split the block");
     (block, parts)
+}
+
+#[test]
+fn prune_to_three_drops_height_two_and_keeps_the_base() {
+    let (db, store) = mem_store();
+    let mut previous = Some(height0_commit());
+    for height in 1..=5 {
+        let (block, parts) =
+            test_block(height, previous.clone(), u8::try_from(height).unwrap_or(0));
+        let seen = seen_commit(height);
+        store.save_block(&block, &parts, &seen).expect("save");
+        previous = Some(seen);
+    }
+    assert_eq!(store.prune_blocks(3).expect("prune"), 2);
+    assert_eq!(store.base(), 3);
+    assert_eq!(store.height(), 5);
+    assert!(store.load_block(2).is_none());
+    assert!(store.load_block(3).is_some());
+
+    let err = store.prune_blocks(6).expect_err("past the tip");
+    assert!(
+        matches!(
+            err,
+            Error::BeyondLatest {
+                height: 6,
+                latest: 5
+            }
+        ),
+        "{err}"
+    );
+
+    drop(store);
+    let store = BlockStore::new(db);
+    assert_eq!(store.base(), 3);
+    assert_eq!(store.height(), 5);
+    assert!(store.load_block(2).is_none());
+    assert!(store.load_block(3).is_some());
 }
 
 fn mem_store() -> (Arc<MemDb>, BlockStore<Arc<MemDb>>) {

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use eld_tendermint_types::{Block, BlockId, Commit, Header, Part, PartSet};
 use prost::Message;
 
-use crate::db::Db;
+use crate::db::{Batch, Db};
 use crate::error::Error;
 use crate::keys::{
     BLOCK_STORE_KEY, block_commit_key, block_hash_key, block_meta_key, block_part_key,
@@ -173,6 +173,61 @@ impl<D: Db> BlockStore<D> {
         Ok(())
     }
 
+    /// `PruneBlocks`. Deletes heights from `base` up to but not including `height`.
+    ///
+    /// The new base is written to `blockStore` before each delete batch is applied.
+    /// Every 1000 pruned blocks is one batch. That flush records base as the height
+    /// just queued. The final flush records `height`. The tip is not deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PruneHeight`] when `height` is not positive,
+    /// [`Error::BeyondLatest`] when `height` is past the tip, or [`Error::BelowBase`]
+    /// when `height` is below the current base. Pruning to the current base deletes
+    /// nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a database write fails.
+    pub fn prune_blocks(&self, height: i64) -> Result<u64, Error> {
+        if height <= 0 {
+            return Err(Error::PruneHeight);
+        }
+        let (base, latest) = {
+            let state = self.state.lock().expect("block store state lock");
+            (state.base, state.height)
+        };
+        if height > latest {
+            return Err(Error::BeyondLatest { height, latest });
+        }
+        if height < base {
+            return Err(Error::BelowBase { height, base });
+        }
+
+        let mut pruned = 0u64;
+        let mut batch = Batch::new();
+        for current in base..height {
+            let Some(meta) = self.load_block_meta(current) else {
+                continue;
+            };
+            batch.delete(&block_meta_key(current));
+            batch.delete(&block_hash_key(&meta.block_id.hash));
+            batch.delete(&block_commit_key(current));
+            batch.delete(&seen_commit_key(current));
+            let parts = meta.block_id.part_set_header.total;
+            for index in 0..parts {
+                batch.delete(&block_part_key(current, index));
+            }
+            pruned += 1;
+            if pruned % 1000 == 0 && pruned > 0 {
+                self.flush_prune(&batch, current);
+                batch = Batch::new();
+            }
+        }
+        self.flush_prune(&batch, height);
+        Ok(pruned)
+    }
+
     /// `LoadBlockMeta`. `None` when the key is missing.
     ///
     /// # Panics
@@ -269,6 +324,18 @@ impl<D: Db> BlockStore<D> {
     #[must_use]
     pub fn load_seen_commit(&self, height: i64) -> Option<Commit> {
         decode_commit(&self.db, &seen_commit_key(height))
+    }
+
+    /// Writes `base` into `blockStore`, then applies `batch`.
+    fn flush_prune(&self, batch: &Batch, base: i64) {
+        {
+            let mut state = self.state.lock().expect("block store state lock");
+            state.base = base;
+        }
+        self.save_state();
+        if let Err(err) = self.db.write_sync(batch) {
+            panic!("failed to prune up to height {base}: {err}");
+        }
     }
 
     fn save_state(&self) {

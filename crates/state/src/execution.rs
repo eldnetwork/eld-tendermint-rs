@@ -113,7 +113,9 @@ pub fn apply_block(
     }
 
     let commit = app.commit()?;
+    let retain_height = commit.retain_height;
     Ok(AppliedBlock {
+        retain_height,
         state: State {
             version,
             chain_id: state.chain_id.clone(),
@@ -138,6 +140,8 @@ pub fn apply_block(
 pub struct AppliedBlock {
     pub state: State,
     pub deliver_txs: Vec<ResponseDeliverTx>,
+    /// `ResponseCommit.retain_height`. Zero means the app did not ask for pruning.
+    pub retain_height: i64,
 }
 
 impl std::fmt::Debug for AppliedBlock {
@@ -145,6 +149,7 @@ impl std::fmt::Debug for AppliedBlock {
         f.debug_struct("AppliedBlock")
             .field("state", &self.state)
             .field("deliver_txs", &self.deliver_txs.len())
+            .field("retain_height", &self.retain_height)
             .finish()
     }
 }

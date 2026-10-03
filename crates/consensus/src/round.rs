@@ -1180,6 +1180,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.block_store.save_block(&block, &parts, &seen).is_err() {
             return;
         }
+        let retain_height = applied.retain_height;
+        if retain_height > self.block_store.base() {
+            let _ = self.block_store.prune_blocks(retain_height);
+        }
         if let Some(index) = &self.tx_index {
             if index.index_committed(&block, &applied.deliver_txs).is_err() {
                 return;
