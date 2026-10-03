@@ -154,8 +154,17 @@ fn one_validator_commits_height_one() {
     assert_committed(&mut validators);
     let logs = capture.text();
     let hash = upper_hex(&validators.nodes()[0].committed_hash(1).expect("block"));
-    assert!(logs.contains("Committed block"), "{logs}");
-    assert!(logs.contains(&hash), "{logs}");
+    assert!(
+        logs.lines()
+            .any(|line| line.contains("Committed block") && line.contains(&hash)),
+        "{logs}"
+    );
+    assert!(
+        logs.lines().any(|line| {
+            line.contains("received complete proposal block") && line.contains(&hash)
+        }),
+        "{logs}"
+    );
 }
 
 /// Records operator lines for one test, then stops recording.

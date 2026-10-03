@@ -31,7 +31,7 @@ use eld_tendermint_state::{
     CommitEvents, IndexTxs, StateStore, TM_CORE_SEMVER, TxIndex, load_or_init_chain,
 };
 use eld_tendermint_store::{BlockStore, RocksDb};
-use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line};
+use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line, upper_hex};
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
@@ -83,6 +83,7 @@ struct NodeProcess {
 
 impl Drop for NodeProcess {
     fn drop(&mut self) {
+        log_line(Level::Info, "main", "Stopping Node", &[]);
         self.stop.store(false, Ordering::SeqCst);
         if let Some(handle) = self.poll.take() {
             let _ = handle.join();
@@ -502,6 +503,16 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
         &[
             ("app_version", app_version.as_str()),
             ("last_block_height", last_block_height.as_str()),
+        ],
+    );
+    let app_hash = upper_hex(&info.last_block_app_hash);
+    log_line(
+        Level::Info,
+        "consensus",
+        "Completed ABCI Handshake - Tendermint and App are synced",
+        &[
+            ("appHeight", last_block_height.as_str()),
+            ("appHash", app_hash.as_str()),
         ],
     );
     Ok(AbciApp::new(Arc::new(Mutex::new(client))))

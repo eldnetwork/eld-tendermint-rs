@@ -6,7 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
-- Operator lines for ABCI, round steps, peers, and commits go to stderr. They use the Go messages and fields (`INFO` and `ERROR`). They are not a byte copy of the Go logger.
+- Operator lines for ABCI, round steps, peers, and commits go to stderr. They use the Go messages and fields (`INFO` and `ERROR`). They are not a byte copy of the Go logger. Dial, proposal, vote, WAL, and shutdown failures use those same lines.
 - `eld-tendermint unsafe-reset-all` deletes `data/` and the address book and writes a height-0 privval state. Config and keys stay. `--keep-addr-book` leaves the address book. The next `start` calls `InitChain` once. The `data/` files that Rust `start` then creates are RocksDB and cannot be opened by the Go node. The reset home itself can be started by either binary.
 - Remote privval dial. A set `priv_validator_laddr` signs through that socket and does not read `priv_validator_key.json`. A refused dial stops startup. A different signature for the same height, round, and step is a double-sign error. FilePV stays the default.
 - Block pruning. `prune_blocks` deletes block-store rows below a retain height after the new base is saved. A commit `retain_height` prunes to that height. State and the tx index are left in place.

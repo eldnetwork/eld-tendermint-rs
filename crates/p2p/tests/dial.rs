@@ -9,6 +9,7 @@ use eld_tendermint_p2p::{
     AddrBook, ChannelDescriptor, NetAddress, NodeKey, PexReactor, Switch, pex_channel_descriptors,
 };
 use eld_tendermint_proto::p2p::{Message, PexAddrs, message};
+use eld_tendermint_types::set_log_capture;
 use prost::Message as ProstMessage;
 
 fn node_key() -> NodeKey {
@@ -122,6 +123,31 @@ fn pex_addrs_are_stored_and_dialed() {
             && switch_c.peers().len() == 1
     });
     let _ = std::fs::remove_file(&book_path);
+}
+
+#[test]
+fn refused_tcp_dial_logs_dial_error() {
+    let capture = Arc::new(Mutex::new(String::new()));
+    set_log_capture(Some(Arc::clone(&capture)));
+    let key = node_key();
+    let switch = Switch::new();
+    let addr = NetAddress::parse(&format!("{}@127.0.0.1:1", "ab".repeat(20))).expect("addr");
+    let err = switch.dial_address(&key, &addr);
+    let logs = capture
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    set_log_capture(None);
+    assert!(err.is_err(), "refused dial should fail");
+    assert!(logs.contains("Dialing peer"), "{logs}");
+    assert!(logs.contains("address=127.0.0.1:1"), "{logs}");
+    assert!(logs.contains("Error dialing peer"), "{logs}");
+    assert!(
+        !logs.lines().any(|line| {
+            line.contains("127.0.0.1:1") && line.contains("Secret handshake failed")
+        }),
+        "{logs}"
+    );
 }
 
 #[test]

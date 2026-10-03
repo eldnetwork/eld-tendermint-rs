@@ -329,9 +329,27 @@ impl Switch {
     }
 
     fn dial_locked(&self, node_key: &NodeKey, addr: &NetAddress) -> Result<(), Error> {
-        let stream =
-            TcpStream::connect_timeout(&addr.socket_addr(), DIAL_TIMEOUT).map_err(Error::Io)?;
         let remote = addr.socket_addr().to_string();
+        log_line(
+            Level::Info,
+            "p2p",
+            "Dialing peer",
+            &[("address", remote.as_str())],
+        );
+        let stream = match TcpStream::connect_timeout(&addr.socket_addr(), DIAL_TIMEOUT) {
+            Ok(stream) => stream,
+            Err(err) => {
+                let err = Error::Io(err);
+                let reason = err.to_string();
+                log_line(
+                    Level::Error,
+                    "p2p",
+                    "Error dialing peer",
+                    &[("err", reason.as_str())],
+                );
+                return Err(err);
+            }
+        };
         let conn = match handshake(stream, &node_key.priv_key) {
             Ok(conn) => conn,
             Err(err) => {

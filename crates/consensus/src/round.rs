@@ -367,7 +367,20 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
         let mempool = Arc::new(Mutex::new(mempool));
         let wal = match extras.wal_path {
-            Some(path) => Some(Wal::open(path)?),
+            Some(path) => match Wal::open(&path) {
+                Ok(wal) => Some(wal),
+                Err(err) => {
+                    let file = path.display().to_string();
+                    let err_text = err.to_string();
+                    log_line(
+                        Level::Error,
+                        "consensus",
+                        "failed to open WAL",
+                        &[("file", file.as_str()), ("err", err_text.as_str())],
+                    );
+                    return Err(err);
+                }
+            },
             None => None,
         };
         let mut node = Self {
@@ -403,7 +416,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             pending_parts: Vec::new(),
         };
         if node.wal.is_some() {
-            node.catchup()?;
+            if let Err(err) = node.catchup() {
+                let err_text = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "error on catchup replay",
+                    &[("err", err_text.as_str())],
+                );
+                return Err(err);
+            }
         }
         if node.step == Step::NewHeight {
             let height = node.height;
@@ -609,12 +631,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         {
             return;
         }
+        let hash = proposal.block_id.hash.clone();
+        let proposal_height = proposal.height;
+        let proposal_round = proposal.round;
         self.stash_current_parts();
         self.proposal_parts = Some(PartSet::from_header(
             proposal.block_id.part_set_header.clone(),
         ));
         self.apply_pending_parts(true);
         self.proposal = Some(proposal);
+        self.log_received_proposal(proposal_height, proposal_round, &hash);
         if self.step <= Step::Propose && self.is_proposal_complete() {
             self.enter_prevote(self.height, self.round);
         }
@@ -721,7 +747,12 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let Ok(block) = Block::try_from_proto(&proto) else {
             return false;
         };
+        let height = block.header.height;
+        let hash = block.hash();
         self.proposal_block = Some(block);
+        if let Some(hash) = hash {
+            self.log_complete_proposal(height, hash.as_bytes());
+        }
         true
     }
 
@@ -748,9 +779,19 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if vote.height != self.height {
             return;
         }
-        let added = self.votes.add_vote(&vote).unwrap_or(false);
-        if !added {
-            return;
+        match self.votes.add_vote(&vote) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(err) => {
+                let err = err.to_string();
+                log_line(
+                    Level::Info,
+                    "consensus",
+                    "failed attempting to add vote",
+                    &[("err", err.as_str())],
+                );
+                return;
+            }
         }
         match vote.vote_type {
             SignedMsgType::Prevote => self.after_prevote(vote.round),
@@ -885,6 +926,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             hash: hash.as_bytes().to_vec(),
             part_set_header: parts.header(),
         };
+        let proposal_hash = block_id.hash.clone();
         let mut proposal = Proposal::new(
             height,
             round,
@@ -892,16 +934,30 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             block_id,
             self.chain_state.last_block_time,
         );
-        if self
+        if let Err(err) = self
             .pv
             .sign_proposal(self.chain_state.chain_id.as_str(), &mut proposal)
-            .is_err()
         {
+            let height = height.to_string();
+            let round = round.to_string();
+            let err = err.to_string();
+            log_line(
+                Level::Error,
+                "consensus",
+                "propose step; failed signing proposal",
+                &[
+                    ("height", height.as_str()),
+                    ("round", round.as_str()),
+                    ("err", err.as_str()),
+                ],
+            );
             return;
         }
         self.proposal = Some(proposal.clone());
         self.proposal_block = Some(block);
         self.proposal_parts = Some(parts.clone());
+        self.log_received_proposal(height, round, &proposal_hash);
+        self.log_complete_proposal(height, hash.as_bytes());
         let now = Time::now();
         self.wal_sync(&wal::proposal_message(now, &proposal));
         for index in 0..parts.total() {
@@ -937,7 +993,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             self.last_commit
                 .as_ref()
                 .and_then(|votes| votes.make_commit().ok())
-        }?;
+        };
+        let Some(commit) = commit else {
+            log_line(
+                Level::Error,
+                "consensus",
+                "propose step; cannot propose anything without commit for the previous block",
+                &[],
+            );
+            return None;
+        };
         let evidence = match &self.evidence {
             Some(pool) => {
                 let max_bytes = self.chain_state.consensus_params.evidence.max_bytes;
@@ -984,13 +1049,24 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .as_ref()
             .is_some_and(PartSet::is_complete)
         {
-            self.proposal_block.as_ref().and_then(|block| {
-                if self.block_ok(block) {
-                    block_id_of(block, self.proposal_parts.as_ref())
-                } else {
-                    None
-                }
-            })
+            let invalid = self.proposal_block.as_ref().and_then(|block| {
+                eld_tendermint_state::validate_block(&self.chain_state, block)
+                    .err()
+                    .map(|err| err.to_string())
+            });
+            if let Some(err) = invalid {
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "prevote step: ProposalBlock is invalid",
+                    &[("err", err.as_str())],
+                );
+                None
+            } else {
+                self.proposal_block
+                    .as_ref()
+                    .and_then(|block| block_id_of(block, self.proposal_parts.as_ref()))
+            }
         } else {
             None
         };
@@ -1256,7 +1332,19 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         }
         let retain_height = applied.retain_height;
         if retain_height > self.block_store.base() {
-            let _ = self.block_store.prune_blocks(retain_height);
+            if let Err(err) = self.block_store.prune_blocks(retain_height) {
+                let retain_height = retain_height.to_string();
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "failed to prune blocks",
+                    &[
+                        ("retain_height", retain_height.as_str()),
+                        ("err", err.as_str()),
+                    ],
+                );
+            }
         }
         if let Some(index) = &self.tx_index {
             if index.index_committed(&block, &applied.deliver_txs).is_err() {
@@ -1378,9 +1466,25 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             validator_index: i32::try_from(index).unwrap_or(i32::MAX),
             signature: Vec::new(),
         };
-        self.pv
+        if let Err(err) = self
+            .pv
             .sign_vote(self.chain_state.chain_id.as_str(), &mut vote)
-            .map_err(Error::Privval)?;
+        {
+            let height = self.height.to_string();
+            let round = self.round.to_string();
+            let err_text = err.to_string();
+            log_line(
+                Level::Error,
+                "consensus",
+                "failed signing vote",
+                &[
+                    ("height", height.as_str()),
+                    ("round", round.as_str()),
+                    ("err", err_text.as_str()),
+                ],
+            );
+            return Err(Error::Privval(err));
+        }
         Ok(vote)
     }
 
@@ -1527,8 +1631,42 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             return;
         };
         if let Err(err) = wal.write_message(msg) {
+            let err = err.to_string();
+            log_line(
+                Level::Error,
+                "consensus",
+                "failed writing to WAL",
+                &[("err", err.as_str())],
+            );
             panic!("failed to write consensus WAL: {err}");
         }
+    }
+
+    fn log_received_proposal(&self, height: i64, round: i32, hash: &[u8]) {
+        let height = height.to_string();
+        let round = round.to_string();
+        let hash = upper_hex(hash);
+        log_line(
+            Level::Info,
+            "consensus",
+            "received proposal",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("hash", hash.as_str()),
+            ],
+        );
+    }
+
+    fn log_complete_proposal(&self, height: i64, hash: &[u8]) {
+        let height = height.to_string();
+        let hash = upper_hex(hash);
+        log_line(
+            Level::Info,
+            "consensus",
+            "received complete proposal block",
+            &[("height", height.as_str()), ("hash", hash.as_str())],
+        );
     }
 }
 
