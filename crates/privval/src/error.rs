@@ -39,6 +39,19 @@ pub enum Error {
     /// Stored sign bytes are not a length-prefixed canonical vote or proposal.
     /// Go panics in this case.
     CorruptSignBytes,
+    /// TCP or unix dial failed. Startup stops. There is no local-key fallback.
+    Dial {
+        address: String,
+        message: String,
+    },
+    /// A connected signer closed the socket or sent a frame that cannot be read.
+    Socket(String),
+    /// `RemoteSignerError` other than conflicting data.
+    Remote {
+        description: String,
+    },
+    /// The response sum was not the one requested.
+    UnexpectedResponse,
 }
 
 impl fmt::Display for Error {
@@ -71,6 +84,10 @@ impl fmt::Display for Error {
             Self::ConflictingData => write!(f, "conflicting data"),
             Self::UnknownVoteType => write!(f, "unknown vote type"),
             Self::CorruptSignBytes => write!(f, "stored sign bytes cannot be decoded"),
+            Self::Dial { address, message } => write!(f, "dial {address}: {message}"),
+            Self::Socket(message) => write!(f, "privval socket: {message}"),
+            Self::Remote { description } => write!(f, "{description}"),
+            Self::UnexpectedResponse => write!(f, "unexpected privval response"),
         }
     }
 }

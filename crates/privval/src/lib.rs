@@ -1,9 +1,10 @@
-//! `privval.FilePV` from Tendermint 0.34.
+//! `privval.FilePV` from Tendermint 0.34, and a dialer for a remote signer.
 //!
 //! Loads `config/priv_validator_key.json` and `data/priv_validator_state.json`.
 //! Those are the paths `Config::priv_validator_key_file` and
 //! `Config::priv_validator_state_file` return. This crate takes the paths
-//! directly so it does not depend on the config loader.
+//! directly so it does not depend on the config loader. When
+//! `priv_validator_laddr` is set, [`RemoteSigner`] dials that address instead.
 //!
 //! Writes are atomic: the bytes go to a temp file in the same directory, the file
 //! is `fsync`ed, then renamed over the destination. Mode is `0600` on Unix.
@@ -22,8 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod error;
+mod remote;
 
 pub use error::Error;
+pub use remote::{RemoteSigner, read_delimited, sign_vote_message, write_delimited};
 
 /// `stepNone`. Distinguishes an initial state that has never signed.
 pub const STEP_NONE: i8 = 0;
@@ -55,6 +58,31 @@ pub struct FilePVLastSignState {
     pub step: i8,
     pub signature: Option<Vec<u8>>,
     pub sign_bytes: Option<Vec<u8>>,
+}
+
+/// What consensus asks a validator key to sign.
+///
+/// [`FilePV`] reads the local key. [`RemoteSigner`] dials `priv_validator_laddr`.
+pub trait PrivValidator: Send {
+    /// `GetPubKey`.
+    fn get_pub_key(&self) -> PubKey;
+
+    /// `SignVote`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a regression, [`Error::ConflictingData`], or a socket error.
+    fn sign_vote(&mut self, chain_id: &str, vote: &mut Vote) -> Result<(), Error>;
+
+    /// `SignProposal`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same classes of error as [`Self::sign_vote`].
+    fn sign_proposal(&mut self, chain_id: &str, proposal: &mut Proposal) -> Result<(), Error>;
+
+    /// Last height, round, step, signature, and sign bytes this signer accepted.
+    fn last_sign_state(&self) -> &FilePVLastSignState;
 }
 
 /// `privval.FilePV`.
@@ -283,6 +311,42 @@ impl FilePV {
     }
 }
 
+impl PrivValidator for FilePV {
+    fn get_pub_key(&self) -> PubKey {
+        FilePV::get_pub_key(self)
+    }
+
+    fn sign_vote(&mut self, chain_id: &str, vote: &mut Vote) -> Result<(), Error> {
+        FilePV::sign_vote(self, chain_id, vote)
+    }
+
+    fn sign_proposal(&mut self, chain_id: &str, proposal: &mut Proposal) -> Result<(), Error> {
+        FilePV::sign_proposal(self, chain_id, proposal)
+    }
+
+    fn last_sign_state(&self) -> &FilePVLastSignState {
+        &self.last_sign_state
+    }
+}
+
+impl PrivValidator for Box<dyn PrivValidator> {
+    fn get_pub_key(&self) -> PubKey {
+        self.as_ref().get_pub_key()
+    }
+
+    fn sign_vote(&mut self, chain_id: &str, vote: &mut Vote) -> Result<(), Error> {
+        self.as_mut().sign_vote(chain_id, vote)
+    }
+
+    fn sign_proposal(&mut self, chain_id: &str, proposal: &mut Proposal) -> Result<(), Error> {
+        self.as_mut().sign_proposal(chain_id, proposal)
+    }
+
+    fn last_sign_state(&self) -> &FilePVLastSignState {
+        self.as_ref().last_sign_state()
+    }
+}
+
 impl FilePVKey {
     fn from_json(bytes: &[u8]) -> Result<Self, Error> {
         let file: KeyFile =
@@ -393,7 +457,7 @@ impl FilePVLastSignState {
     }
 }
 
-fn vote_step(vote_type: SignedMsgType) -> Result<i8, Error> {
+pub(crate) fn vote_step(vote_type: SignedMsgType) -> Result<i8, Error> {
     match vote_type {
         SignedMsgType::Prevote => Ok(STEP_PREVOTE),
         SignedMsgType::Precommit => Ok(STEP_PRECOMMIT),

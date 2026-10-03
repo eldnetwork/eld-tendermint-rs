@@ -1024,6 +1024,28 @@ fn write_configured(
     std::fs::write(home.join("config/config.toml"), config).unwrap();
 }
 
+#[test]
+fn refused_privval_dial_stops_startup() {
+    let home = TestHome::new("privval-dial");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let config_path = home.path.join("config/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("priv_validator_laddr = \"127.0.0.1:1\"\n{config}"),
+    )
+    .unwrap();
+    std::fs::remove_file(home.path.join("config/priv_validator_key.json")).unwrap();
+
+    let mut node = NodeChild::spawn(&home.path);
+    let status = node.wait_exit();
+    assert!(!status.success(), "startup continued after a refused dial");
+    let stderr = node.stderr();
+    assert!(stderr.contains("127.0.0.1:1"), "{stderr}");
+    assert!(!stderr.contains("priv_validator_key.json"), "{stderr}");
+}
+
 fn stub_abci() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

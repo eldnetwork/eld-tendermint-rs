@@ -25,7 +25,7 @@ use eld_tendermint_mempool::{
     Mempool, Reactor as MempoolReactor, channel_descriptors as mempool_channels,
 };
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
-use eld_tendermint_privval::FilePV;
+use eld_tendermint_privval::{FilePV, PrivValidator, RemoteSigner};
 use eld_tendermint_proto::abci::RequestInfo;
 use eld_tendermint_state::{CommitEvents, IndexTxs, StateStore, TxIndex, load_or_init_chain};
 use eld_tendermint_store::{BlockStore, RocksDb};
@@ -71,11 +71,20 @@ fn boot(home: &Path) -> Result<NodeProcess, Error> {
     let config = load_home(home).map_err(fail)?;
     let mut genesis = config.load_genesis().map_err(fail)?;
     let node_key = NodeKey::load(config.node_key_file()).map_err(fail)?;
-    let pv = FilePV::load(
-        config.priv_validator_key_file(),
-        config.priv_validator_state_file(),
-    )
-    .map_err(fail)?;
+    let pv: Box<dyn PrivValidator> = if config.base.priv_validator_laddr.is_empty() {
+        Box::new(
+            FilePV::load(
+                config.priv_validator_key_file(),
+                config.priv_validator_state_file(),
+            )
+            .map_err(fail)?,
+        )
+    } else {
+        Box::new(
+            RemoteSigner::dial(&config.base.priv_validator_laddr, genesis.chain_id.as_str())
+                .map_err(fail)?,
+        )
+    };
     let block_store = open_block_store(&config)?;
     let state_store = Arc::new(open_state_store(&config)?);
     let app = connect_app(&config.base.proxy_app)?;

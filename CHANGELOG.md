@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- Remote privval dial. A set `priv_validator_laddr` signs through that socket. A refused dial stops startup, and a different signature for the same height, round, and step is a double-sign error. FilePV stays the default.
 - Block pruning. `prune_blocks` deletes block-store rows below a retain height after the new base is saved. A commit `retain_height` prunes to that height. State and the tx index are left in place.
 - Light-client attack evidence. An equivocation fixture verifies against the trusted and common validator sets, changes the block evidence hash, and is left out of the next proposal.
 - Consensus WAL rotation. The head stays `cs.wal/wal`. At 10 MiB it is renamed to `wal.NNN` and replaced by an empty file. A prevote in an older segment is replayed without a second signature.

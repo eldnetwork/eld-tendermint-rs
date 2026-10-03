@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use eld_tendermint_config::ConsensusConfig;
 use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
-use eld_tendermint_privval::{FilePV, STEP_PRECOMMIT, STEP_PREVOTE};
+use eld_tendermint_privval::{PrivValidator, STEP_PRECOMMIT, STEP_PREVOTE};
 use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::{
     App as ExecApp, CommitEvents, IndexTxs, State as ChainState, apply_block,
@@ -104,7 +104,7 @@ pub(crate) struct Scheduled {
 /// In-process consensus state for one validator.
 pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     config: ConsensusConfig,
-    pv: FilePV,
+    pv: Box<dyn PrivValidator>,
     chain_state: ChainState,
     validators: ValidatorSet,
     height: i64,
@@ -145,7 +145,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
     /// Returns a mempool or validator-set error.
     pub fn start(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -173,7 +173,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
     /// Returns a mempool or validator-set error.
     pub fn start_with_evidence(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -202,7 +202,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
     /// Returns a WAL, replay, or validator-set error.
     pub fn start_with_wal(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -233,7 +233,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Returns a mempool or validator-set error.
     pub fn start_with_store(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -262,7 +262,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Returns a WAL, replay, mempool, or validator-set error.
     pub fn start_with_store_extras(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -279,7 +279,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Returns a mempool or validator-set error.
     pub fn start_with_store_and_evidence(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -309,7 +309,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Returns a WAL, replay, or validator-set error.
     pub fn start_with_wal_and_store(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -342,7 +342,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
 
     fn boot(
         config: ConsensusConfig,
-        pv: FilePV,
+        pv: impl PrivValidator + 'static,
         chain_state: ChainState,
         mempool: Mempool<C>,
         exec: E,
@@ -359,7 +359,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         };
         let mut node = Self {
             config,
-            pv,
+            pv: Box::new(pv),
             chain_state,
             validators,
             height,
@@ -402,7 +402,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Signature bytes `FilePV` stored for the last height, round, and step.
     #[must_use]
     pub fn last_signature(&self) -> Option<Vec<u8>> {
-        self.pv.last_sign_state.signature.clone()
+        self.pv.last_sign_state().signature.clone()
     }
 
     #[must_use]
@@ -1413,7 +1413,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             _ => return Ok(()),
         };
         let stored = {
-            let state = &self.pv.last_sign_state;
+            let state = self.pv.last_sign_state();
             if state.height != vote.height || state.round != vote.round || state.step != step {
                 return Ok(());
             }
