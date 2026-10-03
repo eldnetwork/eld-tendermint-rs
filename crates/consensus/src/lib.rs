@@ -2,7 +2,7 @@
 //!
 //! Round steps, proposals, and votes move by method call inside one process.
 //! [`Reactor`] gossips `tendermint.consensus.Message` on the p2p switch.
-//! The WAL is one append-only file of CRC32C-framed `TimedWALMessage` records.
+//! The WAL is a CRC32C-framed head file that rotates to `wal.NNN` at 10 MiB.
 //! A proposer with an evidence pool puts pending duplicate votes in the block.
 //! A peer one or two blocks behind catches up on the consensus reactor. Fast sync
 //! and state sync are not in this crate.

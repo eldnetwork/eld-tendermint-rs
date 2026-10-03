@@ -1,8 +1,10 @@
-//! Consensus WAL. One append-only file of CRC32C-framed `TimedWALMessage` records.
+//! Consensus WAL. CRC32C-framed `TimedWALMessage` records.
 //!
 //! Format, from `consensus/wal.go`: 4-byte Castagnoli CRC, 4-byte big-endian length,
-//! then the protobuf bytes. The CRC covers only the protobuf. There is no autofile
-//! rotation and no flush ticker. `WriteSync` appends and `fsync`s before it returns.
+//! then the protobuf bytes. The CRC covers only the protobuf. The head stays the
+//! configured path (`data/cs.wal/wal`). At 10 MiB it is renamed to `wal.NNN`, matching
+//! `autofile.Group.RotateFile`, and replaced by an empty file. Each append is
+//! `fsync`ed before it returns, so the size check runs on that write.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -21,14 +23,18 @@ use crate::error::Error;
 /// `maxMsgSize + 24` from `consensus/wal.go`.
 const MAX_MSG_SIZE_BYTES: u32 = 1_048_576 + 24;
 
-/// Append-only consensus WAL at `data/cs.wal/wal`.
+/// `defaultHeadSizeLimit` in `libs/autofile/group.go`.
+const HEAD_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Append-only consensus WAL. The head is `path`; rotated segments are `path.NNN`.
 pub struct Wal {
     path: PathBuf,
     file: File,
 }
 
 impl Wal {
-    /// Opens `path`, creating parent directories. An empty file gets `EndHeight { 0 }`.
+    /// Opens `path`, creating parent directories. An empty head gets `EndHeight { 0 }`
+    /// only when no rotated segment exists.
     ///
     /// # Errors
     ///
@@ -36,31 +42,22 @@ impl Wal {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| Error::Io(err.to_string()))?;
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(io_err)?;
+            }
         }
-        let mut options = OpenOptions::new();
-        options.create(true).append(true).read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|err| Error::Io(err.to_string()))?;
-        let empty = file
-            .metadata()
-            .map_err(|err| Error::Io(err.to_string()))?
-            .len()
-            == 0;
+        let file = open_append(&path)?;
+        let empty = file.metadata().map_err(io_err)?.len() == 0;
         let mut wal = Self { path, file };
-        if empty {
+        if empty && segment_indexes(&wal.path)?.is_empty() {
             wal.write_message(&end_height_message(Time::now(), 0))?;
         }
         Ok(wal)
     }
 
     /// Encodes `msg`, appends it, and `fsync`s before returning.
+    ///
+    /// A head that has reached 10 MiB is rotated after the record is durable.
     ///
     /// # Errors
     ///
@@ -71,16 +68,41 @@ impl Wal {
         msg: &eld_tendermint_proto::consensus::TimedWalMessage,
     ) -> Result<(), Error> {
         let bytes = encode(msg)?;
-        self.file
-            .write_all(&bytes)
-            .map_err(|err| Error::Io(err.to_string()))?;
-        self.file
-            .sync_all()
-            .map_err(|err| Error::Io(err.to_string()))?;
+        self.file.write_all(&bytes).map_err(io_err)?;
+        self.file.sync_all().map_err(io_err)?;
+        if self.file.metadata().map_err(io_err)?.len() >= HEAD_SIZE_LIMIT {
+            self.rotate()?;
+        }
         Ok(())
     }
 
-    /// Every record in the file, in order.
+    /// Renames the head to `{path}.{index:03}` and replaces it with an empty file.
+    ///
+    /// The new head is written to a sibling temp file, `fsync`ed, and renamed into
+    /// place. `EndHeight { 0 }` is not written into that head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the rename or the replacement head cannot be written.
+    pub fn rotate(&mut self) -> Result<(), Error> {
+        self.file.sync_all().map_err(io_err)?;
+        let index = next_segment_index(&self.path)?;
+        let segment = segment_path(&self.path, index);
+        let parked = File::open("/dev/null").map_err(io_err)?;
+        drop(std::mem::replace(&mut self.file, parked));
+        if let Err(err) = std::fs::rename(&self.path, &segment) {
+            self.file = open_append(&self.path)?;
+            return Err(io_err(err));
+        }
+        if let Err(err) = replace_with_empty(&self.path) {
+            self.file = open_append(&self.path)?;
+            return Err(err);
+        }
+        self.file = open_append(&self.path)?;
+        Ok(())
+    }
+
+    /// Every record in the head file, in order.
     ///
     /// # Errors
     ///
@@ -88,18 +110,15 @@ impl Wal {
     pub fn read_messages(
         &self,
     ) -> Result<Vec<eld_tendermint_proto::consensus::TimedWalMessage>, Error> {
-        let mut file = File::open(&self.path).map_err(|err| Error::Io(err.to_string()))?;
-        let mut out = Vec::new();
-        loop {
-            match decode_one(&mut file)? {
-                None => return Ok(out),
-                Some(msg) => out.push(msg),
-            }
-        }
+        read_messages_at(&self.path)
     }
 
     /// Records after the first `EndHeight` for `height`. `None` when that marker is absent.
     /// The marker itself is not included.
+    ///
+    /// The head is scanned first. Older `wal.NNN` segments are read, newest first, only
+    /// when the head does not contain the marker. Records after the marker include the
+    /// rest of that segment and every newer file, including the head.
     ///
     /// # Errors
     ///
@@ -108,19 +127,36 @@ impl Wal {
         &self,
         height: i64,
     ) -> Result<Option<Vec<eld_tendermint_proto::consensus::TimedWalMessage>>, Error> {
-        let messages = self.read_messages()?;
-        let mut found = false;
-        let mut after = Vec::new();
-        for msg in messages {
-            if found {
-                after.push(msg);
-                continue;
-            }
-            if end_height_of(&msg) == Some(height) {
-                found = true;
-            }
+        let head = read_messages_at(&self.path)?;
+        if let Some(pos) = end_height_index(&head, height) {
+            return Ok(Some(head[pos + 1..].to_vec()));
         }
-        if found { Ok(Some(after)) } else { Ok(None) }
+        let mut last_height_found = last_end_height(&head);
+        if last_height_found > 0 && last_height_found < height {
+            return Ok(None);
+        }
+        let mut indexes = segment_indexes(&self.path)?;
+        indexes.sort_unstable_by(|left, right| right.cmp(left));
+        let mut passed: Vec<Vec<eld_tendermint_proto::consensus::TimedWalMessage>> = Vec::new();
+        for index in indexes {
+            let messages = read_messages_at(&segment_path(&self.path, index))?;
+            if let Some(pos) = end_height_index(&messages, height) {
+                let mut after = messages[pos + 1..].to_vec();
+                for newer in passed.iter().rev() {
+                    after.extend(newer.iter().cloned());
+                }
+                after.extend(head);
+                return Ok(Some(after));
+            }
+            if let Some(last) = messages.iter().rev().find_map(end_height_of) {
+                last_height_found = last;
+            }
+            if last_height_found > 0 && last_height_found < height {
+                return Ok(None);
+            }
+            passed.push(messages);
+        }
+        Ok(None)
     }
 }
 
@@ -309,6 +345,122 @@ fn end_height_of(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Opti
         Some(wal_message::Sum::EndHeight(end)) => Some(end.height),
         _ => None,
     }
+}
+
+fn end_height_index(
+    messages: &[eld_tendermint_proto::consensus::TimedWalMessage],
+    height: i64,
+) -> Option<usize> {
+    messages
+        .iter()
+        .position(|msg| end_height_of(msg) == Some(height))
+}
+
+/// `-1` when the slice has no `EndHeight`, matching `SearchForEndHeight`.
+fn last_end_height(messages: &[eld_tendermint_proto::consensus::TimedWalMessage]) -> i64 {
+    messages.iter().rev().find_map(end_height_of).unwrap_or(-1)
+}
+
+fn io_err(err: std::io::Error) -> Error {
+    Error::Io(err.to_string())
+}
+
+fn open_append(path: &Path) -> Result<File, Error> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(io_err)
+}
+
+fn read_messages_at(
+    path: &Path,
+) -> Result<Vec<eld_tendermint_proto::consensus::TimedWalMessage>, Error> {
+    let mut file = File::open(path).map_err(io_err)?;
+    let mut out = Vec::new();
+    loop {
+        match decode_one(&mut file)? {
+            None => return Ok(out),
+            Some(msg) => out.push(msg),
+        }
+    }
+}
+
+/// Writes an empty file to `.{name}.tmp`, `fsync`s it, and renames it onto `path`.
+fn replace_with_empty(path: &Path) -> Result<(), Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("wal");
+    let tmp_path = parent.join(format!(".{file_name}.tmp"));
+    {
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&tmp_path).map_err(io_err)?;
+        file.sync_all().map_err(io_err)?;
+    }
+    std::fs::rename(&tmp_path, path).map_err(io_err)?;
+    Ok(())
+}
+
+fn segment_path(head: &Path, index: u32) -> PathBuf {
+    let mut name = head.as_os_str().to_os_string();
+    name.push(format!(".{index:03}"));
+    PathBuf::from(name)
+}
+
+fn next_segment_index(head: &Path) -> Result<u32, Error> {
+    let indexes = segment_indexes(head)?;
+    indexes.into_iter().max().map_or(Ok(0), |index| {
+        index
+            .checked_add(1)
+            .ok_or_else(|| Error::Io("WAL segment index overflow".to_owned()))
+    })
+}
+
+fn segment_indexes(head: &Path) -> Result<Vec<u32>, Error> {
+    let Some(base) = head.file_name().and_then(|name| name.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let parent = head
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(io_err(err)),
+    };
+    let mut indexes = Vec::new();
+    for entry in entries {
+        let name = entry.map_err(io_err)?.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(index) = segment_index(name, base) {
+            indexes.push(index);
+        }
+    }
+    Ok(indexes)
+}
+
+/// `wal.000` for a head named `wal`. The suffix is at least three digits, as in
+/// `autofile` group scan.
+fn segment_index(name: &str, base: &str) -> Option<u32> {
+    let digits = name.strip_prefix(base)?.strip_prefix('.')?;
+    if digits.len() < 3 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 fn encode(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Result<Vec<u8>, Error> {

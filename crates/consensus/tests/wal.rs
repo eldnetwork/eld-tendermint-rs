@@ -10,6 +10,7 @@ use eld_tendermint_proto::abci::{
     RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, ResponseBeginBlock,
     ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEndBlock,
 };
+use eld_tendermint_proto::consensus::{message, wal_message};
 use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::{App as ExecApp, State as ChainState, make_genesis_state};
 use eld_tendermint_types::{
@@ -150,6 +151,55 @@ fn start(home: &Home) -> Node<Exec, Check> {
     .expect("node")
 }
 
+fn segment_path(head: &std::path::Path, index: u32) -> std::path::PathBuf {
+    let mut name = head.as_os_str().to_os_string();
+    name.push(format!(".{index:03}"));
+    std::path::PathBuf::from(name)
+}
+
+fn mentions_height(
+    messages: &[eld_tendermint_proto::consensus::TimedWalMessage],
+    height: i64,
+) -> bool {
+    messages
+        .iter()
+        .any(|msg| record_height(msg) == Some(height))
+}
+
+fn record_height(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Option<i64> {
+    match msg.msg.as_ref()?.sum.as_ref()? {
+        wal_message::Sum::EndHeight(end) => Some(end.height),
+        wal_message::Sum::TimeoutInfo(info) => Some(info.height),
+        wal_message::Sum::MsgInfo(info) => match info.msg.as_ref()?.sum.as_ref()? {
+            message::Sum::Vote(vote) => Some(vote.vote.as_ref()?.height),
+            message::Sum::BlockPart(part) => Some(part.height),
+            message::Sum::Proposal(proposal) => Some(proposal.proposal.as_ref()?.height),
+            _ => None,
+        },
+        wal_message::Sum::EventDataRoundState(_) => None,
+    }
+}
+
+fn contains_signature(
+    messages: &[eld_tendermint_proto::consensus::TimedWalMessage],
+    signature: &[u8],
+) -> bool {
+    messages.iter().any(|msg| {
+        let Some(wal_message::Sum::MsgInfo(info)) =
+            msg.msg.as_ref().and_then(|body| body.sum.as_ref())
+        else {
+            return false;
+        };
+        let Some(message::Sum::Vote(vote)) = info.msg.as_ref().and_then(|body| body.sum.as_ref())
+        else {
+            return false;
+        };
+        vote.vote
+            .as_ref()
+            .is_some_and(|vote| vote.signature == signature)
+    })
+}
+
 fn block_id(byte: u8) -> BlockId {
     BlockId {
         hash: vec![byte; 32],
@@ -219,6 +269,82 @@ fn conflicting_vote_during_replay_is_double_sign() {
     drop(node);
     {
         let mut wal = Wal::open(&home.wal).expect("wal");
+        let vote = Vote {
+            vote_type: SignedMsgType::Prevote,
+            height: 1,
+            round: 0,
+            block_id: block_id(9),
+            timestamp: WHEN,
+            validator_address: address,
+            validator_index: 0,
+            signature: vec![0; 64],
+        };
+        wal.write_message(&vote_message(WHEN, &vote))
+            .expect("conflict");
+    }
+    let mempool = Mempool::new(MempoolConfig::test_config(), Check).expect("mempool");
+    let started = Node::start_with_wal(
+        ConsensusConfig::test_config(),
+        load_pv(&home),
+        home.chain.clone(),
+        mempool,
+        Exec,
+        &home.wal,
+    );
+    let err = match started {
+        Err(err) => err,
+        Ok(_) => panic!("replay accepted a conflicting vote"),
+    };
+    assert!(
+        matches!(err, Error::Privval(PvError::ConflictingData)),
+        "{err}"
+    );
+    let again = load_pv(&home).last_sign_state.signature.expect("stored");
+    if again != stored {
+        panic!("signature\n{again:?}\n!=\n{stored:?}");
+    }
+}
+
+#[test]
+fn rotated_prevote_replays_from_the_old_segment() {
+    let home = home();
+    let node = start(&home);
+    let stored = node.last_signature().expect("prevote signature");
+    drop(node);
+    {
+        let mut wal = Wal::open(&home.wal).expect("wal");
+        wal.rotate().expect("rotate");
+    }
+    let head = Wal::open(&home.wal).expect("head");
+    let head_records = head.read_messages().expect("head records");
+    assert!(
+        !mentions_height(&head_records, 1),
+        "head still contains the rotated height"
+    );
+    let segment = Wal::open(segment_path(&home.wal, 0)).expect("segment");
+    let segment_records = segment.read_messages().expect("segment records");
+    assert!(
+        contains_signature(&segment_records, &stored),
+        "old segment missing the prevote"
+    );
+    let node = start(&home);
+    let again = node.last_signature().expect("stored signature");
+    if again != stored {
+        panic!("signature\n{again:?}\n!=\n{stored:?}");
+    }
+    assert_eq!(node.prevote_count(0), 1);
+}
+
+#[test]
+fn conflicting_vote_after_rotation_is_double_sign() {
+    let home = home();
+    let address = load_pv(&home).get_pub_key().address().to_vec();
+    let node = start(&home);
+    let stored = node.last_signature().expect("prevote signature");
+    drop(node);
+    {
+        let mut wal = Wal::open(&home.wal).expect("wal");
+        wal.rotate().expect("rotate");
         let vote = Vote {
             vote_type: SignedMsgType::Prevote,
             height: 1,

@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- Consensus WAL rotation. The head stays `cs.wal/wal`. At 10 MiB it is renamed to `wal.NNN` and replaced by an empty file. A prevote in an older segment is replayed without a second signature.
 - RPC byte fields are standard base64, and Ed25519 public keys use the `tendermint/PubKeyEd25519` Amino envelope.
 - JSON-RPC `genesis`, `validators`, `blockchain`, `net_info`, and `consensus_state`. `broadcast_tx_async` returns the CheckTx code and tx hash without waiting for the next block.
 - Consensus catchup. A peer one or two heights behind is sent that block's parts on `0x21` and its seen-commit precommits on `0x22`, and commits the block once the votes are +2/3 and the block applies. A wider gap is left to fast sync.
@@ -22,7 +23,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 - Mempool gossip. A transaction checked on one node is reaped on a peer, and it is not echoed back to the sender.
 - P2P switch. Two peers reassemble a channel message on a secret connection. An unknown channel, an oversized payload, or a bad frame stops that peer.
 - RocksDB is the on-disk backend. A Go data directory created with goleveldb is not opened.
-- Consensus WAL. Records are CRC32C-framed `TimedWALMessage`s in one append-only file. A prevote that was `fsync`ed is replayed after reload without a second signature, and a conflicting vote at the same height, round, and step leaves the stored signature unchanged. The file is not rotated.
+- Consensus WAL. Records are CRC32C-framed `TimedWALMessage`s in one append-only file. A prevote that was `fsync`ed is replayed after reload without a second signature, and a conflicting vote at the same height, round, and step leaves the stored signature unchanged.
 - In-process consensus. One and four validators commit height 1, and a validator that locked in round 0 re-proposes that block.
 - v0 mempool. Transactions are checked, reaped in arrival order, and dropped on recheck.
 - `ApplyBlock` and validator-set updates. A genesis block can rotate the next validator set, and that state reloads from `stateKey`.
