@@ -1,12 +1,12 @@
 //! `types.Commit` and `CommitSig`.
 
-use eld_tendermint_proto::types::BlockIdFlag;
+use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use prost::Message;
 
 use eld_tendermint_crypto::hash_from_byte_slices;
 
 use crate::time::Time;
-use crate::vote::check_signature;
+use crate::vote::{Vote, check_signature};
 use crate::{ADDRESS_SIZE, BlockId, Error, Hash};
 
 fn block_id_flag_from_i32(value: i32) -> BlockIdFlag {
@@ -41,6 +41,12 @@ impl CommitSig {
     #[must_use]
     pub fn is_absent(&self) -> bool {
         self.block_id_flag == BlockIdFlag::Absent
+    }
+
+    /// `CommitSig.ForBlock`. A nil vote is not a vote for the block.
+    #[must_use]
+    pub fn for_block(&self) -> bool {
+        self.block_id_flag == BlockIdFlag::Commit
     }
 
     /// `CommitSig.ValidateBasic`.
@@ -119,6 +125,29 @@ impl Commit {
             }
         }
         Ok(())
+    }
+
+    /// `Commit.GetVote`. A `Commit` flag signs `block_id`; absent and nil sign an empty id.
+    ///
+    /// `None` when `index` is past the last signature.
+    #[must_use]
+    pub fn vote(&self, index: usize) -> Option<Vote> {
+        let sig = self.signatures.get(index)?;
+        let block_id = if sig.for_block() {
+            self.block_id.clone()
+        } else {
+            BlockId::default()
+        };
+        Some(Vote {
+            vote_type: SignedMsgType::Precommit,
+            height: self.height,
+            round: self.round,
+            block_id,
+            timestamp: sig.timestamp,
+            validator_address: sig.validator_address.clone(),
+            validator_index: i32::try_from(index).unwrap_or(i32::MAX),
+            signature: sig.signature.clone(),
+        })
     }
 
     /// Merkle root of each signature's protobuf encoding.

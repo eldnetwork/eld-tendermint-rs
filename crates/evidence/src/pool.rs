@@ -1,14 +1,17 @@
-//! Pending and committed duplicate-vote evidence.
+//! Pending and committed evidence.
 //!
 //! Keys match `evidence/pool.go`: `0x01` is pending and `0x00` is committed.
-//! The suffix is the vote height, 16 uppercase hex digits, then `/`, then the
-//! uppercase hex of [`DuplicateVoteEvidence::hash`].
+//! The suffix is the evidence height, 16 uppercase hex digits, then `/`, then the
+//! uppercase hex of the evidence hash. A light-client attack uses `common_height`.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use eld_tendermint_state::State;
 use eld_tendermint_store::Db;
-use eld_tendermint_types::{DuplicateVoteEvidence, EvidenceList};
+use eld_tendermint_types::{
+    DuplicateVoteEvidence, Evidence, EvidenceList, LightClientAttackEvidence, SignedHeader,
+    ValidatorSet,
+};
 use prost::Message;
 
 use crate::Error;
@@ -30,7 +33,7 @@ struct Inner<D: Db> {
 /// What the proposer reads. [`Pool`] implements this.
 pub trait ProposalEvidence: Send + Sync {
     /// Uncommitted evidence that fits in `max_bytes` of an `EvidenceList`.
-    fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence>;
+    fn pending(&self, max_bytes: i64) -> Vec<Evidence>;
 
     /// Move `evidence` from pending to committed so it is not proposed again.
     fn mark_committed(&self, evidence: &EvidenceList);
@@ -84,19 +87,75 @@ impl<D: Db> Pool<D> {
     /// [`Error::Db`] when the pending row cannot be written. Nothing is written
     /// on an invalid vote.
     pub fn add(&self, evidence: DuplicateVoteEvidence) -> Result<(), Error> {
+        let wrapped = Evidence::Duplicate(evidence);
         let inner = lock(&self.inner);
-        if row_present(&inner.db, &key_pending(&evidence))?
-            || row_present(&inner.db, &key_committed(&evidence))?
+        if row_present(&inner.db, &evidence_key(PENDING, &wrapped))?
+            || row_present(&inner.db, &evidence_key(COMMITTED, &wrapped))?
         {
             return Ok(());
         }
+        let Evidence::Duplicate(evidence) = &wrapped else {
+            return Ok(());
+        };
         evidence.validate_basic().map_err(Error::Invalid)?;
-        verify_against_sets(&inner.sets, &evidence)?;
-        let bytes = evidence.to_evidence_proto().encode_to_vec();
+        verify_against_sets(&inner.sets, evidence)?;
+        let bytes = wrapped.to_evidence_proto().encode_to_vec();
         inner
             .db
-            .set_sync(&key_pending(&evidence), &bytes)
+            .set_sync(&evidence_key(PENDING, &wrapped), &bytes)
             .map_err(|err| Error::Db(err.to_string()))
+    }
+
+    /// Verify a light-client attack and store it.
+    ///
+    /// The caller supplies the common and trusted signed headers and the common
+    /// validator set. This pool has no block store. An evidence hash that is already
+    /// pending or committed is ignored. A failed check writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] when `validate_basic` or `verify` fails, and
+    /// [`Error::Db`] when the pending row cannot be written.
+    pub fn add_light(
+        &self,
+        evidence: LightClientAttackEvidence,
+        common: &SignedHeader,
+        trusted: &SignedHeader,
+        common_vals: &ValidatorSet,
+    ) -> Result<(), Error> {
+        let wrapped = Evidence::Light(evidence);
+        let inner = lock(&self.inner);
+        if row_present(&inner.db, &evidence_key(PENDING, &wrapped))?
+            || row_present(&inner.db, &evidence_key(COMMITTED, &wrapped))?
+        {
+            return Ok(());
+        }
+        let Evidence::Light(evidence) = &wrapped else {
+            return Err(Error::Invalid(
+                eld_tendermint_types::Error::UnsupportedEvidence,
+            ));
+        };
+        evidence.validate_basic().map_err(Error::Invalid)?;
+        evidence
+            .verify(common, trusted, common_vals)
+            .map_err(Error::Invalid)?;
+        let bytes = wrapped.to_evidence_proto().encode_to_vec();
+        inner
+            .db
+            .set_sync(&evidence_key(PENDING, &wrapped), &bytes)
+            .map_err(|err| Error::Db(err.to_string()))
+    }
+
+    /// A gossiped light-client attack has no trusted header here, so it is not stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] with [`eld_tendermint_types::Error::MissingTrustedHeader`].
+    pub fn add_gossiped_light(&self, evidence: &LightClientAttackEvidence) -> Result<(), Error> {
+        evidence.validate_basic().map_err(Error::Invalid)?;
+        Err(Error::Invalid(
+            eld_tendermint_types::Error::MissingTrustedHeader,
+        ))
     }
 
     /// Uncommitted evidence that fits in `max_bytes` of an `EvidenceList`.
@@ -104,7 +163,7 @@ impl<D: Db> Pool<D> {
     /// `max_bytes` below 0 means no cap. The reactor uses that to gossip every
     /// pending item.
     #[must_use]
-    pub fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence> {
+    pub fn pending(&self, max_bytes: i64) -> Vec<Evidence> {
         let inner = lock(&self.inner);
         let Ok(rows) = inner.db.iter_prefix(&[PENDING]) else {
             return Vec::new();
@@ -118,7 +177,7 @@ impl<D: Db> Pool<D> {
             else {
                 continue;
             };
-            let Ok(evidence) = DuplicateVoteEvidence::try_from_evidence_proto(&wrapped) else {
+            let Ok(evidence) = Evidence::try_from_evidence_proto(&wrapped) else {
                 continue;
             };
             proto.evidence.push(evidence.to_evidence_proto());
@@ -135,9 +194,9 @@ impl<D: Db> Pool<D> {
     pub fn mark_committed(&self, evidence: &EvidenceList) {
         let inner = lock(&self.inner);
         for item in &evidence.evidence {
-            let _ = inner.db.delete(&key_pending(item));
-            let bytes = int64_value(item.vote_a.height);
-            let _ = inner.db.set_sync(&key_committed(item), &bytes);
+            let _ = inner.db.delete(&evidence_key(PENDING, item));
+            let bytes = int64_value(item.height());
+            let _ = inner.db.set_sync(&evidence_key(COMMITTED, item), &bytes);
         }
     }
 
@@ -148,7 +207,7 @@ impl<D: Db> Pool<D> {
 }
 
 impl<D: Db> ProposalEvidence for Pool<D> {
-    fn pending(&self, max_bytes: i64) -> Vec<DuplicateVoteEvidence> {
+    fn pending(&self, max_bytes: i64) -> Vec<Evidence> {
         Pool::pending(self, max_bytes)
     }
 
@@ -203,18 +262,10 @@ fn row_present(db: &impl Db, key: &[u8]) -> Result<bool, Error> {
         .map_err(|err| Error::Db(err.to_string()))
 }
 
-fn key_pending(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
-    key(PENDING, evidence)
-}
-
-fn key_committed(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
-    key(COMMITTED, evidence)
-}
-
-fn key(prefix: u8, evidence: &DuplicateVoteEvidence) -> Vec<u8> {
+fn evidence_key(prefix: u8, evidence: &Evidence) -> Vec<u8> {
     let suffix = format!(
         "{:016X}/{}",
-        evidence.vote_a.height,
+        evidence.height(),
         hex::encode_upper(evidence.hash().as_bytes())
     );
     let mut key = Vec::with_capacity(1 + suffix.len());

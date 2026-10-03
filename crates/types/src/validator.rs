@@ -5,7 +5,7 @@
 //! non-positive `times`; those cases return [`Error`].
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use prost::Message;
 
@@ -475,6 +475,101 @@ impl ValidatorSet {
         };
         set.validate_basic()?;
         Ok(set)
+    }
+
+    /// `ValidatorSet.VerifyCommitLight`. Checks signatures until more than 2/3 of the
+    /// voting power is verified, then returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns a size, height, or block-id error, a bad signature, or
+    /// [`Error::NotEnoughVotingPower`].
+    pub fn verify_commit_light(
+        &self,
+        chain_id: &str,
+        block_id: &crate::BlockId,
+        height: i64,
+        commit: &crate::Commit,
+    ) -> Result<(), Error> {
+        if self.validators.len() != commit.signatures.len() {
+            return Err(Error::CommitSignatureCount {
+                expected: self.validators.len(),
+                got: commit.signatures.len(),
+            });
+        }
+        if height != commit.height {
+            return Err(Error::CommitHeightMismatch);
+        }
+        if block_id != &commit.block_id {
+            return Err(Error::CommitBlockIdMismatch);
+        }
+        let needed = self.total_voting_power * 2 / 3;
+        let mut tallied = 0i64;
+        for (index, sig) in commit.signatures.iter().enumerate() {
+            if !sig.for_block() {
+                continue;
+            }
+            let validator = &self.validators[index];
+            let vote = commit.vote(index).expect("index is in range");
+            let pub_key = validator.pub_key.as_ref().ok_or(Error::MissingPubKey)?;
+            vote.verify_signature(pub_key, chain_id)?;
+            tallied += validator.voting_power;
+            if tallied > needed {
+                return Ok(());
+            }
+        }
+        Err(Error::NotEnoughVotingPower {
+            got: tallied,
+            needed,
+        })
+    }
+
+    /// `ValidatorSet.VerifyCommitLightTrusting` at `light.DefaultTrustLevel` (1/3).
+    ///
+    /// The commit's validators are looked up by address. They do not have to be this
+    /// set in the same order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DoubleCommitVote`], a bad signature, or [`Error::NotEnoughVotingPower`].
+    pub fn verify_commit_light_trusting(
+        &self,
+        chain_id: &str,
+        commit: &crate::Commit,
+    ) -> Result<(), Error> {
+        let needed = self
+            .total_voting_power
+            .checked_div(3)
+            .ok_or(Error::NotEnoughVotingPower { got: 0, needed: 0 })?;
+        let mut tallied = 0i64;
+        let mut seen = HashMap::<usize, usize>::new();
+        for (index, sig) in commit.signatures.iter().enumerate() {
+            if !sig.for_block() {
+                continue;
+            }
+            let Some(val_index) = self
+                .validators
+                .iter()
+                .position(|validator| validator.address == sig.validator_address)
+            else {
+                continue;
+            };
+            if seen.insert(val_index, index).is_some() {
+                return Err(Error::DoubleCommitVote);
+            }
+            let validator = &self.validators[val_index];
+            let vote = commit.vote(index).expect("index is in range");
+            let pub_key = validator.pub_key.as_ref().ok_or(Error::MissingPubKey)?;
+            vote.verify_signature(pub_key, chain_id)?;
+            tallied += validator.voting_power;
+            if tallied > needed {
+                return Ok(());
+            }
+        }
+        Err(Error::NotEnoughVotingPower {
+            got: tallied,
+            needed,
+        })
     }
 }
 

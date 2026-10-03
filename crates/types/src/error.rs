@@ -118,6 +118,32 @@ pub enum Error {
     InvalidVoteIndex,
     ConflictingVote,
     DuplicateVoteSignature,
+    MissingConflictingBlock,
+    MissingSignedHeader,
+    MissingLightValidatorSet,
+    MissingTrustedHeader,
+    ValidatorHashMismatch,
+    HeaderCommitMismatch,
+    CommitSignsWrongBlock,
+    ChainIdMismatch,
+    NonPositiveTotalVotingPower,
+    NonPositiveCommonHeight,
+    CommonHeightAhead,
+    CommitSignatureCount {
+        expected: usize,
+        got: usize,
+    },
+    CommitHeightMismatch,
+    CommitBlockIdMismatch,
+    NotEnoughVotingPower {
+        got: i64,
+        needed: i64,
+    },
+    DoubleCommitVote,
+    ConflictingHeaderDerived,
+    TrustedHashMatches,
+    ConflictingTimeOrder,
+    ByzantineValidatorMismatch,
 }
 
 impl fmt::Display for Error {
@@ -272,6 +298,47 @@ impl fmt::Display for Error {
             Self::InvalidVoteIndex => write!(f, "invalid vote validator index"),
             Self::ConflictingVote => write!(f, "conflicting vote"),
             Self::DuplicateVoteSignature => write!(f, "vote signature is non-deterministic"),
+            Self::MissingConflictingBlock => write!(f, "conflicting block is nil"),
+            Self::MissingSignedHeader => write!(f, "missing signed header"),
+            Self::MissingLightValidatorSet => write!(f, "missing validator set"),
+            Self::MissingTrustedHeader => write!(f, "missing trusted header"),
+            Self::ValidatorHashMismatch => {
+                write!(f, "validator hash does not match the validator set")
+            }
+            Self::HeaderCommitMismatch => write!(f, "header and commit height mismatch"),
+            Self::CommitSignsWrongBlock => write!(f, "commit signs a different block"),
+            Self::ChainIdMismatch => write!(f, "header belongs to another chain"),
+            Self::NonPositiveTotalVotingPower => write!(f, "negative or zero total voting power"),
+            Self::NonPositiveCommonHeight => write!(f, "negative or zero common height"),
+            Self::CommonHeightAhead => {
+                write!(f, "common height is ahead of the conflicting block height")
+            }
+            Self::CommitSignatureCount { expected, got } => {
+                write!(
+                    f,
+                    "invalid commit -- wrong signature count: want {expected}, got {got}"
+                )
+            }
+            Self::CommitHeightMismatch => write!(f, "invalid commit -- wrong height"),
+            Self::CommitBlockIdMismatch => write!(f, "invalid commit -- wrong block ID"),
+            Self::NotEnoughVotingPower { got, needed } => {
+                write!(f, "not enough voting power: got {got}, needed {needed}")
+            }
+            Self::DoubleCommitVote => write!(f, "double vote in commit"),
+            Self::ConflictingHeaderDerived => write!(
+                f,
+                "common height matches the conflicting block but the header was not derived"
+            ),
+            Self::TrustedHashMatches => {
+                write!(f, "trusted header hash matches the conflicting header")
+            }
+            Self::ConflictingTimeOrder => write!(
+                f,
+                "conflicting block does not violate monotonically increasing time"
+            ),
+            Self::ByzantineValidatorMismatch => {
+                write!(f, "byzantine validators do not match the commits")
+            }
         }
     }
 }

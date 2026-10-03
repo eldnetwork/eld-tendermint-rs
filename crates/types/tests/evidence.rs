@@ -1,6 +1,7 @@
 //! Conflicting and non-conflicting cases from `TestDuplicateVoteEvidenceValidation`.
 //!
-//! Light-client attack evidence and the random-key `TestEvidenceList` are skipped.
+//! The random-key `TestEvidenceList` is skipped. Light-client attack evidence is covered
+//! by the evidence pool test.
 
 use eld_tendermint_crypto::{PrivKey, sum};
 use eld_tendermint_proto::types::SignedMsgType;
@@ -193,7 +194,7 @@ fn block_evidence_hash_changes_when_the_list_is_not_empty() {
     let empty = Block::make_block(3, Txs::new(vec![]), None, EvidenceList::default());
     assert_eq!(hex::encode(&empty.header.evidence_hash), EMPTY_ROOT);
 
-    let list = EvidenceList::new(vec![fixture.evidence]);
+    let list = EvidenceList::new(vec![fixture.evidence.into()]);
     let with = Block::make_block(3, Txs::new(vec![]), None, list.clone());
     assert_ne!(with.header.evidence_hash, empty.header.evidence_hash);
     assert_eq!(with.header.evidence_hash, list.hash().as_bytes().to_vec());

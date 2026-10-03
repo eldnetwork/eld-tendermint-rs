@@ -6,6 +6,7 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 
 ### Added
 
+- Light-client attack evidence. An equivocation fixture verifies against the trusted and common validator sets, changes the block evidence hash, and is left out of the next proposal.
 - Consensus WAL rotation. The head stays `cs.wal/wal`. At 10 MiB it is renamed to `wal.NNN` and replaced by an empty file. A prevote in an older segment is replayed without a second signature.
 - RPC byte fields are standard base64, and Ed25519 public keys use the `tendermint/PubKeyEd25519` Amino envelope.
 - JSON-RPC `genesis`, `validators`, `blockchain`, `net_info`, and `consensus_state`. `broadcast_tx_async` returns the CheckTx code and tx hash without waiting for the next block.

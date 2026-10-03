@@ -97,7 +97,7 @@ impl Block {
     }
 
     /// `Block.ToProto`. A missing last commit omits the field.
-    /// Each evidence item is wrapped as `Evidence { duplicate_vote_evidence }`.
+    /// Each evidence item is the `Evidence` oneof, duplicate vote or light-client attack.
     #[must_use]
     pub fn to_proto(&self) -> eld_tendermint_proto::types::Block {
         eld_tendermint_proto::types::Block {
@@ -120,8 +120,7 @@ impl Block {
     /// # Errors
     ///
     /// Returns a header, data, commit, or evidence error, then
-    /// the same errors as [`Self::validate_basic`]. A light-client attack is
-    /// [`Error::UnsupportedEvidence`].
+    /// the same errors as [`Self::validate_basic`].
     pub fn try_from_proto(proto: &eld_tendermint_proto::types::Block) -> Result<Self, Error> {
         let Some(header) = proto.header.as_ref() else {
             return Err(Error::MissingHeader);

@@ -1,7 +1,9 @@
 //! Tendermint 0.34 evidence pool.
 //!
-//! Duplicate-vote evidence is verified, stored, and gossiped on channel `0x38`.
-//! Light-client attack evidence is not accepted. There is no expiry pruning.
+//! Duplicate-vote and light-client attack evidence are verified, stored, and gossiped
+//! on channel `0x38`. A gossiped light-client attack is not stored: this pool has no
+//! block store, so the caller of `Pool::add_light` supplies the trusted header.
+//! There is no expiry pruning.
 
 mod error;
 mod pool;

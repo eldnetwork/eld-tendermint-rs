@@ -9,12 +9,13 @@ use eld_tendermint_crypto::PrivKey;
 use eld_tendermint_evidence::{EVIDENCE_CHANNEL, Pool, Reactor, channel_descriptors};
 use eld_tendermint_p2p::{Switch, make_secret_connection};
 use eld_tendermint_proto::types::EvidenceList as ProtoList;
-use eld_tendermint_proto::types::SignedMsgType;
+use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::make_genesis_state;
 use eld_tendermint_store::MemDb;
 use eld_tendermint_types::{
-    BlockId, ChainId, DuplicateVoteEvidence, GenesisDoc, GenesisValidator, PartSetHeader, Time,
-    Vote,
+    BlockId, ChainId, Commit, CommitSig, ConsensusVersion, DuplicateVoteEvidence, GenesisDoc,
+    GenesisValidator, Header, LightBlock, LightClientAttackEvidence, PartSetHeader, SignedHeader,
+    Time, Validator, ValidatorSet, Vote,
 };
 use prost::Message;
 
@@ -64,6 +65,93 @@ fn evidence() -> (eld_tendermint_state::State, DuplicateVoteEvidence) {
         &state.validators,
     )
     .expect("evidence");
+    (state, evidence)
+}
+
+fn encode_light(evidence: &LightClientAttackEvidence) -> Vec<u8> {
+    ProtoList {
+        evidence: vec![evidence.to_evidence_proto()],
+    }
+    .encode_to_vec()
+}
+
+fn light_attack() -> (eld_tendermint_state::State, LightClientAttackEvidence) {
+    let key = PrivKey::generate();
+    let pub_key = key.public_key().expect("pub key");
+    let vals = ValidatorSet::new(vec![Validator::new(pub_key, 10)]).expect("set");
+    let validators_hash = vals.hash().expect("hash").as_bytes().to_vec();
+    let proposer = vals.validators()[0].address.clone();
+    let when = Time::from_unix_parts(1_600_000_000, 0);
+    let header = Header {
+        version: ConsensusVersion::default(),
+        chain_id: ChainId::new("test-chain"),
+        height: 2,
+        time: when,
+        last_block_id: BlockId::default(),
+        last_commit_hash: vec![0x22; 32],
+        data_hash: vec![0x33; 32],
+        validators_hash,
+        next_validators_hash: vec![0x44; 32],
+        consensus_hash: vec![0x55; 32],
+        app_hash: vec![0x66; 32],
+        last_results_hash: vec![0x77; 32],
+        evidence_hash: vec![0x88; 32],
+        proposer_address: proposer.clone(),
+    };
+    let block_id = BlockId {
+        hash: header.hash().expect("header").as_bytes().to_vec(),
+        part_set_header: PartSetHeader {
+            total: 1,
+            hash: vec![0x99; 32],
+        },
+    };
+    let mut vote = Vote {
+        vote_type: SignedMsgType::Precommit,
+        height: 2,
+        round: 0,
+        block_id: block_id.clone(),
+        timestamp: when,
+        validator_address: proposer,
+        validator_index: 0,
+        signature: Vec::new(),
+    };
+    vote.sign(&key, "test-chain").expect("sign");
+    let commit = Commit {
+        height: 2,
+        round: 0,
+        block_id,
+        signatures: vec![CommitSig {
+            block_id_flag: BlockIdFlag::Commit,
+            validator_address: vote.validator_address.clone(),
+            timestamp: vote.timestamp,
+            signature: vote.signature,
+        }],
+    };
+    let evidence = LightClientAttackEvidence {
+        conflicting_block: LightBlock {
+            signed_header: SignedHeader { header, commit },
+            validator_set: vals,
+        },
+        common_height: 2,
+        byzantine_validators: Vec::new(),
+        total_voting_power: 10,
+        timestamp: when,
+    };
+    let mut genesis = GenesisDoc {
+        genesis_time: when,
+        chain_id: ChainId::new("test-chain"),
+        initial_height: 0,
+        consensus_params: None,
+        validators: vec![GenesisValidator {
+            address: Vec::new(),
+            pub_key,
+            power: 10,
+            name: String::new(),
+        }],
+        app_hash: vec![0x11; 32],
+        app_state: None,
+    };
+    let state = make_genesis_state(&mut genesis).expect("genesis");
     (state, evidence)
 }
 
@@ -187,4 +275,24 @@ fn malformed_evidence_stops_the_peer() {
             .is_empty()
     );
     assert!(receiver.peers().is_empty());
+}
+
+#[test]
+fn light_client_attack_that_fails_verify_keeps_the_peer() {
+    let (state, evidence) = light_attack();
+    let pool = Pool::new(MemDb::new(), &state);
+    let reactor = Reactor::new(pool.clone());
+    let receiver = switch_for(&reactor);
+    let sender = Switch::new();
+    sender
+        .add_reactor("evidence", channel_descriptors(), |_, _, _| {})
+        .expect("sender");
+    link(&receiver, &sender);
+    assert!(sender.send("left", EVIDENCE_CHANNEL, &encode_light(&evidence)));
+    thread::sleep(Duration::from_millis(30));
+    assert!(
+        pool.pending(state.consensus_params.evidence.max_bytes)
+            .is_empty()
+    );
+    assert_eq!(receiver.peers().len(), 1);
 }

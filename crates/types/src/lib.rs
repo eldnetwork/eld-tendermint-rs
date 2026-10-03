@@ -14,6 +14,7 @@ mod evidence;
 mod genesis;
 mod hash;
 mod header;
+mod light;
 mod params;
 mod part;
 mod proposal;
@@ -28,10 +29,11 @@ pub use block::Block;
 pub use block_id::{BlockId, PartSetHeader};
 pub use commit::{Commit, CommitSig};
 pub use error::Error;
-pub use evidence::{DuplicateVoteEvidence, EvidenceList};
+pub use evidence::{DuplicateVoteEvidence, Evidence, EvidenceList, LightClientAttackEvidence};
 pub use genesis::{GenesisDoc, GenesisValidator};
 pub use hash::{ChainId, Hash, validate_hash};
 pub use header::{ConsensusVersion, Header};
+pub use light::{LightBlock, SignedHeader};
 pub use params::{
     ABCI_PUBKEY_TYPE_ED25519, ABCI_PUBKEY_TYPE_SECP256K1, BlockParams, ConsensusParams, Duration,
     EvidenceParams, ValidatorParams, VersionParams, hash_consensus_params,

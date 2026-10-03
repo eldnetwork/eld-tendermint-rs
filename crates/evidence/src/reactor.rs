@@ -1,9 +1,9 @@
 //! Evidence gossip on channel `0x38`.
 //!
-//! Each broadcast is one `EvidenceList` holding a single duplicate vote.
-//! A hash received from a peer is not sent back to that peer. A failed
-//! `verify` leaves the peer connected. A protobuf that does not decode, or an
-//! item that fails `ValidateBasic`, stops the peer.
+//! Each broadcast is one `EvidenceList` holding a single duplicate vote or
+//! light-client attack. A hash received from a peer is not sent back to that peer.
+//! A failed `verify` leaves the peer connected and does not store the evidence.
+//! A protobuf that does not decode, or an item that fails `ValidateBasic`, stops the peer.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use eld_tendermint_p2p::{ChannelDescriptor, Switch};
 use eld_tendermint_proto::types::EvidenceList as ProtoList;
 use eld_tendermint_store::Db;
-use eld_tendermint_types::DuplicateVoteEvidence;
+use eld_tendermint_types::Evidence;
 use prost::Message;
 
 use crate::pool::Pool;
@@ -106,11 +106,12 @@ impl<D: Db> Reactor<D> {
         }
     }
 
-    /// Decode one `EvidenceList` and add each duplicate vote.
+    /// Decode one `EvidenceList` and add each item that verifies.
     ///
     /// Returns `false` when `bytes` is not an `EvidenceList` or an item fails
-    /// `ValidateBasic`. The caller stops that peer. A vote that fails `verify`
-    /// is not stored, and this returns `true`.
+    /// `ValidateBasic`. The caller stops that peer. A vote or light-client attack
+    /// that fails `verify` is not stored, and this returns `true`. A gossiped
+    /// light-client attack has no trusted header in this pool, so it is not stored.
     pub fn handle(&self, peer_id: &str, _ch_id: u8, bytes: &[u8]) -> bool {
         let Ok(list) = ProtoList::decode(bytes) else {
             return false;
@@ -118,7 +119,7 @@ impl<D: Db> Reactor<D> {
         let mut inner = lock(&self.inner);
         inner.received += 1;
         for item in list.evidence {
-            let Ok(evidence) = DuplicateVoteEvidence::try_from_evidence_proto(&item) else {
+            let Ok(evidence) = Evidence::try_from_evidence_proto(&item) else {
                 return false;
             };
             let hash = evidence.hash().as_bytes().to_vec();
@@ -127,13 +128,20 @@ impl<D: Db> Reactor<D> {
                 .entry(peer_id.to_owned())
                 .or_default()
                 .insert(hash);
-            let _ = inner.pool.add(evidence);
+            match evidence {
+                Evidence::Duplicate(evidence) => {
+                    let _ = inner.pool.add(evidence);
+                }
+                Evidence::Light(evidence) => {
+                    let _ = inner.pool.add_gossiped_light(&evidence);
+                }
+            }
         }
         true
     }
 }
 
-fn encode(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
+fn encode(evidence: &Evidence) -> Vec<u8> {
     ProtoList {
         evidence: vec![evidence.to_evidence_proto()],
     }
@@ -143,7 +151,7 @@ fn encode(evidence: &DuplicateVoteEvidence) -> Vec<u8> {
 fn hash_of_message(bytes: &[u8]) -> Option<Vec<u8>> {
     let list = ProtoList::decode(bytes).ok()?;
     let item = list.evidence.first()?;
-    let evidence = DuplicateVoteEvidence::try_from_evidence_proto(item).ok()?;
+    let evidence = Evidence::try_from_evidence_proto(item).ok()?;
     Some(evidence.hash().as_bytes().to_vec())
 }
 
