@@ -115,6 +115,23 @@ fn broadcast_tx_sync_returns_code_and_hash() {
 }
 
 #[test]
+fn broadcast_tx_sync_accepts_a_positional_tx() {
+    let home = TestHome::new("sync-array");
+    let proxy = stub_abci();
+    write_home(&home.path, &proxy, "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let tx = b"pay";
+    let encoded = b64(tx);
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"broadcast_tx_sync","params":["{encoded}"]}}"#
+    );
+    let (_code, _headers, body) = post(&node.rpc_addr(), &body);
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["result"]["code"], 0);
+    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+}
+
+#[test]
 fn broadcast_tx_sync_returns_reject_code() {
     let home = TestHome::new("sync-reject");
     let proxy = stub_abci();
@@ -414,6 +431,34 @@ skip_timeout_commit = false
         data.starts_with("height 99 must be less than or equal to the current blockchain height "),
         "{data}"
     );
+}
+
+#[test]
+fn skip_timeout_commit_false_reaches_height_two() {
+    let home = TestHome::new("height-two");
+    let proxy = stub_abci();
+    let consensus = "\
+[consensus]
+timeout_propose = \"50ms\"
+timeout_propose_delta = \"0s\"
+timeout_prevote = \"50ms\"
+timeout_prevote_delta = \"0s\"
+timeout_precommit = \"50ms\"
+timeout_precommit_delta = \"0s\"
+timeout_commit = \"50ms\"
+skip_timeout_commit = false
+";
+    write_configured(
+        &home.path,
+        &proxy,
+        "tcp://127.0.0.1:0",
+        true,
+        "",
+        "",
+        consensus,
+    );
+    let mut node = NodeChild::spawn(&home.path);
+    wait_for_height(&node.rpc_addr(), 2);
 }
 
 #[test]

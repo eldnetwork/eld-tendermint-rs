@@ -450,13 +450,16 @@ fn check_tx(
     pool.check_tx_response(&Tx::new(tx.to_vec()))
 }
 
-/// `params.tx` is standard base64, the amino JSON encoding of `[]byte`.
+/// `params.tx`, or the first element of a positional `params` array.
+///
+/// The value is standard base64, the amino JSON encoding of `[]byte`.
 fn tx_param(request: &Value) -> Result<Vec<u8>, String> {
-    let Some(text) = request
-        .get("params")
-        .and_then(|params| params.get("tx"))
-        .and_then(Value::as_str)
-    else {
+    let text = match request.get("params") {
+        Some(Value::Array(items)) => items.first().and_then(Value::as_str),
+        Some(params) => params.get("tx").and_then(Value::as_str),
+        None => None,
+    };
+    let Some(text) = text else {
         return Err("missing params.tx".to_owned());
     };
     base64::engine::general_purpose::STANDARD

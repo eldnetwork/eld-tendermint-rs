@@ -826,6 +826,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             Step::NewHeight if self.step == Step::NewHeight => {
                 self.enter_new_round(self.height, 0);
             }
+            Step::NewRound if self.step == Step::NewRound => {
+                self.enter_propose(self.height, 0);
+            }
             _ => {}
         }
     }
@@ -867,7 +870,36 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             self.proposal_block = None;
             self.proposal_parts = None;
         }
-        self.enter_propose(height, round);
+        // Go waits for a tx, or for `create_empty_blocks_interval`, before round 0
+        // unless this height must sign the current app hash.
+        let wait_for_txs = self.config.wait_for_txs() && round == 0 && !self.need_proof_block();
+        if wait_for_txs {
+            if self.config.create_empty_blocks_interval.as_nanos() > 0 {
+                self.schedule(
+                    self.config.create_empty_blocks_interval,
+                    height,
+                    round,
+                    Step::NewRound,
+                );
+            }
+        } else {
+            self.enter_propose(height, round);
+        }
+    }
+
+    /// Go `needProofBlock`. The first height signs the genesis app hash immediately.
+    /// A later height does the same when the previous block changed that hash.
+    fn need_proof_block(&self) -> bool {
+        if self.height == self.chain_state.initial_height {
+            return true;
+        }
+        let Some(meta) = self.block_store.load_block_meta(self.height - 1) else {
+            panic!(
+                "needProofBlock: last block meta for height {} not found",
+                self.height - 1
+            );
+        };
+        self.chain_state.app_hash.as_slice() != meta.header.app_hash.as_slice()
     }
 
     fn enter_propose(&mut self, height: i64, round: i32) {
@@ -1204,17 +1236,19 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
 
     /// Start the next height only after this one has been saved.
     ///
-    /// The round starts on the following tick, so one reactor poll commits one
+    /// Go `scheduleRound0` waits `timeout_commit`. `skip_timeout_commit` starts
+    /// the next round on the following tick, so one reactor poll commits one
     /// block when the local validators already have a quorum.
     fn advance_after_commit(&mut self, before: i64) {
-        if self.height != before && self.config.skip_timeout_commit {
-            self.schedule(
-                eld_tendermint_config::Duration::from_nanos(0),
-                self.height,
-                0,
-                Step::NewHeight,
-            );
+        if self.height == before {
+            return;
         }
+        let delay = if self.config.skip_timeout_commit {
+            eld_tendermint_config::Duration::from_nanos(0)
+        } else {
+            self.config.timeout_commit
+        };
+        self.schedule(delay, self.height, 0, Step::NewHeight);
     }
 
     fn enter_commit(&mut self, height: i64, commit_round: i32) {
