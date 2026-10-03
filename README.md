@@ -1,8 +1,56 @@
 # eld-tendermint-rs
 
-Rust port of the Tendermint consensus engine used by Eld. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
+## Project intro
 
-The workspace covers proto messages, Ed25519, core types (blocks, evidence, proposer priority, and vote sets), `config.toml` and genesis loading, file privval or a dialed signer when `priv_validator_laddr` is set, the p2p switch (dial, accept, address book, and PEX), an ABCI 0.17 socket client, a RocksDB block store that prunes heights below a retain target, `ApplyBlock`, the v0 mempool and its reactor, the v0 blockchain reactor, the evidence pool, a transaction index, and consensus with a write-ahead log and a gossip reactor. Operator lines for ABCI, round steps, commits, dial, proposal, vote, WAL, and shutdown go to stderr. They use the Go messages and fields. They are not a byte copy of the Go logger. `eld-tendermint start` serves JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. The rest of RPC is not in this port. History of what has landed is in [CHANGELOG.md](CHANGELOG.md).
+eld-tendermint-rs is a Rust port of the Tendermint consensus engine Eld runs. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
+
+The port is the base for later Eld network work. We will extend and modify this Tendermint node in Rust — consensus, state, and the peer-to-peer parts around them — starting from that Go-compatible line.
+
+## Quickstarts
+
+Check out: `39f16d0190877f8f0771c3905fdeb578ae5ab3bd` (latest tested)
+
+Home directory. The directory name can be anything; pass it as `--home`.
+
+```text
+$HOME/eld-tendermint/
+├── config/
+│   ├── addrbook.json
+│   ├── config.toml
+│   ├── genesis.json
+│   ├── node_key.json
+│   └── priv_validator_key.json
+└── data/
+    └── priv_validator_state.json
+```
+
+For a fresh start, delete every other file in `data/`except priv_validator_state.json
+
+```bash
+cargo run -p eld-tendermint-node -- start --home $HOME/eld-tendermint
+```
+You will see a message that tendermint can't connect to the abci app...
+
+Now start your abci app. Soon you should see block creation logs in the tendermint log.
+
+## What the project covers
+
+- Consensus, with a write-ahead log and gossip to peers.
+- ABCI 0.17 socket client.
+- Block execution.
+- RocksDB block store, with pruning below a retain height.
+- P2p switch, with dial, accept, an address book, and PEX.
+- v0 mempool.
+- v0 fast sync.
+- Evidence pool.
+- Transaction index.
+- File privval.
+- Proto messages, Ed25519, and core types for blocks, votes, and evidence.
+- `config.toml` and genesis loading.
+- JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`.
+- WebSocket `subscribe` and `unsubscribe` for `NewBlock` and `Tx`.
+
+Changes so far are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Crates
 
@@ -20,10 +68,10 @@ Every package is `0.0.1` and unpublished.
 | `eld-tendermint-store` | `store.BlockStore`. Keys are `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`. `prune_blocks` deletes heights below a retain target after saving the new base. RocksDB on disk, an in-memory map in tests. A Go goleveldb directory is refused. |
 | `eld-tendermint-state` | `MakeGenesisState`, `InitChain`, and `ApplyBlock`. A missing `stateKey` calls `InitChain` once. A validator update lands in the next set and becomes current one block later. State reloads from `stateKey`. DeliverTx results are indexed under the Go `tx.height` keys. |
 | `eld-tendermint-evidence` | Evidence pool. A duplicate vote is verified against the current or last validator set. A light-client attack is verified against the trusted and common validator sets. Both are stored in `evidence.db`, gossiped on channel `0x38`, and included in one proposal. |
-| `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. The reactor gossips one tx per message on channel `0x30` and does not echo a tx to the peer that sent it. |
+| `eld-tendermint-mempool` | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. Gossip sends one tx per message on channel `0x30` and does not send that tx back to the peer that sent it. |
 | `eld-tendermint-blockchain` | v0 fast sync on channel `0x40`. A taller peer is asked for up to 20 blocks. Each block is applied at the next height after its commit matches the previous block. v1 and v2 are not started. |
-| `eld-tendermint-consensus` | In-process rounds and the gossip reactor on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. A node one or two blocks behind catches up on `0x21` and `0x22` with fast sync off. The WAL is CRC32C-framed. The head stays `cs.wal/wal` and rotates to `wal.NNN` at 10 MiB. A prevote written before rotation is replayed from the older segment without a second signature. |
-| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and the v0 blockchain reactor when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
+| `eld-tendermint-consensus` | In-process rounds, with gossip on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. A node one or two blocks behind catches up on `0x21` and `0x22` with fast sync off. The WAL is CRC32C-framed. The head stays `cs.wal/wal` and rotates to `wal.NNN` at 10 MiB. A prevote written before rotation is replayed from the older segment without a second signature. |
+| `eld-tendermint-node` | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and v0 fast sync when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves JSON-RPC `status`, `health`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, and `tx_search`. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
 
 ## Database
 
