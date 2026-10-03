@@ -4,16 +4,16 @@
 
 eld-tendermint-rs is a Rust port of the Tendermint consensus engine Eld runs. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The port is the base for later Eld network work. We will extend and modify this Tendermint node in Rust — consensus, state, and the peer-to-peer parts around them — starting from that Go-compatible line.
+The port is the base for later Eld network work. We will extend and modify this Tendermint node in Rust.
 
 ## Quickstart
 
 Check out: `39f16d0190877f8f0771c3905fdeb578ae5ab3bd` (latest tested)
 
-Home directory. The directory name can be anything; pass it as `--home`.
+Home directory. The directory can be any directory of your choice; pass it as `--home`.
 
 ```text
-$HOME/eld-tendermint/
+$HOME/.eld-tendermint/
 ├── config/
 │   ├── addrbook.json
 │   ├── config.toml
@@ -27,7 +27,7 @@ $HOME/eld-tendermint/
 For a fresh start, delete every other file in `data/`except priv_validator_state.json
 
 ```bash
-cargo run -p eld-tendermint-node -- start --home $HOME/eld-tendermint
+cargo run -p eld-tendermint-node -- start --home $HOME/.eld-tendermint
 ```
 You will see a message that tendermint can't connect to the abci app...
 
@@ -79,7 +79,7 @@ Tendermint 0.34 defaults to goleveldb. goleveldb is a pure-Go port of Google Lev
 
 Both are embedded, single-process key-value stores built on a log-structured merge tree. You write batches, read by key, and scan ranges. Compaction runs in the background.
 
-- The files are not interchangeable. A Go data/ directory created with db_backend = "goleveldb" will not open under RocksDB.
+- NOTE: The tm go and tm rust files are not interchangeable. A Go data/ directory created with db_backend = "goleveldb" will not open under RocksDB.
 - Key prefixes match the Go block store (H:, P:, C:, SC:, BH:, blockStore). The directory does not.
 - Tests use the in-memory Db. The node writes RocksDB files in its own directory.
 - blockstore, state, evidence, and tx_index stay separate databases, as in the Go node. `eld-tendermint start` opens blockstore, state, `evidence.db`, and `tx_index.db` unless `[tx_index] indexer` is `null`.
@@ -100,7 +100,7 @@ eld-tendermint-config --home /path/to/node
 brew install cmake
 ```
 
-`--home` defaults the same way as the Go binary when the flag is omitted.
+When `--home` is omitted, the node uses `TMHOME` if that variable is set, and otherwise `$HOME/.tendermint`, the same default as the Go binary.
 
 ## Proto
 
@@ -108,7 +108,7 @@ brew install cmake
 
 `proto/` is a copy of the Eld Go tree at `v0.34.24-eld.3` (`79dcdd712`), recorded in `proto/GO_REF`. It holds the 24 `.proto` files under `proto/tendermint/` plus `proto/third_party/gogoproto/gogo.proto`. These files are the source of truth for field numbers and message layout, and they match upstream Tendermint `v0.34.24` (ABCI 0.17.0). Cargo does not compile this directory. `scripts/gen-proto.sh` reads it and writes Prost output.
 
-`crates/proto/` is the Cargo package `eld-tendermint-proto`. `src/prost/*.rs` is that generated output, and `src/lib.rs` exposes it as `eld_tendermint_proto::abci`, `::types`, and the other packages. Later crates depend on this package.
+`crates/proto/` is the Cargo package `eld-tendermint-proto`. `src/prost/*.rs` is the generated output, and `src/lib.rs` exposes it as `eld_tendermint_proto::abci`, `::types`, and the other packages. Later crates depend on this package.
 
 Edit `proto/tendermint/**` only when the Go schema changes, then regenerate. Do not hand-edit `crates/proto/src/prost/`.
 
@@ -123,9 +123,9 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 - `tendermint-abci` in that repo speaks the 0.38 socket codec.
 - Those bindings are not tested against Eld’s Go hex vectors.
 
-`tendermint-rs` `tools/proto-compiler` is only the prost-build recipe: prost 0.13, `bytes` for ABCI fields, and extern paths for `Timestamp` and `Duration`.
+We copied the generator settings from `tendermint-rs`, not the library. The generator uses Prost 0.13. ABCI byte fields are the `bytes` type. `Timestamp` and `Duration` use Prost's own types instead of being generated from the schema.
 
 ## Still to do
 
-- **RPC beyond the methods now served.** An unknown method returns JSON-RPC `-32601`.
-- **Not in this port yet.** WAL file rotation, and RPC methods other than the ones now served. v1 and v2 fast sync are not started.
+- JSON-RPC methods other than the ones already served. A call to one of those returns `-32601`.
+- v1 and v2 fast sync. The node starts fast sync only when the version is `v0`.
