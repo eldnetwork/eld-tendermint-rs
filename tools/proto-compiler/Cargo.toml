@@ -2,8 +2,12 @@
 name = "eld-tendermint-proto-compiler"
 version = "0.0.1"
 edition = "2024"
+license = "Apache-2.0"
 publish = false
 description = "Regenerates crates/proto/src/prost from proto/tendermint."
 
 [dependencies]
 prost-build = "0.13"
+
+[lints]
+workspace = true

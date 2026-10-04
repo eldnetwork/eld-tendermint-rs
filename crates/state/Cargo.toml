@@ -7,9 +7,12 @@ publish = false
 description = "Tendermint 0.34 genesis state and ApplyBlock."
 
 [dependencies]
-eld-tendermint-crypto = { path = "../crypto" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-store = { path = "../store" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-store = { version = "0.0.1", path = "../store" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 prost = "0.13"
 serde_json = { version = "1", features = ["preserve_order"] }
+
+[lints]
+workspace = true

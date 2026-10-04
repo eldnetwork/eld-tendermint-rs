@@ -11,12 +11,15 @@ name = "eld-tendermint-config"
 path = "src/bin/show.rs"
 
 [dependencies]
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
 [dev-dependencies]
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
+
+[lints]
+workspace = true

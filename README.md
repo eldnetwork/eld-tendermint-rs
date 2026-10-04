@@ -43,7 +43,17 @@ docker build -t ghcr.io/eldnetwork/eld-tendermint-rs:local .
 
 If `PROXY_APP` is set, the entrypoint passes it as `--proxy-app` for that process. Otherwise `proxy_app` comes from the mounted `config.toml`. This image does not include a kvstore app.
 
-A tag `v0.34.24-eld-tm-rs.N` publishes the image after the verify and test jobs pass. A push to `main` runs those jobs and does not publish.
+A tag `v0.34.24-eld-tm-rs.N` publishes the image after CI passes. Pushes run CI and do not publish.
+
+## CI
+
+Rust 1.86.0 (see `rust-toolchain.toml`). Install [gitleaks](https://github.com/gitleaks/gitleaks), [cargo-audit](https://github.com/rustsec/rustsec) 0.22.2+, and [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`brew install gitleaks cargo-audit cargo-deny` on macOS).
+
+```bash
+./scripts/ci.sh
+```
+
+That runs the same checks as GitHub Actions: the tendermint Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are treated as errors. A tag runs this workflow before the image job.
 
 ## What the project covers
 

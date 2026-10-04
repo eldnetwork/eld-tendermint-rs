@@ -17,3 +17,6 @@ members = [
     "crates/types",
     "tools/proto-compiler",
 ]
+
+[workspace.lints.rust]
+warnings = "deny"

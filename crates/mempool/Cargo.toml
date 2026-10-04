@@ -7,11 +7,14 @@ publish = false
 description = "Tendermint 0.34 v0 FIFO mempool and the mempool reactor."
 
 [dependencies]
-eld-tendermint-config = { path = "../config" }
-eld-tendermint-p2p = { path = "../p2p" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-config = { version = "0.0.1", path = "../config" }
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 prost = "0.13"
 
 [dev-dependencies]
-eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+
+[lints]
+workspace = true

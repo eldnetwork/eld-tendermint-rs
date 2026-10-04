@@ -7,18 +7,21 @@ publish = false
 description = "Tendermint 0.34 consensus rounds and the consensus gossip reactor."
 
 [dependencies]
-eld-tendermint-config = { path = "../config" }
-eld-tendermint-evidence = { path = "../evidence" }
-eld-tendermint-p2p = { path = "../p2p" }
-eld-tendermint-mempool = { path = "../mempool" }
-eld-tendermint-privval = { path = "../privval" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-state = { path = "../state" }
-eld-tendermint-store = { path = "../store" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-config = { version = "0.0.1", path = "../config" }
+eld-tendermint-evidence = { version = "0.0.1", path = "../evidence" }
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+eld-tendermint-mempool = { version = "0.0.1", path = "../mempool" }
+eld-tendermint-privval = { version = "0.0.1", path = "../privval" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-state = { version = "0.0.1", path = "../state" }
+eld-tendermint-store = { version = "0.0.1", path = "../store" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 crc32c = "0.6"
 prost = "0.13"
 prost-types = "0.13"
 
 [dev-dependencies]
-eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+
+[lints]
+workspace = true

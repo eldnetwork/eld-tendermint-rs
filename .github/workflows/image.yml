@@ -2,8 +2,6 @@ name: image
 
 on:
   push:
-    branches:
-      - main
     tags:
       - v0.34.24-eld-tm-rs.*
   workflow_dispatch:
@@ -16,36 +14,15 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Verify Go pin and core version
-        run: |
-          grep -q 'GO_REF=v0.34.24-eld.3' proto/GO_REF
-          grep -q 'TM_CORE_SEMVER: &str = "0.34.24"' crates/state/src/state.rs
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.86.0
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev pkg-config build-essential
-      - name: Build eld-tendermint-node
-        run: cargo build --locked -p eld-tendermint-node
-      - name: Test
-        run: cargo test --workspace --locked
+  ci:
+    uses: ./.github/workflows/ci.yml
 
   image:
     # A custom if replaces the default success() check. Keep success() so a
-    # failed verify or rust job cannot publish. Branch pushes stay in CI only:
-    # main is not a legal Docker tag.
+    # failed CI job cannot publish. workflow_dispatch stays in CI only.
     if: success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v0.34.24-eld-tm-rs.')
     runs-on: ubuntu-latest
-    needs: [verify, rust]
+    needs: ci
     permissions:
       contents: read
       packages: write

@@ -12,5 +12,8 @@ prost = "0.13"
 prost-types = "0.13"
 
 [dev-dependencies]
-eld-tendermint-crypto = { path = "../crypto" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
 hex = "0.4"
+
+[lints]
+workspace = true

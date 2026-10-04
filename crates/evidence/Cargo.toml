@@ -7,17 +7,20 @@ publish = false
 description = "Tendermint 0.34 evidence pool and the evidence reactor."
 
 [dependencies]
-eld-tendermint-p2p = { path = "../p2p" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-state = { path = "../state" }
-eld-tendermint-store = { path = "../store" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-state = { version = "0.0.1", path = "../state" }
+eld-tendermint-store = { version = "0.0.1", path = "../store" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
 prost = "0.13"
 
 [dev-dependencies]
-eld-tendermint-config = { path = "../config" }
-eld-tendermint-consensus = { path = "../consensus" }
-eld-tendermint-crypto = { path = "../crypto" }
-eld-tendermint-mempool = { path = "../mempool" }
-eld-tendermint-privval = { path = "../privval" }
+eld-tendermint-config = { version = "0.0.1", path = "../config" }
+eld-tendermint-consensus = { version = "0.0.1", path = "../consensus" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+eld-tendermint-mempool = { version = "0.0.1", path = "../mempool" }
+eld-tendermint-privval = { version = "0.0.1", path = "../privval" }
+
+[lints]
+workspace = true

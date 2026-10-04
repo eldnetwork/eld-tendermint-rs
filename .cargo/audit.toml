@@ -1,0 +1,4 @@
+# Advisory ignores for crates this workspace cannot bump yet.
+# cargo audit --deny yanked --deny unsound reads this file.
+[advisories]
+ignore = []

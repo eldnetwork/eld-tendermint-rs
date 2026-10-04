@@ -11,19 +11,19 @@ name = "eld-tendermint"
 path = "src/main.rs"
 
 [dependencies]
-eld-tendermint-abci = { path = "../abci" }
-eld-tendermint-blockchain = { path = "../blockchain" }
-eld-tendermint-config = { path = "../config" }
-eld-tendermint-consensus = { path = "../consensus" }
-eld-tendermint-evidence = { path = "../evidence" }
-eld-tendermint-crypto = { path = "../crypto" }
-eld-tendermint-mempool = { path = "../mempool" }
-eld-tendermint-p2p = { path = "../p2p" }
-eld-tendermint-privval = { path = "../privval" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-state = { path = "../state" }
-eld-tendermint-store = { path = "../store" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-abci = { version = "0.0.1", path = "../abci" }
+eld-tendermint-blockchain = { version = "0.0.1", path = "../blockchain" }
+eld-tendermint-config = { version = "0.0.1", path = "../config" }
+eld-tendermint-consensus = { version = "0.0.1", path = "../consensus" }
+eld-tendermint-evidence = { version = "0.0.1", path = "../evidence" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+eld-tendermint-mempool = { version = "0.0.1", path = "../mempool" }
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+eld-tendermint-privval = { version = "0.0.1", path = "../privval" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-state = { version = "0.0.1", path = "../state" }
+eld-tendermint-store = { version = "0.0.1", path = "../store" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 base64 = "0.22"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -32,12 +32,15 @@ tungstenite = "0.26"
 
 [dev-dependencies]
 base64 = "0.22"
-eld-tendermint-abci = { path = "../abci" }
-eld-tendermint-config = { path = "../config" }
-eld-tendermint-crypto = { path = "../crypto" }
-eld-tendermint-mempool = { path = "../mempool" }
-eld-tendermint-p2p = { path = "../p2p" }
-eld-tendermint-privval = { path = "../privval" }
-eld-tendermint-proto = { path = "../proto" }
-eld-tendermint-types = { path = "../types" }
+eld-tendermint-abci = { version = "0.0.1", path = "../abci" }
+eld-tendermint-config = { version = "0.0.1", path = "../config" }
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+eld-tendermint-mempool = { version = "0.0.1", path = "../mempool" }
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+eld-tendermint-privval = { version = "0.0.1", path = "../privval" }
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 serde_json = "1"
+
+[lints]
+workspace = true
