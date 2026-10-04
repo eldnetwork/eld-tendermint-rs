@@ -33,6 +33,18 @@ You will see a message that tendermint can't connect to the abci app...
 
 Now start your abci app. Soon you should see block creation logs in the tendermint log.
 
+## Docker
+
+The published image is `ghcr.io/eldnetwork/eld-tendermint-rs`. The binary in that image is `eld-tendermint-rs`. Config, genesis, and validator keys are not in the image. Mount them at `TMHOME` (default `/tendermint-rs/.tendermint`).
+
+```bash
+docker build -t ghcr.io/eldnetwork/eld-tendermint-rs:local .
+```
+
+If `PROXY_APP` is set, the entrypoint passes it as `--proxy-app` for that process. Otherwise `proxy_app` comes from the mounted `config.toml`. This image does not include a kvstore app.
+
+A tag `v0.34.24-eld-tm-rs.N` publishes the image after the verify and test jobs pass. A push to `main` runs those jobs and does not publish.
+
 ## What the project covers
 
 - Consensus, with a write-ahead log and gossip to peers.

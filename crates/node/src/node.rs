@@ -38,7 +38,7 @@ use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
 use crate::ws::{CommitPublisher, SubscriptionHub};
 
-/// `eld-tendermint start [--home <dir>]` blocks on the RPC accept loop.
+/// `eld-tendermint start [--home <dir>] [--proxy-app <addr>]` blocks on the RPC accept loop.
 /// `eld-tendermint unsafe-reset-all` returns after wiping chain data.
 ///
 /// # Errors
@@ -46,8 +46,8 @@ use crate::ws::{CommitPublisher, SubscriptionHub};
 /// Returns the first startup or reset failure. The caller prints it and exits 1.
 pub fn run() -> Result<(), Error> {
     match command_from_args()? {
-        Command::Start(home) => {
-            let process = boot(&home)?;
+        Command::Start { home, proxy_app } => {
+            let process = boot(&home, proxy_app.as_deref())?;
             let listener = TcpListener::bind(process.rpc_addr).map_err(fail)?;
             let bound = listener.local_addr().map_err(fail)?;
             println!("rpc: {bound}");
@@ -69,8 +69,14 @@ pub fn run() -> Result<(), Error> {
 }
 
 enum Command {
-    Start(PathBuf),
-    UnsafeResetAll { home: PathBuf, keep_addr_book: bool },
+    Start {
+        home: PathBuf,
+        proxy_app: Option<String>,
+    },
+    UnsafeResetAll {
+        home: PathBuf,
+        keep_addr_book: bool,
+    },
 }
 
 struct NodeProcess {
@@ -91,8 +97,11 @@ impl Drop for NodeProcess {
     }
 }
 
-fn boot(home: &Path) -> Result<NodeProcess, Error> {
-    let config = load_home(home).map_err(fail)?;
+fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
+    let mut config = load_home(home).map_err(fail)?;
+    if let Some(proxy_app) = proxy_app {
+        config.base.proxy_app = proxy_app.to_owned();
+    }
     let block = BLOCK_PROTOCOL.to_string();
     log_line(
         Level::Info,
@@ -571,37 +580,65 @@ fn command_from_args() -> Result<Command, Error> {
             "usage: eld-tendermint <start|unsafe-reset-all> [--home <dir>]",
         ));
     };
-    let allow_keep_addr_book = match command.as_str() {
-        "start" => false,
-        "unsafe-reset-all" => true,
-        _ => return Err(Error::new(format!("unknown command {command}"))),
-    };
+    match command.as_str() {
+        "start" => parse_start(args),
+        "unsafe-reset-all" => parse_reset(args),
+        _ => Err(Error::new(format!("unknown command {command}"))),
+    }
+}
+
+fn parse_start(mut args: impl Iterator<Item = String>) -> Result<Command, Error> {
+    let mut home = None;
+    let mut proxy_app = None;
+    while let Some(arg) = args.next() {
+        if arg == "--home" {
+            home = Some(require_value(&mut args, "--home")?);
+        } else if let Some(value) = arg.strip_prefix("--home=") {
+            home = Some(non_empty(value, "--home")?);
+        } else if arg == "--proxy-app" {
+            proxy_app = Some(require_value(&mut args, "--proxy-app")?);
+        } else if let Some(value) = arg.strip_prefix("--proxy-app=") {
+            proxy_app = Some(non_empty(value, "--proxy-app")?);
+        } else {
+            return Err(Error::new(format!("unknown argument {arg}")));
+        }
+    }
+    let home = resolve_home(home.as_deref()).map_err(fail)?;
+    Ok(Command::Start { home, proxy_app })
+}
+
+fn parse_reset(mut args: impl Iterator<Item = String>) -> Result<Command, Error> {
     let mut home = None;
     let mut keep_addr_book = false;
     while let Some(arg) = args.next() {
         if arg == "--home" {
-            let Some(value) = args.next() else {
-                return Err(Error::new("missing value for --home"));
-            };
-            home = Some(value);
+            home = Some(require_value(&mut args, "--home")?);
         } else if let Some(value) = arg.strip_prefix("--home=") {
-            if value.is_empty() {
-                return Err(Error::new("missing value for --home"));
-            }
-            home = Some(value.to_owned());
-        } else if allow_keep_addr_book && arg == "--keep-addr-book" {
+            home = Some(non_empty(value, "--home")?);
+        } else if arg == "--keep-addr-book" {
             keep_addr_book = true;
         } else {
             return Err(Error::new(format!("unknown argument {arg}")));
         }
     }
     let home = resolve_home(home.as_deref()).map_err(fail)?;
-    if allow_keep_addr_book {
-        Ok(Command::UnsafeResetAll {
-            home,
-            keep_addr_book,
-        })
+    Ok(Command::UnsafeResetAll {
+        home,
+        keep_addr_book,
+    })
+}
+
+fn require_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, Error> {
+    match args.next() {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => Err(Error::new(format!("missing value for {flag}"))),
+    }
+}
+
+fn non_empty(value: &str, flag: &str) -> Result<String, Error> {
+    if value.is_empty() {
+        Err(Error::new(format!("missing value for {flag}")))
     } else {
-        Ok(Command::Start(home))
+        Ok(value.to_owned())
     }
 }
