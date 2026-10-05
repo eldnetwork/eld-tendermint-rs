@@ -255,6 +255,47 @@ fn update_copies_overlapping_words() {
 }
 
 #[test]
+fn pick_random_uses_live_bits_only() {
+    let empty = BitArray::new(8).unwrap();
+    assert!(empty.pick_random().is_none());
+    assert!(empty.pick_random_at(0).is_none());
+
+    let mut sparse = BitArray::new(80).unwrap();
+    sparse.set_index(1, true);
+    sparse.set_index(3, true);
+    sparse.set_index(70, true);
+    assert_eq!(sparse.pick_random_at(0), Some(1));
+    assert_eq!(sparse.pick_random_at(1), Some(3));
+    assert_eq!(sparse.pick_random_at(2), Some(70));
+    assert!(sparse.pick_random_at(3).is_none());
+    for _ in 0..32 {
+        let index = sparse.pick_random().expect("a set bit");
+        assert!(matches!(index, 1 | 3 | 70), "{index}");
+    }
+
+    // `Not` sets the unused high bits of the last word. Those are not choices.
+    let flipped = BitArray::new(3).unwrap().not();
+    assert_eq!(flipped.pick_random_at(0), Some(0));
+    assert_eq!(flipped.pick_random_at(1), Some(1));
+    assert_eq!(flipped.pick_random_at(2), Some(2));
+    assert!(flipped.pick_random_at(3).is_none());
+
+    let ours = from_pattern("xxxx");
+    let peer = from_pattern("x_x_");
+    let missing = BitArray::sub(Some(&ours), Some(&peer)).unwrap();
+    assert_eq!(missing.pick_random_at(0), Some(1));
+    assert_eq!(missing.pick_random_at(1), Some(3));
+    assert!(missing.pick_random_at(2).is_none());
+
+    let mut have = BitArray::new(3).unwrap();
+    have.set_index(0, true);
+    let unset = have.not();
+    assert_eq!(unset.pick_random_at(0), Some(1));
+    assert_eq!(unset.pick_random_at(1), Some(2));
+    assert!(unset.pick_random_at(2).is_none());
+}
+
+#[test]
 fn not_flips_padding_bits() {
     let bit_array = BitArray::new(1).unwrap();
     let flipped = bit_array.not();

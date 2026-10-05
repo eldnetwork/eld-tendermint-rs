@@ -977,3 +977,138 @@ fn maj23_replies_with_vote_set_bits_and_a_conflict_drops_the_peer() {
         "a second majority block id did not drop the peer"
     );
 }
+
+fn block_part_indexes(messages: &[(u8, Vec<u8>)]) -> Vec<u32> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != DATA_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::BlockPart(part) => part.part.map(|part| part.index),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn encode_valid_block(height: i64, round: i32, header: &PartSetHeader, bits: &BitArray) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::NewValidBlock(consensus::NewValidBlock {
+            height,
+            round,
+            block_part_set_header: Some(header.to_proto()),
+            block_parts: bits.to_proto(),
+            is_commit: false,
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn part_bits(total: u32, filled: bool) -> BitArray {
+    let width = i64::from(total.max(1));
+    let mut bits = BitArray::new(width).expect("bits");
+    if filled {
+        for index in 0..width {
+            bits.set_index(index, true);
+        }
+    }
+    bits
+}
+
+fn peer_at_proposal(
+    reactor: &Reactor<Exec, Check>,
+    switch: &Switch,
+    header: &PartSetHeader,
+    bits: &BitArray,
+) {
+    assert!(reactor.handle(
+        switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Propose.round_step(), -1),
+    ));
+    assert!(reactor.handle(
+        switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_valid_block(1, 0, header, bits),
+    ));
+}
+
+/// Each gossip sends one part the peer does not have, then stops once those bits are set.
+///
+/// `gossip` stays in propose. `poll` would let this lone validator commit the height first.
+#[test]
+fn one_missing_part_goes_out_per_poll() {
+    let validators = nodes(1);
+    let proposal = validators[0].queued_proposal().expect("signed proposal");
+    let total = proposal.block_id.part_set_header.total;
+    assert!(total >= 1, "proposal has no parts");
+    let header = proposal.block_id.part_set_header.clone();
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    peer_at_proposal(&reactor, &reactor_switch, &header, &part_bits(total, false));
+
+    let total = usize::try_from(total).expect("part count");
+    for sent in 1..=total {
+        reactor.gossip(&reactor_switch);
+        let messages = wait_for(&got, |messages| block_part_indexes(messages).len() >= sent);
+        let indexes = block_part_indexes(&messages);
+        assert_eq!(
+            indexes.len(),
+            sent,
+            "gossip {sent} did not send exactly one new part, saw {indexes:?}"
+        );
+        let mut unique = indexes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            indexes.len(),
+            "a part was sent twice: {indexes:?}"
+        );
+        assert!(
+            indexes
+                .iter()
+                .all(|index| { usize::try_from(*index).expect("part index") < total })
+        );
+    }
+    assert_eq!(reactor.height(), 1);
+
+    reactor.gossip(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+    let indexes = block_part_indexes(&got.lock().unwrap_or_else(|err| err.into_inner()).clone());
+    assert_eq!(
+        indexes.len(),
+        total,
+        "another part went out after the peer had them all: {indexes:?}"
+    );
+}
+
+/// A peer whose part bits are already full is not sent a part it has.
+#[test]
+fn part_the_peer_already_has_is_not_sent() {
+    let validators = nodes(1);
+    let proposal = validators[0].queued_proposal().expect("signed proposal");
+    let total = proposal.block_id.part_set_header.total;
+    let header = proposal.block_id.part_set_header.clone();
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    peer_at_proposal(&reactor, &reactor_switch, &header, &part_bits(total, true));
+
+    reactor.gossip(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(reactor.height(), 1);
+    let indexes = block_part_indexes(&got.lock().unwrap_or_else(|err| err.into_inner()).clone());
+    assert!(
+        indexes.is_empty(),
+        "a part the peer already has was sent: {indexes:?}"
+    );
+}
