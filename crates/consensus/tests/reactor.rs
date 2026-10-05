@@ -9,7 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
 use eld_tendermint_consensus::{
-    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, channel_descriptors,
+    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, VOTE_SET_BITS_CHANNEL,
+    channel_descriptors,
 };
 use eld_tendermint_crypto::PrivKey;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
@@ -816,4 +817,163 @@ fn proposal_pol_for_another_round_is_ignored() {
         &encode_proposal_pol(1, 0, &kept),
     ));
     assert_eq!(reactor.proposal_pol_bits("peer").as_ref(), Some(&kept));
+}
+
+fn tagged_block_id(tag: u8) -> BlockId {
+    BlockId {
+        hash: vec![tag; 32],
+        part_set_header: PartSetHeader {
+            total: 1,
+            hash: vec![tag.wrapping_add(1); 32],
+        },
+    }
+}
+
+fn encode_maj23(height: i64, round: i32, kind: SignedMsgType, block_id: &BlockId) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::VoteSetMaj23(consensus::VoteSetMaj23 {
+            height,
+            round,
+            r#type: kind as i32,
+            block_id: Some(block_id.to_proto()),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn maj23_messages(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::VoteSetMaj23> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != STATE_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::VoteSetMaj23(msg) => Some(msg),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn wait_for(got: &Captured, ready: impl Fn(&[(u8, Vec<u8>)]) -> bool) -> Vec<(u8, Vec<u8>)> {
+    let start = Instant::now();
+    loop {
+        let messages = got.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        if ready(&messages) || start.elapsed() >= Duration::from_millis(500) {
+            return messages;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// +2/3 prevotes are announced on every poll, not only the first.
+#[test]
+fn prevote_majority_is_sent_again_on_the_next_poll() {
+    let mut validators = Group::new(nodes(4));
+    validators.exchange(None, is_block_data);
+    // One validator collects the prevotes. Delivering them to everyone would
+    // also produce precommits, and the first poll would commit the height.
+    let index = validators
+        .nodes()
+        .iter()
+        .position(|node| node.queued_proposal().is_none())
+        .expect("a validator that is not the proposer");
+    validators.exchange(Some(index), is_prevote);
+    assert!(
+        validators.nodes()[index].prevote_count(0) >= 3,
+        "prevotes did not reach +2/3"
+    );
+    let reactor = Reactor::new(validators.into_nodes());
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Prevote.round_step(), -1),
+    ));
+
+    reactor.poll(&reactor_switch);
+    let first = wait_for(&got, |messages| !maj23_messages(messages).is_empty());
+    let first_prevotes: Vec<_> = maj23_messages(&first)
+        .into_iter()
+        .filter(|msg| msg.r#type == SignedMsgType::Prevote as i32 && msg.round == 0)
+        .collect();
+    assert_eq!(
+        first_prevotes.len(),
+        1,
+        "first poll did not send VoteSetMaj23"
+    );
+    assert_eq!(first_prevotes[0].height, 1);
+    assert!(first_prevotes[0].block_id.is_some());
+
+    reactor.poll(&reactor_switch);
+    let second = wait_for(&got, |messages| {
+        maj23_messages(messages)
+            .iter()
+            .filter(|msg| msg.r#type == SignedMsgType::Prevote as i32 && msg.round == 0)
+            .count()
+            >= 2
+    });
+    let prevotes = maj23_messages(&second)
+        .into_iter()
+        .filter(|msg| msg.r#type == SignedMsgType::Prevote as i32 && msg.round == 0)
+        .count();
+    assert!(
+        prevotes >= 2,
+        "the next poll did not send VoteSetMaj23 again, saw {prevotes}"
+    );
+}
+
+/// A `VoteSetMaj23` is answered with `VoteSetBits` on `0x23`. A second block id drops the peer.
+#[test]
+fn maj23_replies_with_vote_set_bits_and_a_conflict_drops_the_peer() {
+    let reactor = Reactor::new(nodes(1));
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+
+    assert!(peer_switch.send(
+        "left",
+        STATE_CHANNEL,
+        &encode_maj23(1, 0, SignedMsgType::Prevote, &tagged_block_id(1)),
+    ));
+    let messages = wait_for(&got, |messages| {
+        messages
+            .iter()
+            .any(|(ch_id, _)| *ch_id == VOTE_SET_BITS_CHANNEL)
+    });
+    let bits = messages.iter().find_map(|(ch_id, bytes)| {
+        if *ch_id != VOTE_SET_BITS_CHANNEL {
+            return None;
+        }
+        let msg = Message::decode(bytes.as_slice()).ok()?;
+        match msg.sum? {
+            message::Sum::VoteSetBits(bits) => Some(bits),
+            _ => None,
+        }
+    });
+    let bits = bits.expect("VoteSetBits was not sent on 0x23");
+    assert_eq!(bits.height, 1);
+    assert_eq!(bits.round, 0);
+    assert_eq!(bits.r#type, SignedMsgType::Prevote as i32);
+    assert_eq!(reactor_switch.peers().len(), 1);
+
+    assert!(peer_switch.send(
+        "left",
+        STATE_CHANNEL,
+        &encode_maj23(1, 0, SignedMsgType::Prevote, &tagged_block_id(2)),
+    ));
+    let start = Instant::now();
+    while reactor_switch.peers().len() == 1 && start.elapsed() < Duration::from_millis(500) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        reactor_switch.peers().len(),
+        0,
+        "a second majority block id did not drop the peer"
+    );
 }
