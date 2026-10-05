@@ -19,7 +19,9 @@ use eld_tendermint_proto::consensus::{
 use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::App as ExecApp;
 use eld_tendermint_store::{Db, MemDb};
-use eld_tendermint_types::{BitArray, BlockId, Commit, Part, PartSetHeader, Proposal, Time, Vote};
+use eld_tendermint_types::{
+    BitArray, BlockId, Commit, Level, Part, PartSetHeader, Proposal, Time, Vote, log_line,
+};
 use prost::Message as ProstMessage;
 
 use crate::round::{CommitSource, Msg, Node, OutboundValidBlock, Scheduled, Step, seconds_since};
@@ -139,6 +141,23 @@ impl PeerState {
     /// The POL round is taken from the proposal and the POL bits are cleared.
     fn note_proposal(&mut self, proposal: &Proposal) {
         if self.height != proposal.height || self.round != proposal.round || self.has_proposal {
+            let peer_height = self.height.to_string();
+            let peer_round = self.round.to_string();
+            let height = proposal.height.to_string();
+            let round = proposal.round.to_string();
+            let has_proposal = self.has_proposal.to_string();
+            log_line(
+                Level::Info,
+                "consensus",
+                "note proposal skipped",
+                &[
+                    ("peer_height", peer_height.as_str()),
+                    ("peer_round", peer_round.as_str()),
+                    ("height", height.as_str()),
+                    ("round", round.as_str()),
+                    ("has_proposal", has_proposal.as_str()),
+                ],
+            );
             return;
         }
         self.has_proposal = true;
@@ -570,6 +589,19 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                         );
                     }
                 }
+            } else {
+                let height = proposal.height.to_string();
+                let round = proposal.round.to_string();
+                log_line(
+                    Level::Info,
+                    "consensus",
+                    "send proposal failed",
+                    &[
+                        ("peer", peer_id),
+                        ("height", height.as_str()),
+                        ("round", round.as_str()),
+                    ],
+                );
             }
         }
     }
@@ -579,22 +611,32 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     /// Go matches parts on the header hash, so the peer's round can differ.
     /// The message still carries this node's height and round.
     fn send_parts(&mut self, switch: &Switch, peer_id: &str) {
-        let (peer_height, header, peer_bits) = {
+        let (peer_height, peer_round, header, peer_bits) = {
             let Some(peer) = self.peers.get(peer_id) else {
                 return;
             };
             let Some(header) = peer.proposal_part_set_header.clone() else {
+                log_send_parts(
+                    peer_id,
+                    peer.height,
+                    peer.round,
+                    "send parts: no proposal part set header",
+                );
                 return;
             };
-            (peer.height, header, peer.parts.clone())
+            (peer.height, peer.round, header, peer.parts.clone())
         };
-        let Some((height, round, part)) = self.nodes.iter().find_map(|node| {
+        let mut saw_same_height = false;
+        let mut matched_header = false;
+        let found = self.nodes.iter().find_map(|node| {
             if node.height() != peer_height {
                 return None;
             }
+            saw_same_height = true;
             if node.proposal_part_set_header().as_ref() != Some(&header) {
                 return None;
             }
+            matched_header = true;
             if !node.proposal_parts_has_header(&header) {
                 return None;
             }
@@ -604,7 +646,14 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             let index = u32::try_from(index).ok()?;
             let part = node.proposal_part(index)?;
             Some((node.height(), node.round(), part))
-        }) else {
+        });
+        let Some((height, round, part)) = found else {
+            let message = if saw_same_height && !matched_header {
+                "send parts: header mismatch"
+            } else {
+                "send parts: no missing part"
+            };
+            log_send_parts(peer_id, peer_height, peer_round, message);
             return;
         };
         if send_block_part(switch, peer_id, height, round, &part) {
@@ -788,6 +837,22 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             .peers
             .get(peer_id)
             .is_some_and(|peer| peer.height == msg.height && peer.round == msg.round);
+        let height = msg.height.to_string();
+        let round = msg.round.to_string();
+        let index = part.index.to_string();
+        let matches = matches_peer.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "apply part",
+            &[
+                ("peer", peer_id),
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("index", index.as_str()),
+                ("matches_peer", matches.as_str()),
+            ],
+        );
         if matches_peer {
             self.mark_part(peer_id, part.index);
         }
@@ -1314,6 +1379,21 @@ fn valid_block_message(msg: &OutboundValidBlock) -> Vec<u8> {
         })),
     }
     .encode_to_vec()
+}
+
+fn log_send_parts(peer_id: &str, height: i64, round: i32, message: &str) {
+    let height = height.to_string();
+    let round = round.to_string();
+    log_line(
+        Level::Info,
+        "consensus",
+        message,
+        &[
+            ("peer", peer_id),
+            ("height", height.as_str()),
+            ("round", round.as_str()),
+        ],
+    );
 }
 
 fn send_block_part(switch: &Switch, peer_id: &str, height: i64, round: i32, part: &Part) -> bool {

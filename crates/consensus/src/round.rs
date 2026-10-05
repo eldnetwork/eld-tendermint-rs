@@ -862,7 +862,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 self.advance_after_commit(before);
                 true
             }
-            PartAdd::Oversized => false,
+            PartAdd::Oversized => {
+                self.log_oversized_part_set();
+                false
+            }
             PartAdd::Pending => true,
         }
     }
@@ -871,13 +874,21 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// header is installed. A bad proof against the commit header is dropped.
     /// An oversized set keeps the part and does not count as complete.
     fn add_proposal_part(&mut self, part: Part) -> PartAdd {
-        let Some(parts) = self.proposal_parts.as_mut() else {
-            self.buffer_part(part);
-            return PartAdd::Pending;
+        let added = {
+            let Some(parts) = self.proposal_parts.as_mut() else {
+                self.log_part("buffered proposal part: no header", part.index, None);
+                self.buffer_part(part);
+                return PartAdd::Pending;
+            };
+            parts.add_part(part.clone())
         };
-        match parts.add_part(part.clone()) {
+        match added {
             Ok(_) => {
+                self.log_part("accepted proposal part", part.index, None);
                 let max_bytes = self.chain_state.consensus_params.block.max_bytes;
+                let Some(parts) = self.proposal_parts.as_ref() else {
+                    return PartAdd::Pending;
+                };
                 if parts.byte_size() > max_bytes {
                     PartAdd::Oversized
                 } else if parts.is_complete() {
@@ -886,7 +897,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                     PartAdd::Pending
                 }
             }
-            Err(_) => {
+            Err(err) => {
+                let err = err.to_string();
+                self.log_part("rejected proposal part", part.index, Some(err.as_str()));
                 if self.step != Step::Commit {
                     self.buffer_part(part);
                 }
@@ -1043,22 +1056,116 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         }
         match scheduled.step {
             Step::Propose if self.step == Step::Propose => {
+                self.log_timeout(scheduled);
                 self.enter_prevote(self.height, self.round);
             }
             Step::PrevoteWait if self.step == Step::PrevoteWait => {
+                self.log_timeout(scheduled);
                 self.enter_precommit(self.height, self.round);
             }
             Step::PrecommitWait if self.step == Step::PrecommitWait => {
+                self.log_timeout(scheduled);
                 self.enter_new_round(self.height, self.round + 1);
             }
             Step::NewHeight if self.step == Step::NewHeight => {
+                self.log_timeout(scheduled);
                 self.enter_new_round(self.height, 0);
             }
             Step::NewRound if self.step == Step::NewRound => {
+                self.log_timeout(scheduled);
                 self.enter_propose(self.height, 0);
             }
             _ => {}
         }
+    }
+
+    /// The timeout that moved the step. `have < total` on Propose is a missing body.
+    fn log_timeout(&self, scheduled: &Scheduled) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        let delay = scheduled.delay_nanos.to_string();
+        let complete = self
+            .proposal_parts
+            .as_ref()
+            .is_some_and(PartSet::is_complete)
+            .to_string();
+        let total = self
+            .proposal_parts
+            .as_ref()
+            .map(PartSet::total)
+            .unwrap_or(0)
+            .to_string();
+        let have = self
+            .proposal_parts
+            .as_ref()
+            .map(PartSet::count)
+            .unwrap_or(0)
+            .to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "timeout",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("step", scheduled.step.log_name()),
+                ("delay_nanos", delay.as_str()),
+                ("parts_complete", complete.as_str()),
+                ("have", have.as_str()),
+                ("total", total.as_str()),
+            ],
+        );
+    }
+
+    fn log_part(&self, message: &str, index: u32, err: Option<&str>) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        let index = index.to_string();
+        let total = self
+            .proposal_parts
+            .as_ref()
+            .map(PartSet::total)
+            .unwrap_or(0)
+            .to_string();
+        let err_owned = err.unwrap_or("").to_string();
+        let mut fields = vec![
+            ("height", height.as_str()),
+            ("round", round.as_str()),
+            ("index", index.as_str()),
+            ("total", total.as_str()),
+        ];
+        if err.is_some() {
+            fields.push(("err", err_owned.as_str()));
+        }
+        log_line(Level::Info, "consensus", message, &fields);
+    }
+
+    fn log_oversized_part_set(&self) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        let size = self
+            .proposal_parts
+            .as_ref()
+            .map(PartSet::byte_size)
+            .unwrap_or(0)
+            .to_string();
+        let max_bytes = self
+            .chain_state
+            .consensus_params
+            .block
+            .max_bytes
+            .to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "rejected proposal part set: exceeds max bytes",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("size", size.as_str()),
+                ("max_bytes", max_bytes.as_str()),
+            ],
+        );
     }
 
     fn log_step(&self, message: &str) {
@@ -1367,6 +1474,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                     .and_then(|block| block_id_of(block, self.proposal_parts.as_ref()))
             }
         } else {
+            self.log_prevote_nil();
             None
         };
         let _ = self.broadcast_vote(SignedMsgType::Prevote, block_id.unwrap_or_default());
@@ -1429,7 +1537,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .prevotes(round)
             .and_then(eld_tendermint_types::VoteSet::two_thirds_majority);
         let Some(block_id) = majority else {
-            let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
+            let nil = BlockId::default();
+            self.log_precommit(&nil, "no majority");
+            let _ = self.broadcast_vote(SignedMsgType::Precommit, nil);
             self.step = Step::Precommit;
             self.log_step("enterPrecommit");
             return;
@@ -1437,7 +1547,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if block_id.hash.is_empty() {
             self.locked_block = None;
             self.locked_parts = None;
-            let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
+            self.log_precommit(&block_id, "nil majority");
+            let _ = self.broadcast_vote(SignedMsgType::Precommit, block_id);
             self.step = Step::Precommit;
             self.log_step("enterPrecommit");
             return;
@@ -1450,6 +1561,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if proposal_matches && self.block_ok(self.proposal_block.as_ref().expect("block")) {
             self.locked_block = self.proposal_block.clone();
             self.locked_parts = self.proposal_parts.clone();
+            self.log_precommit(&block_id, "proposal");
             let _ = self.broadcast_vote(SignedMsgType::Precommit, block_id);
         } else if self
             .locked_block
@@ -1457,11 +1569,14 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .and_then(Block::hash)
             .is_some_and(|hash| hash.as_bytes() == block_id.hash.as_slice())
         {
+            self.log_precommit(&block_id, "locked");
             let _ = self.broadcast_vote(SignedMsgType::Precommit, block_id);
         } else {
             self.locked_block = None;
             self.locked_parts = None;
-            let _ = self.broadcast_vote(SignedMsgType::Precommit, BlockId::default());
+            let nil = BlockId::default();
+            self.log_precommit(&nil, "proposal mismatch");
+            let _ = self.broadcast_vote(SignedMsgType::Precommit, nil);
         }
         self.step = Step::Precommit;
         self.log_step("enterPrecommit");
@@ -1988,6 +2103,57 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 ("height", height.as_str()),
                 ("round", round.as_str()),
                 ("hash", hash.as_str()),
+            ],
+        );
+    }
+
+    fn log_prevote_nil(&self) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        let has_proposal = self.proposal.is_some().to_string();
+        let parts = self
+            .proposal_parts
+            .as_ref()
+            .map(PartSet::total)
+            .unwrap_or(0)
+            .to_string();
+        let have = self
+            .proposal_parts
+            .as_ref()
+            .and_then(PartSet::bit_array)
+            .map(|bits| bits.to_string())
+            .unwrap_or_default();
+        log_line(
+            Level::Info,
+            "consensus",
+            "prevote nil: proposal block incomplete",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("has_proposal", has_proposal.as_str()),
+                ("parts", parts.as_str()),
+                ("have", have.as_str()),
+            ],
+        );
+    }
+
+    fn log_precommit(&self, block_id: &BlockId, reason: &str) {
+        let height = self.height.to_string();
+        let round = self.round.to_string();
+        let hash = if block_id.hash.is_empty() {
+            String::new()
+        } else {
+            upper_hex(&block_id.hash)
+        };
+        log_line(
+            Level::Info,
+            "consensus",
+            "precommit",
+            &[
+                ("height", height.as_str()),
+                ("round", round.as_str()),
+                ("hash", hash.as_str()),
+                ("reason", reason),
             ],
         );
     }
