@@ -147,6 +147,10 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 
 We copied the generator settings from `tendermint-rs`, not the library. The generator uses Prost 0.13. ABCI byte fields are the `bytes` type. `Timestamp` and `Duration` use Prost's own types instead of being generated from the schema.
 
+## Spec
+
+`spec/` is a copy of the Eld Go tree at `v0.34.24-eld.3` (`79dcdd712`), the same commit as `proto/GO_REF`. The markdown and the files it links to are left as they are in that tree. Do not edit them here.
+
 ## Still to do
 
 - JSON-RPC methods other than the ones already served. A call to one of those returns `-32601`.
