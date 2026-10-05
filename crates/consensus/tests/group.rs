@@ -306,7 +306,231 @@ fn bad_proposal_signature_is_not_prevoted() {
         .queued_proposal()
         .expect("proposal");
     proposal.signature[0] ^= 0xff;
-    validators.nodes()[receiver].on_proposal(proposal);
+    assert!(validators.nodes()[receiver].on_proposal(proposal));
     assert_eq!(validators.nodes()[receiver].prevote_count(0), 0);
     assert_eq!(validators.nodes()[receiver].step(), Step::Propose);
+}
+
+#[test]
+fn bad_pol_round_is_rejected_and_a_repeat_is_kept() {
+    let mut validators = group(4);
+    let proposer = validators
+        .nodes()
+        .iter()
+        .position(|node| node.queued_proposal().is_some())
+        .expect("proposer");
+    let receiver = (proposer + 1) % 4;
+    let again = (proposer + 2) % 4;
+    let proposal = validators.nodes()[proposer]
+        .queued_proposal()
+        .expect("proposal");
+    assert!(validators.nodes()[receiver].on_proposal(proposal.clone()));
+    assert!(
+        validators.nodes()[receiver].on_proposal(proposal.clone()),
+        "a second copy of the same signature dropped the peer"
+    );
+    assert_eq!(validators.nodes()[receiver].step(), Step::Propose);
+
+    let mut same_round = proposal.clone();
+    same_round.pol_round = same_round.round;
+    assert!(
+        !validators.nodes()[again].on_proposal(same_round),
+        "POLRound == round was accepted"
+    );
+    let mut negative = proposal;
+    negative.pol_round = -2;
+    assert!(
+        !validators.nodes()[again].on_proposal(negative),
+        "POLRound -2 was accepted"
+    );
+    assert_eq!(validators.nodes()[again].step(), Step::Propose);
+    assert_eq!(validators.nodes()[again].prevote_count(0), 0);
+}
+
+/// Round-1 re-proposal on `locked`, and `fresh` already in round 1 without a round-0 majority.
+struct Round1Setup {
+    validators: Group<Exec, Check>,
+    locked: usize,
+    fresh: usize,
+    donor: usize,
+    block_hash: Vec<u8>,
+}
+
+fn give_block(validators: &mut Group<Exec, Check>, from: usize, to: usize) {
+    let proposal = validators.nodes()[from]
+        .queued_proposal()
+        .expect("proposal");
+    let parts = validators.nodes()[from].queued_parts();
+    assert!(!parts.is_empty(), "proposal has no parts");
+    assert!(validators.nodes()[to].on_proposal(proposal));
+    for part in parts {
+        assert!(validators.nodes()[to].on_part(part));
+    }
+    assert!(
+        validators.nodes()[to]
+            .queued_vote(SignedMsgType::Prevote)
+            .is_some(),
+        "validator {to} did not prevote the block"
+    );
+}
+
+fn round1_setup() -> Round1Setup {
+    let mut validators = group(4);
+    let proposer = validators
+        .nodes()
+        .iter()
+        .position(|node| node.queued_proposal().is_some())
+        .expect("round 0 proposer");
+    let next = validators.nodes()[proposer]
+        .proposer_after(1)
+        .expect("round 1 proposer");
+    let locked = validators
+        .nodes()
+        .iter()
+        .position(|node| node.address() == next)
+        .expect("round 1 proposer index");
+    assert_ne!(locked, proposer);
+    let mut rest = (0..4).filter(|index| *index != proposer && *index != locked);
+    let fresh = rest.next().expect("fresh");
+    let donor = rest.next().expect("donor");
+    let block_hash = validators.nodes()[proposer]
+        .queued_proposal()
+        .expect("proposal")
+        .block_id
+        .hash
+        .clone();
+
+    give_block(&mut validators, proposer, locked);
+    give_block(&mut validators, proposer, donor);
+
+    assert_eq!(validators.nodes()[fresh].step(), Step::Propose);
+    validators.fire_timeout(fresh);
+    let nil = validators.nodes()[fresh]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("nil prevote");
+    assert!(nil.block_id.hash.is_empty(), "fresh prevoted a block");
+    let proposer_prevote = validators.nodes()[proposer]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("proposer prevote");
+    let locked_prevote = validators.nodes()[locked]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("locked prevote");
+    validators.nodes()[fresh].on_vote(nil);
+    validators.nodes()[fresh].on_vote(proposer_prevote);
+    validators.nodes()[fresh].on_vote(locked_prevote);
+    assert_eq!(validators.nodes()[fresh].step(), Step::PrevoteWait);
+    validators.fire_timeout(fresh);
+    assert_eq!(validators.nodes()[fresh].step(), Step::Precommit);
+
+    let own_precommit = validators.nodes()[fresh]
+        .queued_vote(SignedMsgType::Precommit)
+        .expect("nil precommit");
+    let proposer_nil = validators.nodes()[proposer]
+        .sign_nil_precommit()
+        .expect("proposer nil precommit");
+    let donor_nil = validators.nodes()[donor]
+        .sign_nil_precommit()
+        .expect("donor nil precommit");
+    validators.nodes()[fresh].on_vote(own_precommit);
+    validators.nodes()[fresh].on_vote(proposer_nil.clone());
+    validators.nodes()[fresh].on_vote(donor_nil.clone());
+    assert_eq!(validators.nodes()[fresh].step(), Step::PrecommitWait);
+    validators.fire_timeout(fresh);
+    assert_eq!(validators.nodes()[fresh].round(), 1);
+    assert_eq!(validators.nodes()[fresh].step(), Step::Propose);
+
+    let proposer_prevote = validators.nodes()[proposer]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("proposer prevote");
+    let donor_prevote = validators.nodes()[donor]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("donor prevote");
+    let locked_prevote = validators.nodes()[locked]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("own prevote");
+    validators.nodes()[locked].on_vote(proposer_prevote);
+    validators.nodes()[locked].on_vote(donor_prevote);
+    validators.nodes()[locked].on_vote(locked_prevote);
+    assert_eq!(validators.nodes()[locked].step(), Step::Precommit);
+    let locked_precommit = validators.nodes()[locked]
+        .queued_vote(SignedMsgType::Precommit)
+        .expect("block precommit");
+    let proposer_nil = validators.nodes()[proposer]
+        .sign_nil_precommit()
+        .expect("proposer nil precommit");
+    let donor_nil = validators.nodes()[donor]
+        .sign_nil_precommit()
+        .expect("donor nil precommit");
+    validators.nodes()[locked].on_vote(locked_precommit);
+    validators.nodes()[locked].on_vote(proposer_nil);
+    validators.nodes()[locked].on_vote(donor_nil);
+    assert_eq!(validators.nodes()[locked].step(), Step::PrecommitWait);
+    validators.fire_timeout(locked);
+    assert_eq!(validators.nodes()[locked].round(), 1);
+    let proposal = validators.nodes()[locked]
+        .queued_proposal()
+        .expect("round 1 proposal");
+    assert!(proposal.pol_round >= 0, "pol_round {}", proposal.pol_round);
+    assert_eq!(proposal.block_id.hash, block_hash);
+
+    Round1Setup {
+        validators,
+        locked,
+        fresh,
+        donor,
+        block_hash,
+    }
+}
+
+fn deliver_round1_proposal(setup: &mut Round1Setup) {
+    let proposal = setup.validators.nodes()[setup.locked]
+        .queued_proposal()
+        .expect("round 1 proposal");
+    let parts = setup.validators.nodes()[setup.locked].queued_parts();
+    assert!(!parts.is_empty(), "round 1 proposal has no parts");
+    assert!(setup.validators.nodes()[setup.fresh].on_proposal(proposal));
+    for part in parts {
+        assert!(setup.validators.nodes()[setup.fresh].on_part(part));
+    }
+}
+
+#[test]
+fn re_proposal_without_pol_prevotes_nil() {
+    let mut setup = round1_setup();
+    deliver_round1_proposal(&mut setup);
+    assert_eq!(setup.validators.nodes()[setup.fresh].step(), Step::Propose);
+    setup.validators.fire_timeout(setup.fresh);
+    let vote = setup.validators.nodes()[setup.fresh]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("round 1 prevote");
+    assert!(
+        vote.block_id.hash.is_empty(),
+        "prevoted the block without a POL majority"
+    );
+    assert_eq!(vote.round, 1);
+}
+
+#[test]
+fn re_proposal_with_pol_prevotes_the_block() {
+    let mut setup = round1_setup();
+    let pol = setup.validators.nodes()[setup.donor]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("donor block prevote");
+    setup.validators.nodes()[setup.fresh].on_vote(pol);
+    deliver_round1_proposal(&mut setup);
+    let vote = setup.validators.nodes()[setup.fresh]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("round 1 prevote");
+    assert_eq!(vote.block_id.hash, setup.block_hash);
+    assert_eq!(vote.round, 1);
+}
+
+#[test]
+fn locked_validator_prevotes_the_locked_block() {
+    let mut setup = round1_setup();
+    let vote = setup.validators.nodes()[setup.locked]
+        .queued_vote(SignedMsgType::Prevote)
+        .expect("round 1 prevote");
+    assert_eq!(vote.round, 1);
+    assert_eq!(vote.block_id.hash, setup.block_hash);
 }

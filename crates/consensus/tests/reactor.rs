@@ -337,6 +337,39 @@ fn bad_proposal_signature_does_not_prevote_or_stop() {
 }
 
 #[test]
+fn bad_pol_round_drops_the_peer() {
+    let mut validators = nodes(4);
+    let proposer = validators[0].proposer_after(0).expect("proposer");
+    let proposer_index = validators
+        .iter()
+        .position(|node| node.address() == proposer)
+        .expect("proposer index");
+    let victim_index = (proposer_index + 1) % validators.len();
+    let proposal = validators[proposer_index]
+        .queued_proposal()
+        .expect("signed proposal");
+    let victim = validators.swap_remove(victim_index);
+    let reactor = Reactor::new(vec![victim]);
+    let receiver = switch_for(&reactor);
+    let sender = Switch::new();
+    sender
+        .add_reactor("consensus", channel_descriptors(), |_, _, _| {})
+        .expect("sender reactor");
+    link(&receiver, &sender);
+
+    let mut bad = proposal;
+    bad.pol_round = bad.round;
+    assert!(sender.send("left", DATA_CHANNEL, &encode_proposal(&bad)));
+    let start = Instant::now();
+    while receiver.peers().len() == 1 && start.elapsed() < Duration::from_millis(500) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(receiver.peers().len(), 0, "a bad POLRound left the peer up");
+    assert_eq!(reactor.step(), Step::Propose);
+    assert_eq!(reactor.prevote_count(0), 0);
+}
+
+#[test]
 fn bad_part_proof_is_dropped_and_peer_stays() {
     let mut validators = nodes(4);
     let proposer = validators[0].proposer_after(0).expect("proposer");
@@ -776,7 +809,7 @@ fn proposal_pol_for_another_round_is_ignored() {
     let switch = switch_for(&reactor);
     let mut proposal = Proposal::new(
         1,
-        0,
+        1,
         0,
         BlockId {
             hash: vec![0x11; 32],
@@ -793,7 +826,7 @@ fn proposal_pol_for_another_round_is_ignored() {
         &switch,
         "peer",
         STATE_CHANNEL,
-        &encode_round_step(1, 0, Step::Propose.round_step(), -1),
+        &encode_round_step(1, 1, Step::Propose.round_step(), -1),
     ));
     assert!(reactor.handle(&switch, "peer", DATA_CHANNEL, &encode_proposal(&proposal)));
     assert!(reactor.proposal_pol_bits("peer").is_none());
@@ -1077,6 +1110,12 @@ fn one_missing_part_goes_out_per_poll() {
                 .iter()
                 .all(|index| { usize::try_from(*index).expect("part index") < total })
         );
+        assert!(
+            block_parts(&messages)
+                .iter()
+                .all(|part| { part.height == reactor.height() && part.round == reactor.round() }),
+            "a live part did not carry this node's height and round"
+        );
     }
     assert_eq!(reactor.height(), 1);
 
@@ -1185,6 +1224,8 @@ fn peer_three_heights_behind_receives_one_stored_part() {
         "gossip sent more than one catch-up part: {later:?}"
     );
     assert_eq!(parts[0].height, peer_height);
+    assert_eq!(parts[0].round, 0);
+    assert_ne!(parts[0].height, reactor.height());
     assert_eq!(reactor.height(), our_height);
 }
 
@@ -1561,4 +1602,299 @@ fn oversized_part_set_drops_the_peer_and_does_not_deliver_the_block() {
     );
     assert_eq!(reactor.prevote_count(0), 0);
     assert_eq!(reactor.step(), Step::Propose);
+}
+
+fn has_vote_msgs(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::HasVote> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != STATE_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::HasVote(msg) => Some(msg),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn vote_messages(messages: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
+    messages
+        .iter()
+        .filter(|(ch_id, _)| *ch_id == VOTE_CHANNEL)
+        .map(|(_, bytes)| bytes.clone())
+        .collect()
+}
+
+fn decode_vote(bytes: &[u8]) -> eld_tendermint_proto::types::Vote {
+    let msg = Message::decode(bytes).expect("vote message");
+    match msg.sum.expect("sum") {
+        message::Sum::Vote(vote) => vote.vote.expect("vote"),
+        _ => panic!("not a vote"),
+    }
+}
+
+/// A vote this node signed is announced with one `HasVote`, and not announced again.
+#[test]
+fn signed_vote_is_announced_once() {
+    let reactor = Reactor::new(nodes(1));
+    let height = reactor.height();
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+
+    reactor.poll(&reactor_switch);
+    let messages = wait_for(&got, |messages| !has_vote_msgs(messages).is_empty());
+    let votes = has_vote_msgs(&messages);
+    assert!(
+        votes.iter().any(|msg| {
+            msg.height == height
+                && msg.round == 0
+                && msg.r#type == SignedMsgType::Prevote as i32
+                && msg.index == 0
+        }),
+        "missing prevote HasVote: {votes:?}"
+    );
+    let count = votes.len();
+    reactor.poll(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        has_vote_msgs(&captured(&got)).len(),
+        count,
+        "HasVote was sent again"
+    );
+}
+
+/// A vote accepted from a peer is announced even when it is not relayed.
+#[test]
+fn accepted_vote_is_announced_with_has_vote() {
+    let mut validators = nodes(4);
+    let proposer_index = validators
+        .iter()
+        .position(|node| node.queued_proposal().is_some())
+        .expect("proposer");
+    let proposer = validators.swap_remove(proposer_index);
+    let other = validators.pop().expect("other");
+    let proposer_reactor = Reactor::new(vec![proposer]);
+    let proposer_switch = switch_for(&proposer_reactor);
+    let (capture_switch, captured_votes) = capturing_switch();
+    link(&proposer_switch, &capture_switch);
+    assert!(proposer_reactor.handle(
+        &proposer_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Prevote.round_step(), -1),
+    ));
+    proposer_reactor.poll(&proposer_switch);
+    let messages = wait_for(&captured_votes, |messages| {
+        !vote_messages(messages).is_empty()
+    });
+    let vote_bytes = vote_messages(&messages).pop().expect("signed vote");
+    let vote = decode_vote(&vote_bytes);
+
+    let reactor = Reactor::new(vec![other]);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    assert!(reactor.handle(&reactor_switch, "right", VOTE_CHANNEL, &vote_bytes,));
+    let messages = wait_for(&got, |messages| !has_vote_msgs(messages).is_empty());
+    let announced = has_vote_msgs(&messages);
+    assert_eq!(announced.len(), 1, "{announced:?}");
+    assert_eq!(announced[0].height, vote.height);
+    assert_eq!(announced[0].round, vote.round);
+    assert_eq!(announced[0].r#type, vote.r#type);
+    assert_eq!(announced[0].index, vote.validator_index);
+}
+
+fn valid_block_msgs(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::NewValidBlock> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != STATE_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::NewValidBlock(msg) => Some(msg),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn encode_valid_block_flag(
+    height: i64,
+    round: i32,
+    header: &PartSetHeader,
+    bits: &BitArray,
+    is_commit: bool,
+) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::NewValidBlock(consensus::NewValidBlock {
+            height,
+            round,
+            block_part_set_header: Some(header.to_proto()),
+            block_parts: bits.to_proto(),
+            is_commit,
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn round_steps(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::NewRoundStep> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != STATE_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::NewRoundStep(msg) => Some(msg),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// `+2/3` prevotes announce `is_commit` clear. Commit announces it set.
+#[test]
+fn valid_block_is_commit_follows_the_step() {
+    let mut validators = Group::new(nodes(4));
+    validators.exchange(None, is_block_data);
+    validators.exchange(None, is_prevote);
+    let reactor = Reactor::new(validators.into_nodes());
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+
+    reactor.gossip(&reactor_switch);
+    let early = wait_for(&got, |messages| {
+        valid_block_msgs(messages).iter().any(|msg| !msg.is_commit)
+    });
+    assert!(
+        valid_block_msgs(&early).iter().all(|msg| !msg.is_commit),
+        "a prevote valid block was marked commit: {:?}",
+        valid_block_msgs(&early)
+    );
+
+    reactor.poll(&reactor_switch);
+    let later = wait_for(&got, |messages| {
+        valid_block_msgs(messages).iter().any(|msg| msg.is_commit)
+    });
+    assert!(
+        valid_block_msgs(&later).iter().any(|msg| msg.is_commit),
+        "commit did not set is_commit: {:?}",
+        valid_block_msgs(&later)
+    );
+}
+
+/// A header from another round is stored only when `is_commit` is set.
+#[test]
+fn valid_block_from_another_round_needs_is_commit() {
+    let reactor = Reactor::new(nodes(1));
+    let switch = switch_for(&reactor);
+    let here = PartSetHeader {
+        total: 1,
+        hash: vec![0x11; 32],
+    };
+    let there = PartSetHeader {
+        total: 1,
+        hash: vec![0x22; 32],
+    };
+    let bits = part_bits(1, true);
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Propose.round_step(), -1),
+    ));
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        STATE_CHANNEL,
+        &encode_valid_block_flag(1, 0, &here, &bits, false),
+    ));
+    assert_eq!(reactor.peer_part_set_header("peer").as_ref(), Some(&here));
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        STATE_CHANNEL,
+        &encode_valid_block_flag(1, 1, &there, &bits, false),
+    ));
+    assert_eq!(
+        reactor.peer_part_set_header("peer").as_ref(),
+        Some(&here),
+        "a different round was stored without is_commit"
+    );
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        STATE_CHANNEL,
+        &encode_valid_block_flag(1, 1, &there, &bits, true),
+    ));
+    assert_eq!(reactor.peer_part_set_header("peer").as_ref(), Some(&there));
+}
+
+/// A live part uses this node's round when the peer has moved on.
+#[test]
+fn live_block_part_uses_our_round() {
+    let validators = nodes(1);
+    let node_height = validators[0].height();
+    let node_round = validators[0].round();
+    let header = validators[0]
+        .queued_proposal()
+        .expect("proposal")
+        .block_id
+        .part_set_header
+        .clone();
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    let peer_round = node_round + 1;
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(node_height, peer_round, Step::Propose.round_step(), -1),
+    ));
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_valid_block_flag(
+            node_height,
+            node_round,
+            &header,
+            &part_bits(header.total, false),
+            true
+        ),
+    ));
+
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| !block_parts(messages).is_empty());
+    let parts = block_parts(&messages);
+    assert_eq!(parts[0].height, node_height);
+    assert_eq!(parts[0].round, node_round);
+    assert_ne!(parts[0].round, peer_round);
+}
+
+/// Peers hear how long this round has already been running.
+#[test]
+fn new_round_step_includes_seconds_since_round_start() {
+    let reactor = Reactor::new(nodes(1));
+    thread::sleep(Duration::from_secs(1));
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| !round_steps(messages).is_empty());
+    let steps = round_steps(&messages);
+    assert!(
+        steps.iter().all(|msg| msg.seconds_since_start_time >= 1),
+        "seconds_since_start_time: {steps:?}"
+    );
 }

@@ -6,7 +6,7 @@
 //! parts on `0x21`. Commit votes go out on `0x22`, one per tick. `VoteSetMaj23`
 //! on `0x20` is answered with `VoteSetBits` on `0x23`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -19,10 +19,10 @@ use eld_tendermint_proto::consensus::{
 use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::App as ExecApp;
 use eld_tendermint_store::{Db, MemDb};
-use eld_tendermint_types::{BitArray, BlockId, Commit, Part, PartSetHeader, Proposal, Vote};
+use eld_tendermint_types::{BitArray, BlockId, Commit, Part, PartSetHeader, Proposal, Time, Vote};
 use prost::Message as ProstMessage;
 
-use crate::round::{CommitSource, Msg, Node, OutboundValidBlock, Scheduled, Step};
+use crate::round::{CommitSource, Msg, Node, OutboundValidBlock, Scheduled, Step, seconds_since};
 
 /// `StateChannel`.
 pub const STATE_CHANNEL: u8 = 0x20;
@@ -167,6 +167,9 @@ struct Pick {
     size: i64,
 }
 
+/// Height, round, vote type, validator index. Sent once so peers are not flooded.
+type HasVoteKey = (i64, i32, i32, i32);
+
 struct Inner<E: ExecApp, C: MempoolApp, D: Db> {
     nodes: Vec<Node<E, C, D>>,
     peers: HashMap<String, PeerState>,
@@ -174,6 +177,10 @@ struct Inner<E: ExecApp, C: MempoolApp, D: Db> {
     proposals: Vec<Proposal>,
     timeouts: Vec<Option<TimeoutWatch>>,
     validator_count: i64,
+    /// Local votes waiting for a peer before `HasVote` can go out.
+    pending_has_votes: Vec<Vote>,
+    /// `HasVote` keys already given to the current peers.
+    announced_has_votes: HashSet<HasVoteKey>,
 }
 
 /// Local validators plus the peer state used to gossip on a [`Switch`].
@@ -213,6 +220,8 @@ where
                 proposals: Vec::new(),
                 timeouts: vec![None; n],
                 validator_count,
+                pending_has_votes: Vec::new(),
+                announced_has_votes: HashSet::new(),
             })),
         }
     }
@@ -246,6 +255,15 @@ where
     pub fn handle(&self, switch: &Switch, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let mut inner = lock(&self.inner);
         inner.handle(switch, peer_id, ch_id, bytes)
+    }
+
+    /// Part-set header stored for `peer_id`, if this node has accepted one.
+    #[must_use]
+    pub fn peer_part_set_header(&self, peer_id: &str) -> Option<PartSetHeader> {
+        lock(&self.inner)
+            .peers
+            .get(peer_id)
+            .and_then(|peer| peer.proposal_part_set_header.clone())
     }
 
     /// POL bits stored for `peer_id` after a `ProposalPOL` at that peer's POL round.
@@ -379,8 +397,10 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     fn remember(&mut self, msg: Msg) {
         match msg {
             Msg::Proposal(proposal) => self.remember_proposal(proposal),
-            // Parts and votes are read from each node's round state on the next poll.
-            Msg::Part(_) | Msg::Vote(_) => {}
+            // A vote this node signed is announced even when it is not picked for a peer.
+            Msg::Vote(vote) => self.pending_has_votes.push(vote),
+            // Parts are read from each node's round state on the next poll.
+            Msg::Part(_) => {}
         }
     }
 
@@ -420,6 +440,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     }
 
     fn gossip(&mut self, switch: &Switch) {
+        self.flush_has_votes(switch);
         self.broadcast_valid_blocks(switch);
         let peer_ids: Vec<String> = self.peers.keys().cloned().collect();
         for peer_id in peer_ids {
@@ -558,7 +579,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     /// Go matches parts on the header hash, so the peer's round can differ.
     /// The message still carries this node's height and round.
     fn send_parts(&mut self, switch: &Switch, peer_id: &str) {
-        let (height, header, peer_bits) = {
+        let (peer_height, header, peer_bits) = {
             let Some(peer) = self.peers.get(peer_id) else {
                 return;
             };
@@ -567,8 +588,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             };
             (peer.height, header, peer.parts.clone())
         };
-        let Some((round, part)) = self.nodes.iter().find_map(|node| {
-            if node.height() != height {
+        let Some((height, round, part)) = self.nodes.iter().find_map(|node| {
+            if node.height() != peer_height {
                 return None;
             }
             if node.proposal_part_set_header().as_ref() != Some(&header) {
@@ -582,7 +603,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             let index = missing.pick_random()?;
             let index = u32::try_from(index).ok()?;
             let part = node.proposal_part(index)?;
-            Some((node.round(), part))
+            Some((node.height(), node.round(), part))
         }) else {
             return;
         };
@@ -724,7 +745,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 self.apply_proposal_pol(peer_id, &msg);
             }
             (VOTE_CHANNEL, message::Sum::Vote(msg)) => {
-                if !self.apply_vote(peer_id, msg) {
+                if !self.apply_vote(switch, peer_id, msg) {
                     return false;
                 }
             }
@@ -743,14 +764,20 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         let Ok(proposal) = Proposal::try_from_proto(proto) else {
             return false;
         };
+        if proposal.pol_round < -1 || proposal.pol_round >= proposal.round {
+            return false;
+        }
         if let Some(peer) = self.peers.get_mut(peer_id) {
             peer.note_proposal(&proposal);
         }
         self.remember_proposal(proposal.clone());
+        let mut accepted = true;
         for node in &mut self.nodes {
-            node.deliver(Msg::Proposal(proposal.clone()));
+            if !node.deliver(Msg::Proposal(proposal.clone())) {
+                accepted = false;
+            }
         }
-        true
+        accepted
     }
 
     fn apply_part(&mut self, peer_id: &str, msg: BlockPart) -> bool {
@@ -773,7 +800,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         ok
     }
 
-    fn apply_vote(&mut self, peer_id: &str, msg: ProtoVote) -> bool {
+    fn apply_vote(&mut self, switch: &Switch, peer_id: &str, msg: ProtoVote) -> bool {
         let Some(proto) = msg.vote.as_ref() else {
             return false;
         };
@@ -783,6 +810,11 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         self.note_incoming_vote(peer_id, &vote);
         for node in &mut self.nodes {
             node.deliver(Msg::Vote(vote.clone()));
+        }
+        if self.nodes.iter().any(|node| holds_vote(node, &vote))
+            && !self.broadcast_has_vote(switch, &vote)
+        {
+            self.pending_has_votes.push(vote);
         }
         true
     }
@@ -1168,6 +1200,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             return false;
         }
         self.note_sent_vote(peer_id, &vote);
+        if !self.broadcast_has_vote(switch, &vote) {
+            self.pending_has_votes.push(vote);
+        }
         true
     }
 
@@ -1192,6 +1227,61 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             bits.set_index(i64::from(vote.validator_index), true);
         }
     }
+
+    /// `broadcastHasVoteMessage`. One `HasVote` per vote, on `0x20`, to every peer.
+    ///
+    /// Returns false when there is no peer or every send fails, so the caller can retry.
+    fn broadcast_has_vote(&mut self, switch: &Switch, vote: &Vote) -> bool {
+        let peer_ids: Vec<String> = switch.peers().into_iter().map(|info| info.id).collect();
+        if peer_ids.is_empty() {
+            return false;
+        }
+        let key = has_vote_key(vote);
+        if self.announced_has_votes.contains(&key) {
+            return true;
+        }
+        let bytes = has_vote_message(vote);
+        let mut sent = false;
+        for id in &peer_ids {
+            if switch.try_send(id, STATE_CHANNEL, &bytes) {
+                sent = true;
+            }
+        }
+        if sent {
+            self.announced_has_votes.insert(key);
+        }
+        sent
+    }
+
+    fn flush_has_votes(&mut self, switch: &Switch) {
+        if switch.peers().is_empty() {
+            return;
+        }
+        let votes = std::mem::take(&mut self.pending_has_votes);
+        for vote in votes {
+            if !self.broadcast_has_vote(switch, &vote) {
+                self.pending_has_votes.push(vote);
+            }
+        }
+    }
+}
+
+fn has_vote_key(vote: &Vote) -> HasVoteKey {
+    (
+        vote.height,
+        vote.round,
+        vote.vote_type as i32,
+        vote.validator_index,
+    )
+}
+
+fn holds_vote<E: ExecApp, C: MempoolApp, D: Db>(node: &Node<E, C, D>, vote: &Vote) -> bool {
+    let stored = match vote.vote_type {
+        SignedMsgType::Prevote => node.prevote_at(vote.round, vote.validator_index),
+        SignedMsgType::Precommit => node.precommit_at(vote.round, vote.validator_index),
+        _ => None,
+    };
+    stored.is_some_and(|have| have.signature == vote.signature)
 }
 
 fn timeout_key(timeout: &Scheduled) -> (i64, i32, u32, i64) {
@@ -1244,8 +1334,20 @@ fn round_step_message<E: ExecApp, C: MempoolApp, D: Db>(node: &Node<E, C, D>) ->
             height: node.height(),
             round: node.round(),
             step: node.step().as_wal(),
-            seconds_since_start_time: 0,
+            seconds_since_start_time: seconds_since(node.round_start(), Time::now()),
             last_commit_round: node.last_commit_round(),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn has_vote_message(vote: &Vote) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::HasVote(HasVote {
+            height: vote.height,
+            round: vote.round,
+            r#type: vote.vote_type as i32,
+            index: vote.validator_index,
         })),
     }
     .encode_to_vec()

@@ -165,8 +165,10 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     commit_round: Option<i32>,
     /// Parts that arrived before the commit block's part-set header.
     pending_parts: Vec<Part>,
-    /// `EventValidBlock` from `enterCommit`, not yet broadcast.
+    /// `EventValidBlock` from a +2/3 prevote or from `enterCommit`, not yet broadcast.
     outbound_valid_block: Option<OutboundValidBlock>,
+    /// `RoundState.StartTime`. Elapsed seconds go out on `NewRoundStep`.
+    round_start: Time,
 }
 
 /// `NewValidBlockMessage` built when commit replaces the part set.
@@ -176,7 +178,7 @@ pub(crate) struct OutboundValidBlock {
     pub round: i32,
     pub header: PartSetHeader,
     pub parts: BitArray,
-    /// Go fires this event before the step becomes commit, so this is false.
+    /// Set when the step is [`Step::Commit`]. A +2/3 prevote leaves it clear.
     pub is_commit: bool,
 }
 
@@ -445,6 +447,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             commit_round: None,
             pending_parts: Vec::new(),
             outbound_valid_block: None,
+            round_start: Time::now(),
         };
         if node.wal.is_some() {
             if let Err(err) = node.catchup() {
@@ -490,20 +493,24 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
 
     /// Apply one gossip message. A bad signature or a bad part proof returns without voting.
     ///
-    /// `false` when the proposal part set is larger than `Block.MaxBytes`. The part stays
-    /// in the set and the block is not decoded. The caller drops that peer.
+    /// `false` when the proposal's POL round is outside `-1..round`, or when the
+    /// proposal part set is larger than `Block.MaxBytes`. The caller drops that peer.
+    /// A bad signature stays `true`.
     pub(crate) fn deliver(&mut self, msg: Msg) -> bool {
         match msg {
-            Msg::Proposal(proposal) => {
-                self.on_proposal(proposal);
-                true
-            }
+            Msg::Proposal(proposal) => self.on_proposal(proposal),
             Msg::Part(part) => self.on_part(part),
             Msg::Vote(vote) => {
                 self.on_vote(vote);
                 true
             }
         }
+    }
+
+    /// When this round was entered. `NewRoundStep.seconds_since_start_time` is the elapsed seconds.
+    #[must_use]
+    pub fn round_start(&self) -> Time {
+        self.round_start
     }
 
     #[must_use]
@@ -755,6 +762,27 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         })
     }
 
+    /// Latest queued vote of `vote_type`. Round 0 can still be sitting under a later vote.
+    #[must_use]
+    pub fn queued_vote(&self, vote_type: SignedMsgType) -> Option<Vote> {
+        self.outbox.iter().rev().find_map(|msg| match msg {
+            Msg::Vote(vote) if vote.vote_type == vote_type => Some(vote.clone()),
+            _ => None,
+        })
+    }
+
+    /// Block parts still waiting in the outbox.
+    #[must_use]
+    pub fn queued_parts(&self) -> Vec<Part> {
+        self.outbox
+            .iter()
+            .filter_map(|msg| match msg {
+                Msg::Part(part) => Some(part.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Address of the proposer after `extra` further priority increments.
     #[must_use]
     pub fn proposer_after(&self, extra: i32) -> Option<Vec<u8>> {
@@ -777,28 +805,36 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         std::mem::take(&mut self.outbox)
     }
 
-    pub fn on_proposal(&mut self, proposal: Proposal) {
+    /// `false` when `POLRound` is outside `-1..round`. The caller drops that peer.
+    ///
+    /// A repeat of a stored signature, a different height or round, a bad signature,
+    /// or a missing proposer key returns `true` and does not store the proposal.
+    #[must_use]
+    pub fn on_proposal(&mut self, proposal: Proposal) -> bool {
         if self
             .proposal
             .as_ref()
             .is_some_and(|have| have.signature == proposal.signature)
         {
-            return;
+            return true;
         }
         if proposal.height != self.height || proposal.round != self.round {
-            return;
+            return true;
+        }
+        if proposal.pol_round < -1 || proposal.pol_round >= proposal.round {
+            return false;
         }
         let Some(proposer) = self.validators.proposer() else {
-            return;
+            return true;
         };
         let Some(pub_key) = proposer.pub_key else {
-            return;
+            return true;
         };
         if proposal
             .verify_signature(&pub_key, self.chain_state.chain_id.as_str())
             .is_err()
         {
-            return;
+            return true;
         }
         let hash = proposal.block_id.hash.clone();
         let proposal_height = proposal.height;
@@ -813,6 +849,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.step <= Step::Propose && self.is_proposal_complete() {
             self.enter_prevote(self.height, self.round);
         }
+        true
     }
 
     /// `false` when the part was stored and the set's byte size exceeds `Block.MaxBytes`.
@@ -1053,6 +1090,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             }
         }
         self.round = round;
+        self.round_start = Time::now();
         self.step = Step::NewRound;
         self.votes.set_round(round);
         self.log_step("enterNewRound");
@@ -1309,11 +1347,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         }
         let block_id = if let Some(block) = &self.locked_block {
             block_id_of(block, self.locked_parts.as_ref())
-        } else if self
-            .proposal_parts
-            .as_ref()
-            .is_some_and(PartSet::is_complete)
-        {
+        } else if self.is_proposal_complete() {
             let invalid = self.proposal_block.as_ref().and_then(|block| {
                 eld_tendermint_state::validate_block(&self.chain_state, block)
                     .err()
@@ -1364,6 +1398,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 self.valid_round = round;
                 self.valid_block = self.proposal_block.clone();
                 self.valid_parts = self.proposal_parts.clone();
+                self.queue_commit_valid_block();
             }
             let nil = block_id.hash.is_empty();
             if nil || self.is_proposal_complete() {
@@ -1501,16 +1536,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         // A PrecommitWait timeout must not start another round and drop this header.
         self.step = Step::Commit;
         self.commit_round = Some(commit_round);
-        let replaced = self.install_commit_header(&block_id);
-        if replaced {
-            self.queue_commit_valid_block();
-        }
+        let _ = self.install_commit_header(&block_id);
+        self.queue_commit_valid_block();
         self.try_finalize_commit();
     }
 
-    /// `ProposalBlockParts` was replaced for a commit block this node does not have.
+    /// `ProposalBlockParts` for a block this node has seen +2/3 prevotes for, or is committing.
     ///
-    /// Go's `enterCommit` fires `EventValidBlock` before the step is commit.
+    /// Go publishes `EventValidBlock` at the prevote majority with `IsCommit` clear, and
+    /// again from `enterCommit` after the step is commit.
     fn queue_commit_valid_block(&mut self) {
         let Some(parts) = self.proposal_parts.as_ref() else {
             return;
@@ -1523,7 +1557,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             round: self.round,
             header: parts.header(),
             parts: bits,
-            is_commit: false,
+            is_commit: self.step == Step::Commit,
         });
     }
 
@@ -1860,7 +1894,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         match wal::replay_of(msg)? {
             Replay::Ignored | Replay::EndHeight(_) => Ok(()),
             Replay::Proposal(proposal) => {
-                self.on_proposal(proposal);
+                let _ = self.on_proposal(proposal);
                 Ok(())
             }
             Replay::Part { part, .. } => {
@@ -1970,6 +2004,14 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     }
 }
 
+/// Seconds from `start` to `now`, or 0 when `now` is earlier.
+#[must_use]
+pub(crate) fn seconds_since(start: Time, now: Time) -> i64 {
+    now.unix_seconds()
+        .saturating_sub(start.unix_seconds())
+        .max(0)
+}
+
 fn block_id_of(block: &Block, parts: Option<&PartSet>) -> Option<BlockId> {
     let hash = block.hash()?;
     let parts = parts?;
@@ -1977,4 +2019,24 @@ fn block_id_of(block: &Block, parts: Option<&PartSet>) -> Option<BlockId> {
         hash: hash.as_bytes().to_vec(),
         part_set_header: parts.header(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::seconds_since;
+    use eld_tendermint_types::Time;
+
+    #[test]
+    fn seconds_since_counts_elapsed_and_saturates_at_zero() {
+        let start = Time::from_unix_parts(1_600_000_100, 0);
+        assert_eq!(
+            seconds_since(start, Time::from_unix_parts(1_600_000_105, 0)),
+            5
+        );
+        assert_eq!(
+            seconds_since(start, Time::from_unix_parts(1_600_000_095, 0)),
+            0
+        );
+        assert_eq!(seconds_since(start, start), 0);
+    }
 }
