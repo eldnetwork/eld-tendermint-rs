@@ -8,7 +8,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
-use eld_tendermint_consensus::{Node, Reactor, Step, channel_descriptors};
+use eld_tendermint_consensus::{
+    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, channel_descriptors,
+};
 use eld_tendermint_crypto::PrivKey;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_p2p::{Switch, make_secret_connection};
@@ -20,11 +22,12 @@ use eld_tendermint_proto::abci::{
 use eld_tendermint_proto::consensus::{self, BlockPart, Message, message};
 use eld_tendermint_state::{App as ExecApp, State as ChainState, make_genesis_state};
 use eld_tendermint_store::{BlockStore, MemDb};
-use eld_tendermint_types::{ChainId, GenesisDoc, GenesisValidator, Part, Time, set_log_capture};
+use eld_tendermint_types::{
+    BitArray, BlockId, ChainId, GenesisDoc, GenesisValidator, Part, PartSetHeader, Proposal,
+    SignedMsgType, Time, set_log_capture,
+};
 use prost::Message as ProstMessage;
 use prost::bytes::Bytes;
-
-use eld_tendermint_consensus::DATA_CHANNEL;
 
 const APP_HASH: [u8; 32] = [0xab; 32];
 
@@ -640,4 +643,177 @@ fn lagging_node_catches_up_from_height_one_to_three() {
 
 fn has_prevote(reactor: &Reactor<Exec, Check>) -> bool {
     (0..32).any(|round| reactor.prevote_count(round) > 0)
+}
+
+fn is_block_data(msg: &Msg) -> bool {
+    matches!(msg, Msg::Proposal(_) | Msg::Part(_))
+}
+
+fn is_prevote(msg: &Msg) -> bool {
+    matches!(msg, Msg::Vote(vote) if vote.vote_type == SignedMsgType::Prevote)
+}
+
+type Captured = Arc<Mutex<Vec<(u8, Vec<u8>)>>>;
+
+fn capturing_switch() -> (Arc<Switch>, Captured) {
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let switch = Arc::new(Switch::new());
+    let got_cb = Arc::clone(&got);
+    switch
+        .add_reactor(
+            "consensus",
+            channel_descriptors(),
+            move |_peer_id, ch_id, bytes| {
+                got_cb
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push((ch_id, bytes));
+            },
+        )
+        .expect("capture reactor");
+    (switch, got)
+}
+
+fn encode_round_step(height: i64, round: i32, step: u32, last_commit_round: i32) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::NewRoundStep(consensus::NewRoundStep {
+            height,
+            round,
+            step,
+            seconds_since_start_time: 0,
+            last_commit_round,
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn encode_proposal_pol(height: i64, pol_round: i32, bits: &BitArray) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::ProposalPol(consensus::ProposalPol {
+            height,
+            proposal_pol_round: pol_round,
+            proposal_pol: bits.to_proto(),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn bits_with(index: i64) -> BitArray {
+    let mut bits = BitArray::new(4).expect("bits");
+    bits.set_index(index, true);
+    bits
+}
+
+/// A round-1 re-proposal carries `pol_round >= 0`, so the data channel also gets `ProposalPol`.
+#[test]
+fn re_proposal_sends_proposal_pol() {
+    let mut validators = Group::new(nodes(4));
+    let round0_index = validators
+        .nodes()
+        .iter()
+        .position(|node| node.queued_proposal().is_some())
+        .expect("round 0 proposer");
+    let next = validators.nodes()[round0_index]
+        .proposer_after(1)
+        .expect("round 1 proposer");
+    let index = validators
+        .nodes()
+        .iter()
+        .position(|node| node.address() == next)
+        .expect("proposer index");
+    validators.exchange(None, is_block_data);
+    validators.exchange(Some(index), is_prevote);
+    for other in 0..4 {
+        if other == index {
+            continue;
+        }
+        let vote = validators.nodes()[other]
+            .sign_nil_precommit()
+            .expect("nil precommit");
+        validators.nodes()[index].on_vote(vote);
+    }
+    validators.fire_timeout(index);
+    let proposal = validators.nodes()[index]
+        .queued_proposal()
+        .expect("round 1 proposal");
+    assert!(proposal.pol_round >= 0, "pol_round {}", proposal.pol_round);
+    let height = proposal.height;
+    let round = proposal.round;
+    let pol_round = proposal.pol_round;
+
+    let reactor = Reactor::new(validators.into_nodes());
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(height, round, Step::Propose.round_step(), -1),
+    ));
+    reactor.poll(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+
+    let messages = got.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let pol = messages.iter().find_map(|(_, bytes)| {
+        let msg = Message::decode(bytes.as_slice()).ok()?;
+        match msg.sum? {
+            message::Sum::ProposalPol(pol) => Some(pol),
+            _ => None,
+        }
+    });
+    let pol = pol.expect("ProposalPol was not sent");
+    assert_eq!(pol.height, height);
+    assert_eq!(pol.proposal_pol_round, pol_round);
+    assert!(pol.proposal_pol.is_some());
+}
+
+/// `ApplyProposalPOLMessage` stores bits only for the peer's current POL round.
+#[test]
+fn proposal_pol_for_another_round_is_ignored() {
+    let reactor = Reactor::new(nodes(1));
+    let switch = switch_for(&reactor);
+    let mut proposal = Proposal::new(
+        1,
+        0,
+        0,
+        BlockId {
+            hash: vec![0x11; 32],
+            part_set_header: PartSetHeader {
+                total: 1,
+                hash: vec![0x22; 32],
+            },
+        },
+        Time::from_unix_parts(1_600_000_000, 0),
+    );
+    proposal.signature = vec![0xab; 64];
+
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Propose.round_step(), -1),
+    ));
+    assert!(reactor.handle(&switch, "peer", DATA_CHANNEL, &encode_proposal(&proposal)));
+    assert!(reactor.proposal_pol_bits("peer").is_none());
+
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        DATA_CHANNEL,
+        &encode_proposal_pol(1, 1, &bits_with(0)),
+    ));
+    assert!(
+        reactor.proposal_pol_bits("peer").is_none(),
+        "a POL for another round was stored"
+    );
+
+    let kept = bits_with(1);
+    assert!(reactor.handle(
+        &switch,
+        "peer",
+        DATA_CHANNEL,
+        &encode_proposal_pol(1, 0, &kept),
+    ));
+    assert_eq!(reactor.proposal_pol_bits("peer").as_ref(), Some(&kept));
 }
