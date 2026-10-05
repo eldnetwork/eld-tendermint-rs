@@ -906,9 +906,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 self.buffer_part(part);
             }
         }
-        if self.proposal_block.is_none() {
+        if self.proposal_block.is_none() && !self.proposal_parts_oversized() {
             self.decode_proposal_block();
         }
+    }
+
+    /// `ProposalBlockParts.ByteSize() > Block.MaxBytes`. The parts stay stored.
+    fn proposal_parts_oversized(&self) -> bool {
+        self.proposal_parts.as_ref().is_some_and(|parts| {
+            parts.byte_size() > self.chain_state.consensus_params.block.max_bytes
+        })
     }
 
     fn decode_proposal_block(&mut self) -> bool {

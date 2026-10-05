@@ -1379,3 +1379,186 @@ fn peer_three_heights_behind_receives_a_commit_precommit() {
     assert_eq!(votes[0].height, peer_height);
     assert_eq!(seen_votes(&messages)[0].height, peer_height);
 }
+
+struct SignedPart {
+    proposal: Proposal,
+    part: Vec<u8>,
+    dir: std::path::PathBuf,
+    state: ChainState,
+    key_index: usize,
+}
+
+/// A signed proposal and one real part, plus a key the receiver can start with.
+fn signed_part() -> SignedPart {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "eld-oversize-{}-{}-{}",
+        std::process::id(),
+        stamp,
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut keys = Vec::with_capacity(4);
+    for index in 0..4 {
+        keys.push(
+            FilePV::load_or_gen_file_pv(
+                dir.join(format!("priv_validator_key_{index}.json")),
+                dir.join(format!("priv_validator_state_{index}.json")),
+            )
+            .expect("file pv"),
+        );
+    }
+    let mut genesis = GenesisDoc {
+        genesis_time: Time::from_unix_parts(1_600_000_000, 0),
+        chain_id: ChainId::new("test-chain"),
+        initial_height: 0,
+        consensus_params: None,
+        validators: keys
+            .iter()
+            .map(|pv| GenesisValidator {
+                address: Vec::new(),
+                pub_key: pv.get_pub_key(),
+                power: 10,
+                name: String::new(),
+            })
+            .collect(),
+        app_hash: vec![0x11; 32],
+        app_state: None,
+    };
+    let state = make_genesis_state(&mut genesis).expect("genesis");
+    let config = ConsensusConfig::test_config();
+    let mut validators: Vec<Node<Exec, Check>> = keys
+        .into_iter()
+        .map(|pv| {
+            let mempool = Mempool::new(MempoolConfig::test_config(), Check).expect("mempool");
+            Node::start(config.clone(), pv, state.clone(), mempool, Exec).expect("node")
+        })
+        .collect();
+    let proposer_address = validators[0].proposer_after(0).expect("proposer");
+    let proposer_index = validators
+        .iter()
+        .position(|node| node.address() == proposer_address)
+        .expect("proposer index");
+    let proposal = validators[proposer_index]
+        .queued_proposal()
+        .expect("signed proposal");
+    let proposer = validators.swap_remove(proposer_index);
+    drop(validators);
+    let key_index = if proposer_index == 0 { 1 } else { 0 };
+
+    let reactor = Reactor::new(vec![proposer]);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    let header = proposal.block_id.part_set_header.clone();
+    let total = header.total;
+    peer_at_proposal(&reactor, &reactor_switch, &header, &part_bits(total, false));
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| {
+        messages.iter().any(|(ch_id, bytes)| {
+            if *ch_id != DATA_CHANNEL {
+                return false;
+            }
+            Message::decode(bytes.as_slice())
+                .ok()
+                .and_then(|msg| msg.sum)
+                .is_some_and(|sum| matches!(sum, message::Sum::BlockPart(_)))
+        })
+    });
+    let part = messages
+        .into_iter()
+        .find_map(|(ch_id, bytes)| {
+            if ch_id != DATA_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::BlockPart(_) => Some(bytes),
+                _ => None,
+            }
+        })
+        .expect("proposer did not send a block part");
+    SignedPart {
+        proposal,
+        part,
+        dir,
+        state,
+        key_index,
+    }
+}
+
+/// A part set whose bytes exceed `Block.MaxBytes` is kept, the block is not decoded, and the peer is dropped.
+#[test]
+fn oversized_part_set_drops_the_peer_and_does_not_deliver_the_block() {
+    let SignedPart {
+        proposal,
+        part,
+        dir,
+        mut state,
+        key_index,
+    } = signed_part();
+    let part_len = Message::decode(part.as_slice())
+        .ok()
+        .and_then(|msg| match msg.sum? {
+            message::Sum::BlockPart(part) => part.part,
+            _ => None,
+        })
+        .expect("captured part")
+        .bytes
+        .len();
+    assert!(part_len > 1, "part is too small to exceed the limit");
+    state.consensus_params.block.max_bytes = 1;
+    state.consensus_params.evidence.max_bytes = 0;
+    let victim_key = FilePV::load_or_gen_file_pv(
+        dir.join(format!("priv_validator_key_{key_index}.json")),
+        dir.join(format!("priv_validator_state_{key_index}.json")),
+    )
+    .expect("victim key");
+    let victim = Node::start(
+        ConsensusConfig::test_config(),
+        victim_key,
+        state,
+        Mempool::new(MempoolConfig::test_config(), Check).expect("mempool"),
+        Exec,
+    )
+    .expect("victim");
+    let reactor = Reactor::new(vec![victim]);
+    let reactor_switch = switch_for(&reactor);
+    let sender = Switch::new();
+    sender
+        .add_reactor("consensus", channel_descriptors(), |_, _, _| {})
+        .expect("sender reactor");
+    link(&reactor_switch, &sender);
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Propose.round_step(), -1),
+    ));
+    assert!(sender.send("left", DATA_CHANNEL, &encode_proposal(&proposal)));
+    let start = Instant::now();
+    while reactor.proposal_hash().is_none() && start.elapsed() < Duration::from_millis(500) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        reactor.proposal_hash().is_some(),
+        "proposal was not accepted"
+    );
+
+    assert!(sender.send("left", DATA_CHANNEL, &part));
+    let start = Instant::now();
+    while reactor_switch.peers().len() == 1 && start.elapsed() < Duration::from_millis(500) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        reactor_switch.peers().len(),
+        0,
+        "an oversized part set did not drop the peer"
+    );
+    assert_eq!(reactor.prevote_count(0), 0);
+    assert_eq!(reactor.step(), Step::Propose);
+}
