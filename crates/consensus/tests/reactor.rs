@@ -2,8 +2,8 @@
 //! from block-store parts and seen-commit votes, with the blockchain reactor off.
 
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,7 +20,7 @@ use eld_tendermint_proto::abci::{
 use eld_tendermint_proto::consensus::{self, BlockPart, Message, message};
 use eld_tendermint_state::{App as ExecApp, State as ChainState, make_genesis_state};
 use eld_tendermint_store::{BlockStore, MemDb};
-use eld_tendermint_types::{ChainId, GenesisDoc, GenesisValidator, Part, Time};
+use eld_tendermint_types::{ChainId, GenesisDoc, GenesisValidator, Part, Time, set_log_capture};
 use prost::Message as ProstMessage;
 use prost::bytes::Bytes;
 
@@ -222,6 +222,83 @@ fn two_switches_commit_height_one() {
         left.committed(1),
         right.committed(1)
     );
+}
+
+/// The late node has no link to the proposer. The block body has to cross the relay.
+#[test]
+fn relay_forwards_proposal_parts_without_a_direct_link() {
+    let mut validators = nodes(4);
+    let proposer_address = validators[0].proposer_after(0).expect("proposer");
+    let proposer_index = validators
+        .iter()
+        .position(|node| node.address() == proposer_address)
+        .expect("proposer index");
+    let proposer_node = validators.swap_remove(proposer_index);
+    let late_node = validators.pop().expect("late");
+    let relay_node = validators.pop().expect("relay");
+    drop(validators);
+
+    let proposer = Reactor::new(vec![proposer_node]);
+    let relay = Reactor::new(vec![relay_node]);
+    let late = Reactor::new(vec![late_node]);
+    let proposer_switch = switch_for(&proposer);
+    let relay_switch = switch_for(&relay);
+    let late_switch = switch_for(&late);
+    link_ids(&proposer_switch, "proposer", &relay_switch, "relay");
+    link_ids(&relay_switch, "relay", &late_switch, "late");
+    assert!(
+        late_switch.peers().iter().all(|peer| peer.id != "proposer"),
+        "late node is linked to the proposer"
+    );
+
+    let capture = LogCapture::start();
+    let start = Instant::now();
+    let committed = loop {
+        if proposer.committed(1) && relay.committed(1) && late.committed(1) {
+            break true;
+        }
+        if start.elapsed() >= Duration::from_secs(8) {
+            break false;
+        }
+        proposer.poll(&proposer_switch);
+        relay.poll(&relay_switch);
+        late.poll(&late_switch);
+        thread::sleep(Duration::from_millis(2));
+    };
+    assert!(
+        committed,
+        "height proposer={} relay={} late={}",
+        proposer.committed(1),
+        relay.committed(1),
+        late.committed(1)
+    );
+    let logs = capture.text();
+    assert!(
+        logs.lines()
+            .any(|line| line.contains("received complete proposal block")),
+        "{logs}"
+    );
+}
+
+/// Records operator lines for one test, then stops recording.
+struct LogCapture(Arc<Mutex<String>>);
+
+impl LogCapture {
+    fn start() -> Self {
+        let buf = Arc::new(Mutex::new(String::new()));
+        set_log_capture(Some(Arc::clone(&buf)));
+        Self(buf)
+    }
+
+    fn text(&self) -> String {
+        self.0.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+}
+
+impl Drop for LogCapture {
+    fn drop(&mut self) {
+        set_log_capture(None);
+    }
 }
 
 #[test]

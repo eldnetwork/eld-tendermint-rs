@@ -13,8 +13,8 @@ use eld_tendermint_state::{
 };
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
-    BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet, Proposal,
-    Time, ValidatorSet, Vote, log_line, upper_hex,
+    BLOCK_PART_SIZE_BYTES, BitArray, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet,
+    PartSetHeader, Proposal, Time, ValidatorSet, Vote, log_line, upper_hex,
 };
 use prost::Message;
 
@@ -148,6 +148,19 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     commit_round: Option<i32>,
     /// Parts that arrived before the commit block's part-set header.
     pending_parts: Vec<Part>,
+    /// `EventValidBlock` from `enterCommit`, not yet broadcast.
+    outbound_valid_block: Option<OutboundValidBlock>,
+}
+
+/// `NewValidBlockMessage` built when commit replaces the part set.
+#[derive(Clone)]
+pub(crate) struct OutboundValidBlock {
+    pub height: i64,
+    pub round: i32,
+    pub header: PartSetHeader,
+    pub parts: BitArray,
+    /// Go fires this event before the step becomes commit, so this is false.
+    pub is_commit: bool,
 }
 
 impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
@@ -414,6 +427,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             replaying: false,
             commit_round: None,
             pending_parts: Vec::new(),
+            outbound_valid_block: None,
         };
         if node.wal.is_some() {
             if let Err(err) = node.catchup() {
@@ -485,9 +499,16 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Part-set size of a saved block.
     #[must_use]
     pub(crate) fn block_part_count(&self, height: i64) -> Option<u32> {
+        self.block_part_set_header(height)
+            .map(|header| header.total)
+    }
+
+    /// `LoadBlockMeta` part-set header.
+    #[must_use]
+    pub(crate) fn block_part_set_header(&self, height: i64) -> Option<PartSetHeader> {
         self.block_store
             .load_block_meta(height)
-            .map(|meta| meta.block_id.part_set_header.total)
+            .map(|meta| meta.block_id.part_set_header)
     }
 
     /// Precommits from the seen commit saved with `height`.
@@ -575,6 +596,36 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.proposal
             .as_ref()
             .map(|proposal| proposal.block_id.hash.clone())
+    }
+
+    /// `Proposal.BlockID.PartSetHeader` for the proposal this validator accepted.
+    #[must_use]
+    pub(crate) fn proposal_part_set_header(&self) -> Option<PartSetHeader> {
+        self.proposal
+            .as_ref()
+            .map(|proposal| proposal.block_id.part_set_header.clone())
+    }
+
+    /// `ProposalBlockParts.HasHeader`.
+    #[must_use]
+    pub(crate) fn proposal_parts_has_header(&self, header: &PartSetHeader) -> bool {
+        self.proposal_parts
+            .as_ref()
+            .is_some_and(|parts| parts.has_header(header))
+    }
+
+    /// `ProposalBlockParts.GetPart`.
+    #[must_use]
+    pub(crate) fn proposal_part(&self, index: u32) -> Option<Part> {
+        self.proposal_parts
+            .as_ref()
+            .and_then(|parts| parts.get_part(index).cloned())
+    }
+
+    /// `ProposalBlockParts.BitArray`.
+    #[must_use]
+    pub(crate) fn proposal_parts_bits(&self) -> Option<BitArray> {
+        self.proposal_parts.as_ref().and_then(PartSet::bit_array)
     }
 
     /// Proposal waiting to be delivered, if this validator just signed one.
@@ -1268,11 +1319,43 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         // A PrecommitWait timeout must not start another round and drop this header.
         self.step = Step::Commit;
         self.commit_round = Some(commit_round);
-        self.install_commit_header(&block_id);
+        let replaced = self.install_commit_header(&block_id);
+        if replaced {
+            self.queue_commit_valid_block();
+        }
         self.try_finalize_commit();
     }
 
-    fn install_commit_header(&mut self, block_id: &BlockId) {
+    /// `ProposalBlockParts` was replaced for a commit block this node does not have.
+    ///
+    /// Go's `enterCommit` fires `EventValidBlock` before the step is commit.
+    fn queue_commit_valid_block(&mut self) {
+        let Some(parts) = self.proposal_parts.as_ref() else {
+            return;
+        };
+        let Some(bits) = parts.bit_array() else {
+            return;
+        };
+        self.outbound_valid_block = Some(OutboundValidBlock {
+            height: self.height,
+            round: self.round,
+            header: parts.header(),
+            parts: bits,
+            is_commit: false,
+        });
+    }
+
+    #[must_use]
+    pub(crate) fn outbound_valid_block(&self) -> Option<&OutboundValidBlock> {
+        self.outbound_valid_block.as_ref()
+    }
+
+    pub(crate) fn clear_outbound_valid_block(&mut self) {
+        self.outbound_valid_block = None;
+    }
+
+    /// `true` when the part set was replaced with the commit header.
+    fn install_commit_header(&mut self, block_id: &BlockId) -> bool {
         let block_matches = self
             .proposal_block
             .as_ref()
@@ -1293,6 +1376,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             }
         }
         self.apply_pending_parts(false);
+        !header_matches
     }
 
     fn try_finalize_commit(&mut self) {
