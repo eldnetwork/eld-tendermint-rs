@@ -1112,3 +1112,108 @@ fn part_the_peer_already_has_is_not_sent() {
         "a part the peer already has was sent: {indexes:?}"
     );
 }
+
+fn block_parts(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::BlockPart> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != DATA_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            match msg.sum? {
+                message::Sum::BlockPart(part) => Some(part),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn captured(got: &Captured) -> Vec<(u8, Vec<u8>)> {
+    got.lock().unwrap_or_else(|err| err.into_inner()).clone()
+}
+
+fn note_peer_height(reactor: &Reactor<Exec, Check>, switch: &Switch, peer_id: &str, height: i64) {
+    assert!(reactor.handle(
+        switch,
+        peer_id,
+        STATE_CHANNEL,
+        &encode_round_step(height, 0, Step::NewHeight.round_step(), -1),
+    ));
+}
+
+/// Store through `store_height`, then start the next consensus height.
+fn ahead_by(store_height: i64) -> (Vec<Node<Exec, Check>>, i64, i64) {
+    let mut validators = Group::new(nodes(4));
+    validators.run_until_height(store_height);
+    let our_height = validators.nodes()[0].height();
+    let stored = validators.nodes()[0].store_height();
+    (validators.into_nodes(), our_height, stored)
+}
+
+/// A peer three heights back still gets one part of that stored block.
+///
+/// The first gossip only stores the part-set header. The next one sends a part.
+#[test]
+fn peer_three_heights_behind_receives_one_stored_part() {
+    let (validators, our_height, stored) = ahead_by(4);
+    assert!(our_height > stored);
+    let peer_height = our_height - 3;
+    assert!(peer_height >= 1);
+    assert!(stored >= peer_height);
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    note_peer_height(&reactor, &reactor_switch, "right", peer_height);
+
+    reactor.gossip(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        block_parts(&captured(&got)).is_empty(),
+        "the first gossip sent a part before the part-set header was stored"
+    );
+
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| !block_parts(messages).is_empty());
+    thread::sleep(Duration::from_millis(50));
+    let parts = block_parts(&messages);
+    let later = block_parts(&captured(&got));
+    assert_eq!(
+        later.len(),
+        1,
+        "gossip sent more than one catch-up part: {later:?}"
+    );
+    assert_eq!(parts[0].height, peer_height);
+    assert_eq!(reactor.height(), our_height);
+}
+
+/// A height below the store base, or equal to our consensus height, gets no part.
+#[test]
+fn catchup_skips_height_below_base_and_our_height() {
+    let (validators, our_height, stored) = ahead_by(4);
+    assert!(our_height > stored);
+    for node in &validators {
+        node.prune_blocks(stored).expect("prune to the store tip");
+    }
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (low_switch, low_got) = capturing_switch();
+    let (here_switch, here_got) = capturing_switch();
+    link_ids(&reactor_switch, "node", &low_switch, "low");
+    link_ids(&reactor_switch, "node", &here_switch, "here");
+    note_peer_height(&reactor, &reactor_switch, "low", 1);
+    note_peer_height(&reactor, &reactor_switch, "here", our_height);
+
+    reactor.gossip(&reactor_switch);
+    reactor.gossip(&reactor_switch);
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        block_parts(&captured(&low_got)).is_empty(),
+        "a height below the store base was sent"
+    );
+    assert!(
+        block_parts(&captured(&here_got)).is_empty(),
+        "our own consensus height was sent as catch-up"
+    );
+}
