@@ -9,8 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
 use eld_tendermint_consensus::{
-    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, VOTE_SET_BITS_CHANNEL,
-    channel_descriptors,
+    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, VOTE_CHANNEL,
+    VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 use eld_tendermint_crypto::PrivKey;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
@@ -1216,4 +1216,166 @@ fn catchup_skips_height_below_base_and_our_height() {
         block_parts(&captured(&here_got)).is_empty(),
         "our own consensus height was sent as catch-up"
     );
+}
+
+#[derive(Clone, Debug)]
+struct SeenVote {
+    height: i64,
+    kind: i32,
+    index: i32,
+}
+
+fn seen_votes(messages: &[(u8, Vec<u8>)]) -> Vec<SeenVote> {
+    messages
+        .iter()
+        .filter_map(|(ch_id, bytes)| {
+            if *ch_id != VOTE_CHANNEL {
+                return None;
+            }
+            let msg = Message::decode(bytes.as_slice()).ok()?;
+            let vote = match msg.sum? {
+                message::Sum::Vote(vote) => vote.vote?,
+                _ => return None,
+            };
+            Some(SeenVote {
+                height: vote.height,
+                kind: vote.r#type,
+                index: vote.validator_index,
+            })
+        })
+        .collect()
+}
+
+fn encode_has_vote(height: i64, round: i32, kind: SignedMsgType, index: i32) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::HasVote(consensus::HasVote {
+            height,
+            round,
+            r#type: kind as i32,
+            index,
+        })),
+    }
+    .encode_to_vec()
+}
+
+/// A collector that has every prevote, still at height 1.
+fn node_with_prevotes() -> Node<Exec, Check> {
+    let mut validators = Group::new(nodes(4));
+    validators.exchange(None, is_block_data);
+    let index = validators
+        .nodes()
+        .iter()
+        .position(|node| node.queued_proposal().is_none())
+        .expect("a validator that is not the proposer");
+    validators.exchange(Some(index), is_prevote);
+    let mut nodes = validators.into_nodes();
+    nodes.swap_remove(index)
+}
+
+/// At `NewHeight` the last commit goes out before a prevote for the current height.
+#[test]
+fn new_height_sends_last_commit_before_a_prevote() {
+    let mut validators = Group::new(nodes(4));
+    validators.run_until_height(1);
+    validators.exchange(None, is_block_data);
+    // Each validator keeps its own prevote. Sharing them would commit height 2.
+    validators.pump(2, |_| false);
+    let our_height = validators.nodes()[0].height();
+    let reactor = Reactor::new(validators.into_nodes());
+    assert_eq!(our_height, 2);
+    assert!(
+        reactor.prevote_count(0) > 0,
+        "the current height has no prevote to order against"
+    );
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(our_height, 0, Step::NewHeight.round_step(), 0),
+    ));
+
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| !seen_votes(messages).is_empty());
+    thread::sleep(Duration::from_millis(50));
+    let votes = seen_votes(&captured(&got));
+    assert_eq!(
+        votes.len(),
+        1,
+        "one gossip sent more than one vote: {votes:?}"
+    );
+    assert_eq!(votes[0].kind, SignedMsgType::Precommit as i32);
+    assert_eq!(votes[0].height, our_height - 1);
+    assert_eq!(seen_votes(&messages)[0].height, our_height - 1);
+}
+
+/// A vote the peer has acked is not sent on the next pass. One pass sends one vote.
+#[test]
+fn acked_vote_is_not_sent_on_the_next_poll() {
+    let reactor = Reactor::new(vec![node_with_prevotes()]);
+    assert_eq!(reactor.height(), 1);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_round_step(1, 0, Step::Prevote.round_step(), -1),
+    ));
+
+    reactor.gossip(&reactor_switch);
+    let first = wait_for(&got, |messages| !seen_votes(messages).is_empty());
+    let first_votes = seen_votes(&first);
+    assert_eq!(first_votes.len(), 1, "the first pass did not send one vote");
+    assert_eq!(first_votes[0].kind, SignedMsgType::Prevote as i32);
+    let acked = first_votes[0].index;
+    assert!(reactor.handle(
+        &reactor_switch,
+        "right",
+        STATE_CHANNEL,
+        &encode_has_vote(1, 0, SignedMsgType::Prevote, acked),
+    ));
+
+    reactor.gossip(&reactor_switch);
+    let second = wait_for(&got, |messages| seen_votes(messages).len() >= 2);
+    thread::sleep(Duration::from_millis(50));
+    let votes = seen_votes(&captured(&got));
+    assert_eq!(
+        votes.len(),
+        2,
+        "the next pass did not send exactly one vote"
+    );
+    assert_ne!(votes[1].index, acked, "the acked vote was sent again");
+    assert_eq!(seen_votes(&second)[1].index, votes[1].index);
+}
+
+/// A peer three heights behind still gets one precommit from the stored block commit.
+#[test]
+fn peer_three_heights_behind_receives_a_commit_precommit() {
+    let (validators, our_height, stored) = ahead_by(4);
+    let peer_height = our_height - 3;
+    assert!(peer_height >= 1);
+    assert!(stored >= peer_height);
+    assert!(our_height >= peer_height + 2);
+    let reactor = Reactor::new(validators);
+    let reactor_switch = switch_for(&reactor);
+    let (peer_switch, got) = capturing_switch();
+    link(&reactor_switch, &peer_switch);
+    note_peer_height(&reactor, &reactor_switch, "right", peer_height);
+
+    reactor.gossip(&reactor_switch);
+    let messages = wait_for(&got, |messages| !seen_votes(messages).is_empty());
+    thread::sleep(Duration::from_millis(50));
+    let votes = seen_votes(&captured(&got));
+    assert_eq!(
+        votes.len(),
+        1,
+        "a gap of three sent more than one vote: {votes:?}"
+    );
+    assert_eq!(votes[0].kind, SignedMsgType::Precommit as i32);
+    assert_eq!(votes[0].height, peer_height);
+    assert_eq!(seen_votes(&messages)[0].height, peer_height);
 }
