@@ -4,7 +4,11 @@
 
 eld-tendermint-rs is a Rust port of the Tendermint consensus engine Eld runs. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
 
-The port is the base for later Eld network work. We will extend and modify this Tendermint node in Rust.
+A copy of the tendermint golang project can be found here: https://github.com/eldnetwork/eld-tendermint
+
+Protocol specs have been copied from https://github.com/eldnetwork/eld-tendermint/tree/eld/v0.34.24/spec to https://github.com/eldnetwork/eld-tendermint-rs/tree/main/spec
+
+This port will be used as the base for later Eld network work to extend and modify the protocol for Eld's requirements, but those modifications will happen in a separate project. This project will remain a direct port.
 
 ## Quickstart
 
