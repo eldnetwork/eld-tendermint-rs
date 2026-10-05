@@ -489,6 +489,7 @@ dependencies = [
  "hex",
  "prost",
  "prost-types",
+ "rand 0.8.8",
  "serde",
  "serde_json",
 ]

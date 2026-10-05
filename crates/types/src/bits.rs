@@ -1,8 +1,9 @@
 //! `libs/bits.BitArray` from Tendermint 0.34.
 //!
 //! Go locks a mutex on every method. This type is not internally synchronized.
-//! `PickRandom` is omitted; it uses Tendermint's process-wide RNG.
+//! [`BitArray::pick_random`] uses the `rand` crate in place of Tendermint's process-wide RNG.
 
+use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
@@ -132,6 +133,59 @@ impl BitArray {
             }
             _ => None,
         }
+    }
+
+    /// `BitArray.PickRandom`. `None` when no live bit is set, including a nil array's caller.
+    ///
+    /// The index is chosen from the set bits the way `getTrueIndices` lists them.
+    #[must_use]
+    pub fn pick_random(&self) -> Option<i64> {
+        let indices = self.true_indices();
+        if indices.is_empty() {
+            return None;
+        }
+        let n = rand::thread_rng().gen_range(0..indices.len());
+        Some(indices[n])
+    }
+
+    /// [`Self::pick_random`] with the choice fixed to `n` in the set-bit list.
+    ///
+    /// `None` when no bit is set or `n` is past the end of that list.
+    #[must_use]
+    pub fn pick_random_at(&self, n: usize) -> Option<i64> {
+        self.true_indices().get(n).copied()
+    }
+
+    /// `BitArray.getTrueIndices`. Padding bits in the last word are ignored.
+    #[must_use]
+    fn true_indices(&self) -> Vec<i64> {
+        if self.elems.is_empty() {
+            return Vec::new();
+        }
+        let mut indices = Vec::new();
+        let mut cur_bit = 0_i64;
+        let last = self.elems.len() - 1;
+        for elem in &self.elems[..last] {
+            if *elem == 0 {
+                cur_bit += 64;
+                continue;
+            }
+            for shift in 0..64 {
+                if elem & (1_u64 << shift) > 0 {
+                    indices.push(cur_bit);
+                }
+                cur_bit += 1;
+            }
+        }
+        let last_elem = self.elems[last];
+        let num_final = self.bits - cur_bit;
+        for shift in 0..num_final {
+            if last_elem & (1_u64 << shift) > 0 {
+                indices.push(cur_bit);
+            }
+            cur_bit += 1;
+        }
+        indices
     }
 
     /// `BitArray.IsEmpty`. `true` when every word is zero, including padding bits.

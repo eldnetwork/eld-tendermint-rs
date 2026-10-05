@@ -7,14 +7,15 @@ use eld_tendermint_config::ConsensusConfig;
 use eld_tendermint_evidence::ProposalEvidence;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::{PrivValidator, STEP_PRECOMMIT, STEP_PREVOTE};
-use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
+use eld_tendermint_proto::types::SignedMsgType;
 use eld_tendermint_state::{
     App as ExecApp, CommitEvents, IndexTxs, State as ChainState, apply_block,
 };
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, BitArray, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet,
-    PartSetHeader, Proposal, Time, ValidatorSet, Vote, log_line, upper_hex,
+    PartSetHeader, Proposal, Time, ValidatorSet, Vote, VoteSet, log_line, max_data_bytes,
+    upper_hex,
 };
 use prost::Message;
 
@@ -96,6 +97,22 @@ pub struct NodeExtras {
     pub tx_index: Option<Arc<dyn IndexTxs>>,
     /// Publish `NewBlock` and `Tx` after each saved block.
     pub events: Option<Arc<dyn CommitEvents>>,
+}
+
+/// `LastCommit` fields the reactor needs to pick one vote.
+#[derive(Clone, Debug)]
+pub(crate) struct CommitSource {
+    pub height: i64,
+    pub round: i32,
+    pub bits: BitArray,
+    pub is_commit: bool,
+    pub size: i64,
+}
+
+enum PartAdd {
+    Pending,
+    Complete,
+    Oversized,
 }
 
 /// What a validator broadcasts. The group delivers these by method call.
@@ -472,11 +489,20 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     }
 
     /// Apply one gossip message. A bad signature or a bad part proof returns without voting.
-    pub(crate) fn deliver(&mut self, msg: Msg) {
+    ///
+    /// `false` when the proposal part set is larger than `Block.MaxBytes`. The part stays
+    /// in the set and the block is not decoded. The caller drops that peer.
+    pub(crate) fn deliver(&mut self, msg: Msg) -> bool {
         match msg {
-            Msg::Proposal(proposal) => self.on_proposal(proposal),
+            Msg::Proposal(proposal) => {
+                self.on_proposal(proposal);
+                true
+            }
             Msg::Part(part) => self.on_part(part),
-            Msg::Vote(vote) => self.on_vote(vote),
+            Msg::Vote(vote) => {
+                self.on_vote(vote);
+                true
+            }
         }
     }
 
@@ -509,48 +535,6 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.block_store
             .load_block_meta(height)
             .map(|meta| meta.block_id.part_set_header)
-    }
-
-    /// Precommits from the seen commit saved with `height`.
-    ///
-    /// Signers are [`ChainState::last_validators`], which matches the set that
-    /// signed the block when the validator set has not changed. Absent signatures
-    /// are skipped.
-    #[must_use]
-    pub(crate) fn seen_commit_votes(&self, height: i64) -> Vec<Vote> {
-        let Some(commit) = self.block_store.load_seen_commit(height) else {
-            return Vec::new();
-        };
-        let validators = self.chain_state.last_validators.validators();
-        commit
-            .signatures
-            .iter()
-            .enumerate()
-            .filter_map(|(index, sig)| {
-                if sig.is_absent() {
-                    return None;
-                }
-                let validator = validators.get(index)?;
-                if validator.address != sig.validator_address {
-                    return None;
-                }
-                let block_id = if sig.block_id_flag == BlockIdFlag::Nil {
-                    BlockId::default()
-                } else {
-                    commit.block_id.clone()
-                };
-                Some(Vote {
-                    vote_type: SignedMsgType::Precommit,
-                    height: commit.height,
-                    round: commit.round,
-                    block_id,
-                    timestamp: sig.timestamp,
-                    validator_address: sig.validator_address.clone(),
-                    validator_index: i32::try_from(index).unwrap_or(i32::MAX),
-                    signature: sig.signature.clone(),
-                })
-            })
-            .collect()
     }
 
     #[must_use]
@@ -591,6 +575,131 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .unwrap_or(0)
     }
 
+    /// `Votes.Prevotes(round).BitArray`.
+    #[must_use]
+    pub(crate) fn prevote_bits(&self, round: i32) -> Option<BitArray> {
+        self.votes.prevotes(round).and_then(VoteSet::bit_array)
+    }
+
+    /// `Votes.Precommits(round).BitArray`.
+    #[must_use]
+    pub(crate) fn precommit_bits(&self, round: i32) -> Option<BitArray> {
+        self.votes.precommits(round).and_then(VoteSet::bit_array)
+    }
+
+    #[must_use]
+    pub(crate) fn prevote_at(&self, round: i32, index: i32) -> Option<Vote> {
+        self.votes
+            .prevotes(round)
+            .and_then(|votes| votes.get_by_index(index).cloned())
+    }
+
+    #[must_use]
+    pub(crate) fn precommit_at(&self, round: i32, index: i32) -> Option<Vote> {
+        self.votes
+            .precommits(round)
+            .and_then(|votes| votes.get_by_index(index).cloned())
+    }
+
+    #[must_use]
+    pub(crate) fn prevote_maj23(&self, round: i32) -> Option<BlockId> {
+        self.votes
+            .prevotes(round)
+            .and_then(VoteSet::two_thirds_majority)
+    }
+
+    #[must_use]
+    pub(crate) fn precommit_maj23(&self, round: i32) -> Option<BlockId> {
+        self.votes
+            .precommits(round)
+            .and_then(VoteSet::two_thirds_majority)
+    }
+
+    #[must_use]
+    pub(crate) fn prevote_bits_by_block_id(
+        &self,
+        round: i32,
+        block_id: &BlockId,
+    ) -> Option<BitArray> {
+        self.votes
+            .prevotes(round)
+            .and_then(|votes| votes.bit_array_by_block_id(block_id))
+    }
+
+    #[must_use]
+    pub(crate) fn precommit_bits_by_block_id(
+        &self,
+        round: i32,
+        block_id: &BlockId,
+    ) -> Option<BitArray> {
+        self.votes
+            .precommits(round)
+            .and_then(|votes| votes.bit_array_by_block_id(block_id))
+    }
+
+    /// `HeightVoteSet.SetPeerMaj23`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the height-vote-set error. A round that does not exist yet is `Ok`.
+    pub(crate) fn set_peer_maj23(
+        &mut self,
+        round: i32,
+        vote_type: SignedMsgType,
+        peer_id: &str,
+        block_id: &BlockId,
+    ) -> Result<(), eld_tendermint_types::Error> {
+        self.votes
+            .set_peer_maj23(round, vote_type, peer_id, block_id)
+    }
+
+    /// Round of `LastCommit`, or -1 when this height has none.
+    #[must_use]
+    pub(crate) fn last_commit_round(&self) -> i32 {
+        self.last_commit.as_ref().map(VoteSet::round).unwrap_or(-1)
+    }
+
+    /// `rs.LastCommit` as a bit array, height, round, and whether it is a commit.
+    #[must_use]
+    pub(crate) fn last_commit_source(&self) -> Option<CommitSource> {
+        let votes = self.last_commit.as_ref()?;
+        Some(CommitSource {
+            height: votes.height(),
+            round: votes.round(),
+            bits: votes.bit_array()?,
+            is_commit: votes.is_commit(),
+            size: i64::try_from(votes.validator_size()).unwrap_or(0),
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn last_commit_vote(&self, index: i32) -> Option<Vote> {
+        self.last_commit
+            .as_ref()
+            .and_then(|votes| votes.get_by_index(index).cloned())
+    }
+
+    /// `blockStore.Base`.
+    #[must_use]
+    pub(crate) fn store_base(&self) -> i64 {
+        self.block_store.base()
+    }
+
+    /// `LoadBlockCommit`. Precommits for `height`, stored by the next block.
+    #[must_use]
+    pub(crate) fn block_commit(&self, height: i64) -> Option<Commit> {
+        self.block_store.load_block_commit(height)
+    }
+
+    /// `PruneBlocks` on this node's store.
+    ///
+    /// # Errors
+    ///
+    /// Returns the block-store error when `height` is outside `base..=tip`.
+    pub fn prune_blocks(&self, height: i64) -> Result<u64, eld_tendermint_store::Error> {
+        self.block_store.prune_blocks(height)
+    }
+
     #[must_use]
     pub fn proposal_hash(&self) -> Option<Vec<u8>> {
         self.proposal
@@ -626,6 +735,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     #[must_use]
     pub(crate) fn proposal_parts_bits(&self) -> Option<BitArray> {
         self.proposal_parts.as_ref().and_then(PartSet::bit_array)
+    }
+
+    /// Prevote waiting to be delivered, if this validator just signed one.
+    #[must_use]
+    pub fn queued_prevote(&self) -> Option<Vote> {
+        self.outbox.iter().rev().find_map(|msg| match msg {
+            Msg::Vote(vote) if vote.vote_type == SignedMsgType::Prevote => Some(vote.clone()),
+            _ => None,
+        })
     }
 
     /// Proposal waiting to be delivered, if this validator just signed one.
@@ -697,30 +815,45 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         }
     }
 
-    pub fn on_part(&mut self, part: Part) {
+    /// `false` when the part was stored and the set's byte size exceeds `Block.MaxBytes`.
+    /// The block is not decoded. Any other outcome is `true`.
+    pub fn on_part(&mut self, part: Part) -> bool {
         let before = self.height;
-        if !self.add_proposal_part(part) {
-            return;
+        match self.add_proposal_part(part) {
+            PartAdd::Complete => {
+                self.note_complete_proposal();
+                self.advance_after_commit(before);
+                true
+            }
+            PartAdd::Oversized => false,
+            PartAdd::Pending => true,
         }
-        self.note_complete_proposal();
-        self.advance_after_commit(before);
     }
 
-    /// `true` when the part set is complete. A part that arrives before the commit
-    /// header is kept and retried when that header is installed. A bad proof
-    /// against the commit header is dropped.
-    fn add_proposal_part(&mut self, part: Part) -> bool {
+    /// A part that arrives before the commit header is kept and retried when that
+    /// header is installed. A bad proof against the commit header is dropped.
+    /// An oversized set keeps the part and does not count as complete.
+    fn add_proposal_part(&mut self, part: Part) -> PartAdd {
         let Some(parts) = self.proposal_parts.as_mut() else {
             self.buffer_part(part);
-            return false;
+            return PartAdd::Pending;
         };
         match parts.add_part(part.clone()) {
-            Ok(_) => parts.is_complete(),
+            Ok(_) => {
+                let max_bytes = self.chain_state.consensus_params.block.max_bytes;
+                if parts.byte_size() > max_bytes {
+                    PartAdd::Oversized
+                } else if parts.is_complete() {
+                    PartAdd::Complete
+                } else {
+                    PartAdd::Pending
+                }
+            }
             Err(_) => {
                 if self.step != Step::Commit {
                     self.buffer_part(part);
                 }
-                false
+                PartAdd::Pending
             }
         }
     }
@@ -1010,13 +1143,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             part_set_header: parts.header(),
         };
         let proposal_hash = block_id.hash.clone();
-        let mut proposal = Proposal::new(
-            height,
-            round,
-            pol_round,
-            block_id,
-            self.chain_state.last_block_time,
-        );
+        let mut proposal = Proposal::new(height, round, pol_round, block_id, Time::now());
         if let Err(err) = self
             .pv
             .sign_proposal(self.chain_state.chain_id.as_str(), &mut proposal)
@@ -1059,12 +1186,6 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     fn create_proposal_block(&mut self, height: i64) -> Option<(Block, PartSet)> {
         let max_bytes = self.chain_state.consensus_params.block.max_bytes;
         let max_gas = self.chain_state.consensus_params.block.max_gas;
-        let txs = self
-            .mempool
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .reap_max_bytes_max_gas(max_bytes, max_gas);
-        self.reap_count += 1;
         let commit = if height == self.chain_state.initial_height {
             Some(Commit {
                 height: 0,
@@ -1088,11 +1209,36 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         };
         let evidence = match &self.evidence {
             Some(pool) => {
-                let max_bytes = self.chain_state.consensus_params.evidence.max_bytes;
-                EvidenceList::new(pool.pending(max_bytes))
+                let max_evidence = self.chain_state.consensus_params.evidence.max_bytes;
+                EvidenceList::new(pool.pending(max_evidence))
             }
             None => EvidenceList::new(Vec::new()),
         };
+        let evidence_bytes = evidence.byte_size();
+        let Some(max_data) = max_data_bytes(
+            max_bytes,
+            evidence_bytes,
+            self.validators.validators().len(),
+        ) else {
+            let max_bytes = max_bytes.to_string();
+            let evidence_bytes = evidence_bytes.to_string();
+            log_line(
+                Level::Error,
+                "consensus",
+                "propose step; negative MaxDataBytes",
+                &[
+                    ("max_bytes", max_bytes.as_str()),
+                    ("evidence_bytes", evidence_bytes.as_str()),
+                ],
+            );
+            return None;
+        };
+        let txs = self
+            .mempool
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .reap_max_bytes_max_gas(max_data, max_gas);
+        self.reap_count += 1;
         let mut block = Block::make_block(height, txs, Some(commit), evidence);
         self.fill_header(&mut block);
         let parts = block.make_part_set(BLOCK_PART_SIZE_BYTES).ok()?;
@@ -1101,7 +1247,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
 
     fn fill_header(&self, block: &mut Block) {
         block.header.chain_id = self.chain_state.chain_id.clone();
-        block.header.time = self.chain_state.last_block_time;
+        block.header.time = self.header_time(block);
         block.header.last_block_id = self.chain_state.last_block_id.clone();
         if let Ok(hash) = self.validators.hash() {
             block.header.validators_hash = hash.as_bytes().to_vec();
@@ -1116,6 +1262,35 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         block.header.app_hash = self.chain_state.app_hash.clone();
         block.header.last_results_hash = self.chain_state.last_results_hash.clone();
         block.header.proposer_address = self.address();
+    }
+
+    /// Genesis time at the initial height, otherwise `MedianTime` of `LastCommit`.
+    fn header_time(&self, block: &Block) -> Time {
+        if block.header.height == self.chain_state.initial_height {
+            return self.chain_state.last_block_time;
+        }
+        let Some(commit) = &block.last_commit else {
+            return self.chain_state.last_block_time;
+        };
+        eld_tendermint_types::median_time(commit, &self.chain_state.last_validators)
+    }
+
+    /// `State.voteTime`. Locked block, else proposal block, else now, then the later of that and now.
+    fn vote_time(&self) -> Time {
+        let now = Time::now();
+        let iota = self.chain_state.consensus_params.block.time_iota_ms;
+        let min_vote_time = if let Some(block) = &self.locked_block {
+            block.header.time.add_millis(iota)
+        } else if let Some(block) = &self.proposal_block {
+            block.header.time.add_millis(iota)
+        } else {
+            now
+        };
+        if now > min_vote_time {
+            now
+        } else {
+            min_vote_time
+        }
     }
 
     fn enter_prevote(&mut self, height: i64, round: i32) {
@@ -1579,7 +1754,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             height: self.height,
             round: self.round,
             block_id,
-            timestamp: self.chain_state.last_block_time,
+            timestamp: self.vote_time(),
             validator_address: address,
             validator_index: i32::try_from(index).unwrap_or(i32::MAX),
             signature: Vec::new(),

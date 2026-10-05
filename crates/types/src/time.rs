@@ -47,6 +47,29 @@ impl Time {
         self.nanos
     }
 
+    /// Unix time in nanoseconds, for ordering and `WeightedMedian`.
+    #[must_use]
+    pub fn unix_nanos(self) -> i128 {
+        i128::from(self.seconds) * 1_000_000_000 + i128::from(self.nanos)
+    }
+
+    /// `time.Time.Add` of `millis` milliseconds. The result is normalized to `0..1e9` nanos.
+    #[must_use]
+    pub fn add_millis(self, millis: i64) -> Self {
+        let extra = i128::from(millis).saturating_mul(1_000_000);
+        let total = self.unix_nanos().saturating_add(extra);
+        let seconds = total.div_euclid(1_000_000_000);
+        let nanos = total.rem_euclid(1_000_000_000);
+        Self {
+            seconds: i64::try_from(seconds).unwrap_or(if seconds < 0 {
+                i64::MIN
+            } else {
+                i64::MAX
+            }),
+            nanos: i32::try_from(nanos).unwrap_or(0),
+        }
+    }
+
     /// Current UTC time, matching `types/time.Now` aside from the exact instant.
     #[must_use]
     pub fn now() -> Self {
@@ -179,6 +202,18 @@ impl Time {
 impl Default for Time {
     fn default() -> Self {
         Self::GO_ZERO
+    }
+}
+
+impl PartialOrd for Time {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Time {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.unix_nanos().cmp(&other.unix_nanos())
     }
 }
 

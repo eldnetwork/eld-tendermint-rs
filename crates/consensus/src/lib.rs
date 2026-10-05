@@ -4,8 +4,8 @@
 //! [`Reactor`] gossips `tendermint.consensus.Message` on the p2p switch.
 //! The WAL is a CRC32C-framed head file that rotates to `wal.NNN` at 10 MiB.
 //! A proposer with an evidence pool puts pending duplicate votes in the block.
-//! A peer one or two blocks behind catches up on the consensus reactor. Fast sync
-//! and state sync are not in this crate.
+//! A peer still inside the block store, and behind this node's consensus height,
+//! catches up on the consensus reactor. Fast sync and state sync are not in this crate.
 
 mod error;
 mod group;

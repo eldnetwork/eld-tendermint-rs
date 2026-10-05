@@ -1,14 +1,14 @@
 //! `types.VoteSet`. Collects prevotes or precommits for one height and round.
 //!
 //! A block id, including a nil block id, has a majority when its voting power is greater
-//! than `total * 2 / 3`. Conflicting votes from one validator are not added. There is no
-//! peer-maj23 tracking.
+//! than `total * 2 / 3`. Conflicting votes from one validator are not added to the
+//! canonical list. `set_peer_maj23` keeps a conflicting vote on the block a peer claimed.
 
 use std::collections::HashMap;
 
 use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 
-use crate::{BlockId, Commit, CommitSig, Error, ValidatorSet, Vote};
+use crate::{BitArray, BlockId, Commit, CommitSig, Error, ValidatorSet, Vote};
 
 /// Votes for one height, round, and signed-message type.
 #[derive(Clone, Debug)]
@@ -23,11 +23,14 @@ pub struct VoteSet {
     sum: i64,
     maj23: Option<BlockId>,
     by_block: HashMap<Vec<u8>, BlockVotes>,
+    peer_maj23s: HashMap<String, BlockId>,
 }
 
 #[derive(Clone, Debug)]
 struct BlockVotes {
     sum: i64,
+    /// A peer claimed +2/3 for this block, so conflicting votes may be kept here.
+    peer_maj23: bool,
     votes: Vec<Option<Vote>>,
 }
 
@@ -51,6 +54,7 @@ impl VoteSet {
             sum: 0,
             maj23: None,
             by_block: HashMap::new(),
+            peer_maj23s: HashMap::new(),
         }
     }
 
@@ -73,6 +77,28 @@ impl VoteSet {
     #[must_use]
     pub fn two_thirds_majority(&self) -> Option<BlockId> {
         self.maj23.clone()
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> i64 {
+        self.height
+    }
+
+    #[must_use]
+    pub const fn round(&self) -> i32 {
+        self.round
+    }
+
+    /// `VoteSet.Size`. One slot per validator.
+    #[must_use]
+    pub fn validator_size(&self) -> usize {
+        self.votes.len()
+    }
+
+    /// `VoteSet.IsCommit`. Precommits that have reached a +2/3 block id.
+    #[must_use]
+    pub fn is_commit(&self) -> bool {
+        self.vote_type == SignedMsgType::Precommit && self.maj23.is_some()
     }
 
     /// Number of validator slots that have a canonical vote.
@@ -112,6 +138,13 @@ impl VoteSet {
                 }
                 return Err(Error::DuplicateVoteSignature);
             }
+            let block_key = vote.block_id.key();
+            if let Some(slot) = self.by_block.get_mut(&block_key) {
+                if slot.peer_maj23 && slot.votes[index].is_none() {
+                    slot.sum += validator.voting_power;
+                    slot.votes[index] = Some(vote.clone());
+                }
+            }
             return Err(Error::ConflictingVote);
         }
         let power = validator.voting_power;
@@ -126,6 +159,7 @@ impl VoteSet {
                 .entry(block_key)
                 .or_insert_with(|| BlockVotes {
                     sum: 0,
+                    peer_maj23: false,
                     votes: vec![None; n],
                 });
             let orig = slot.sum;
@@ -146,6 +180,68 @@ impl VoteSet {
             }
         }
         Ok(true)
+    }
+
+    /// `VoteSet.BitArray`. Which validator indexes have a canonical vote.
+    #[must_use]
+    pub fn bit_array(&self) -> Option<BitArray> {
+        let mut bits = BitArray::new(i64::try_from(self.votes.len()).unwrap_or(0))?;
+        for (index, vote) in self.votes.iter().enumerate() {
+            if vote.is_some() {
+                bits.set_index(i64::try_from(index).unwrap_or(0), true);
+            }
+        }
+        Some(bits)
+    }
+
+    /// `VoteSet.GetByIndex`.
+    #[must_use]
+    pub fn get_by_index(&self, index: i32) -> Option<&Vote> {
+        self.votes.get(usize::try_from(index).ok()?)?.as_ref()
+    }
+
+    /// `VoteSet.BitArrayByBlockID`. `None` when this set has no votes for `block_id`.
+    #[must_use]
+    pub fn bit_array_by_block_id(&self, block_id: &BlockId) -> Option<BitArray> {
+        let votes = self.by_block.get(&block_id.key())?;
+        let mut bits = BitArray::new(i64::try_from(votes.votes.len()).unwrap_or(0))?;
+        for (index, vote) in votes.votes.iter().enumerate() {
+            if vote.is_some() {
+                bits.set_index(i64::try_from(index).unwrap_or(0), true);
+            }
+        }
+        Some(bits)
+    }
+
+    /// `VoteSet.SetPeerMaj23`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingPeerMaj23`] when `peer_id` already claimed another block id.
+    pub fn set_peer_maj23(&mut self, peer_id: &str, block_id: &BlockId) -> Result<(), Error> {
+        if let Some(existing) = self.peer_maj23s.get(peer_id) {
+            if existing == block_id {
+                return Ok(());
+            }
+            return Err(Error::ConflictingPeerMaj23);
+        }
+        self.peer_maj23s
+            .insert(peer_id.to_owned(), block_id.clone());
+        let key = block_id.key();
+        if let Some(votes) = self.by_block.get_mut(&key) {
+            votes.peer_maj23 = true;
+            return Ok(());
+        }
+        let n = self.votes.len();
+        self.by_block.insert(
+            key,
+            BlockVotes {
+                sum: 0,
+                peer_maj23: true,
+                votes: vec![None; n],
+            },
+        );
+        Ok(())
     }
 
     /// `MakeCommit`. Only precommits, and only once a block id has +2/3.

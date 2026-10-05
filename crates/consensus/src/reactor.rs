@@ -1,10 +1,10 @@
 //! Consensus gossip on the p2p switch.
 //!
 //! Four channels carry `tendermint.consensus.Message`. Proposals, block parts, and
-//! votes are delivered into the local [`Node`]s. A peer one or two consensus
-//! heights behind is sent that block's parts on `0x21` and its seen-commit
-//! precommits on `0x22`. `NewValidBlock` updates the peer's part-set header.
-//! There is no `VoteSetMaj23` reply.
+//! votes are delivered into the local [`Node`]s. A peer whose height is still in
+//! the block store, and behind this node's consensus height, is sent that block's
+//! parts on `0x21`. Commit votes go out on `0x22`, one per tick. `VoteSetMaj23`
+//! on `0x20` is answered with `VoteSetBits` on `0x23`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,15 +14,15 @@ use eld_tendermint_mempool::App as MempoolApp;
 use eld_tendermint_p2p::{ChannelDescriptor, Switch};
 use eld_tendermint_proto::consensus::{
     BlockPart, HasVote, Message, NewRoundStep, NewValidBlock, Proposal as ProtoProposal,
-    Vote as ProtoVote, VoteSetBits, message,
+    ProposalPol, Vote as ProtoVote, VoteSetBits, VoteSetMaj23, message,
 };
-use eld_tendermint_proto::types::SignedMsgType;
+use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_state::App as ExecApp;
 use eld_tendermint_store::{Db, MemDb};
-use eld_tendermint_types::{BitArray, Part, PartSetHeader, Proposal, Vote};
+use eld_tendermint_types::{BitArray, BlockId, Commit, Part, PartSetHeader, Proposal, Vote};
 use prost::Message as ProstMessage;
 
-use crate::round::{Msg, Node, OutboundValidBlock, Scheduled, Step};
+use crate::round::{CommitSource, Msg, Node, OutboundValidBlock, Scheduled, Step};
 
 /// `StateChannel`.
 pub const STATE_CHANNEL: u8 = 0x20;
@@ -65,14 +65,19 @@ struct PeerState {
     parts: Option<BitArray>,
     prevotes: Option<BitArray>,
     precommits: Option<BitArray>,
-    catchup_votes: Option<BitArray>,
+    proposal_pol_round: i32,
+    proposal_pol: Option<BitArray>,
+    last_commit_round: i32,
+    last_commit: Option<BitArray>,
+    catchup_commit_round: i32,
+    catchup_commit: Option<BitArray>,
 }
 
 impl PeerState {
     fn new() -> Self {
         Self {
             height: 0,
-            round: 0,
+            round: -1,
             step: 0,
             proposal_hash: None,
             has_proposal: false,
@@ -80,39 +85,66 @@ impl PeerState {
             parts: None,
             prevotes: None,
             precommits: None,
-            catchup_votes: None,
+            proposal_pol_round: -1,
+            proposal_pol: None,
+            last_commit_round: -1,
+            last_commit: None,
+            catchup_commit_round: -1,
+            catchup_commit: None,
         }
     }
 
+    /// `ApplyNewRoundStepMessage`.
     fn apply_round_step(&mut self, msg: &NewRoundStep) {
         if (msg.height, msg.round, msg.step) <= (self.height, self.round, self.step) {
             return;
         }
-        let reset = msg.height != self.height || msg.round != self.round;
-        let height_changed = msg.height != self.height;
+        let ps_height = self.height;
+        let ps_round = self.round;
+        let ps_catchup_commit_round = self.catchup_commit_round;
+        let ps_catchup_commit = self.catchup_commit.clone();
+        let old_precommits = self.precommits.clone();
+
         self.height = msg.height;
         self.round = msg.round;
         self.step = msg.step;
-        if height_changed {
-            self.catchup_votes = None;
-        }
-        if reset {
+        if ps_height != msg.height || ps_round != msg.round {
             self.proposal_hash = None;
             self.has_proposal = false;
             self.proposal_part_set_header = None;
             self.parts = None;
+            self.proposal_pol_round = -1;
+            self.proposal_pol = None;
             self.prevotes = None;
             self.precommits = None;
+        }
+        if ps_height == msg.height && ps_round != msg.round && msg.round == ps_catchup_commit_round
+        {
+            self.precommits = ps_catchup_commit;
+        }
+        if ps_height != msg.height {
+            if ps_height + 1 == msg.height && ps_round == msg.last_commit_round {
+                self.last_commit_round = msg.last_commit_round;
+                self.last_commit = old_precommits;
+            } else {
+                self.last_commit_round = msg.last_commit_round;
+                self.last_commit = None;
+            }
+            self.catchup_commit_round = -1;
+            self.catchup_commit = None;
         }
     }
 
     /// `SetHasProposal`. A part set already stored for this height and round stays.
+    /// The POL round is taken from the proposal and the POL bits are cleared.
     fn note_proposal(&mut self, proposal: &Proposal) {
         if self.height != proposal.height || self.round != proposal.round || self.has_proposal {
             return;
         }
         self.has_proposal = true;
         self.proposal_hash = Some(proposal.block_id.hash.clone());
+        self.proposal_pol_round = proposal.pol_round;
+        self.proposal_pol = None;
         if self.parts.is_some() {
             return;
         }
@@ -127,12 +159,19 @@ struct TimeoutWatch {
     started: Instant,
 }
 
+struct Pick {
+    height: i64,
+    round: i32,
+    kind: SignedMsgType,
+    is_commit: bool,
+    size: i64,
+}
+
 struct Inner<E: ExecApp, C: MempoolApp, D: Db> {
     nodes: Vec<Node<E, C, D>>,
     peers: HashMap<String, PeerState>,
     announced: Vec<Option<(i64, i32, u32)>>,
     proposals: Vec<Proposal>,
-    votes: Vec<Vote>,
     timeouts: Vec<Option<TimeoutWatch>>,
     validator_count: i64,
 }
@@ -172,7 +211,6 @@ where
                 peers: HashMap::new(),
                 announced: vec![None; n],
                 proposals: Vec::new(),
-                votes: Vec::new(),
                 timeouts: vec![None; n],
                 validator_count,
             })),
@@ -201,11 +239,22 @@ where
 
     /// Decode one reactor message and feed the local validators.
     ///
-    /// Returns `false` when `bytes` is not a `consensus.Message`. The caller stops
-    /// that peer. A bad signature or a bad part proof returns `true`.
-    pub fn handle(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
+    /// Returns `false` when `bytes` is not a `consensus.Message`, when a part set
+    /// grows past `Block.MaxBytes`, or when `VoteSetMaj23` conflicts for this peer.
+    /// The caller stops that peer. A bad signature or a bad part proof returns `true`.
+    /// `switch` carries the `VoteSetBits` reply.
+    pub fn handle(&self, switch: &Switch, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let mut inner = lock(&self.inner);
-        inner.handle(peer_id, ch_id, bytes)
+        inner.handle(switch, peer_id, ch_id, bytes)
+    }
+
+    /// POL bits stored for `peer_id` after a `ProposalPOL` at that peer's POL round.
+    #[must_use]
+    pub fn proposal_pol_bits(&self, peer_id: &str) -> Option<BitArray> {
+        lock(&self.inner)
+            .peers
+            .get(peer_id)
+            .and_then(|peer| peer.proposal_pol.clone())
     }
 
     /// Header hash of the block saved at `height` on the first local node that has it.
@@ -330,9 +379,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
     fn remember(&mut self, msg: Msg) {
         match msg {
             Msg::Proposal(proposal) => self.remember_proposal(proposal),
-            // Parts are read from `Node::proposal_parts` on the next poll.
-            Msg::Part(_) => {}
-            Msg::Vote(vote) => self.remember_vote(vote),
+            // Parts and votes are read from each node's round state on the next poll.
+            Msg::Part(_) | Msg::Vote(_) => {}
         }
     }
 
@@ -343,18 +391,6 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             .any(|have| have.signature == proposal.signature)
         {
             self.proposals.push(proposal);
-        }
-    }
-
-    fn remember_vote(&mut self, vote: Vote) {
-        let seen = self.votes.iter().any(|have| {
-            have.height == vote.height
-                && have.round == vote.round
-                && have.vote_type == vote.vote_type
-                && have.validator_index == vote.validator_index
-        });
-        if !seen {
-            self.votes.push(vote);
         }
     }
 
@@ -393,13 +429,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             self.send_proposals(switch, &peer_id);
             self.send_parts(switch, &peer_id);
             self.send_votes(switch, &peer_id);
+            self.send_maj23(switch, &peer_id);
         }
     }
 
-    /// Parts and seen-commit votes for the block a peer is still deciding.
+    /// One missing part of a block the peer is still behind on.
     ///
-    /// Only a gap of one or two consensus heights is filled here. A wider gap is
-    /// left to fast sync. Nothing is sent for a height the peer has already passed.
+    /// The block store's base is above 0, the peer height is above 0 and below our
+    /// consensus height, and that height is still at or above the store base.
+    /// Commit votes are sent from [`Self::send_votes`].
     fn send_catchup(&mut self, switch: &Switch, peer_id: &str) {
         let (peer_height, peer_round, our_height) = {
             let Some(peer) = self.peers.get(peer_id) else {
@@ -408,15 +446,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             let our_height = self.nodes.iter().map(Node::height).max().unwrap_or(0);
             (peer.height, peer.round, our_height)
         };
-        if peer_height <= 0 {
-            return;
-        }
-        let gap = our_height.saturating_sub(peer_height);
-        if gap != 1 && gap != 2 {
+        if peer_height <= 0 || peer_height >= our_height {
             return;
         }
         let Some(source) = self.nodes.iter().position(|node| {
-            node.store_height() >= peer_height && node.block_part_count(peer_height).is_some()
+            let base = node.store_base();
+            base > 0
+                && peer_height >= base
+                && node.store_height() >= peer_height
+                && node.block_part_count(peer_height).is_some()
         }) else {
             return;
         };
@@ -426,49 +464,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         if total == 0 {
             return;
         }
-        let votes = self.nodes[source].seen_commit_votes(peer_height);
-        if votes.is_empty() {
-            return;
-        }
-        let vote_bits = votes
-            .iter()
-            .map(|vote| i64::from(vote.validator_index) + 1)
-            .max()
-            .unwrap_or(1);
         let Some(block_header) = self.nodes[source].block_part_set_header(peer_height) else {
             return;
         };
-        {
-            let Some(peer) = self.peers.get_mut(peer_id) else {
-                return;
-            };
-            if peer
-                .catchup_votes
-                .as_ref()
-                .is_none_or(|bits| bits.size() < vote_bits)
-            {
-                peer.catchup_votes = BitArray::new(vote_bits);
-            }
-        }
-        let pending_votes: Vec<Vote> = {
-            let Some(peer) = self.peers.get(peer_id) else {
-                return;
-            };
-            votes
-                .into_iter()
-                .filter(|vote| {
-                    peer.catchup_votes
-                        .as_ref()
-                        .is_none_or(|bits| !bits.get_index(i64::from(vote.validator_index)))
-                })
-                .collect()
-        };
-        for vote in pending_votes {
-            let index = vote.validator_index;
-            if send_vote(switch, peer_id, &vote) {
-                self.mark_catchup_vote(peer_id, index);
-            }
-        }
         // `ProposalBlockParts == nil`: `InitProposalBlockParts`, then the next pass
         // sends one part. A different header is `gossipDataForCatchup`'s mismatch sleep.
         let uninitialized = self
@@ -489,21 +487,20 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         if !matches {
             return;
         }
-        let sent = self.peers.get(peer_id).and_then(|peer| peer.parts.clone());
-        for index in 0..total {
-            if sent
-                .as_ref()
-                .is_some_and(|bits| bits.get_index(i64::from(index)))
-            {
-                continue;
-            }
-            let Some(part) = self.nodes[source].block_part(peer_height, index) else {
-                continue;
-            };
-            if send_block_part(switch, peer_id, peer_height, peer_round, &part) {
-                self.set_has_proposal_block_part(peer_id, peer_height, peer_round, index);
-            }
+        let Some(peer_bits) = self.peers.get(peer_id).and_then(|peer| peer.parts.clone()) else {
             return;
+        };
+        let Some(index) = peer_bits.not().pick_random() else {
+            return;
+        };
+        let Some(index) = u32::try_from(index).ok() else {
+            return;
+        };
+        let Some(part) = self.nodes[source].block_part(peer_height, index) else {
+            return;
+        };
+        if send_block_part(switch, peer_id, peer_height, peer_round, &part) {
+            self.set_has_proposal_block_part(peer_id, peer_height, peer_round, index);
         }
     }
 
@@ -516,15 +513,6 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             return;
         }
         if let Some(bits) = peer.parts.as_mut() {
-            bits.set_index(i64::from(index), true);
-        }
-    }
-
-    fn mark_catchup_vote(&mut self, peer_id: &str, index: i32) {
-        let Some(peer) = self.peers.get_mut(peer_id) else {
-            return;
-        };
-        if let Some(bits) = peer.catchup_votes.as_mut() {
             bits.set_index(i64::from(index), true);
         }
     }
@@ -551,6 +539,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             if switch.try_send(peer_id, DATA_CHANNEL, &bytes) {
                 if let Some(peer) = self.peers.get_mut(peer_id) {
                     peer.note_proposal(&proposal);
+                }
+                if proposal.pol_round >= 0 {
+                    if let Some(bits) = self.prevote_bits(proposal.pol_round) {
+                        let _ = switch.try_send(
+                            peer_id,
+                            DATA_CHANNEL,
+                            &proposal_pol_message(proposal.height, proposal.pol_round, &bits),
+                        );
+                    }
                 }
             }
         }
@@ -581,10 +578,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                 return None;
             }
             let bits = node.proposal_parts_bits()?;
-            let index = (0..bits.size()).find(|&index| {
-                bits.get_index(index)
-                    && peer_bits.as_ref().is_none_or(|have| !have.get_index(index))
-            })?;
+            let missing = BitArray::sub(Some(&bits), peer_bits.as_ref())?;
+            let index = missing.pick_random()?;
             let index = u32::try_from(index).ok()?;
             let part = node.proposal_part(index)?;
             Some((node.round(), part))
@@ -596,29 +591,61 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         }
     }
 
+    /// One vote, the first success in `gossipVotesRoutine` / `gossipVotesForHeight` order.
     fn send_votes(&mut self, switch: &Switch, peer_id: &str) {
-        let Some(peer) = self.peers.get(peer_id) else {
-            return;
+        let (peer_height, peer_round, peer_step, pol_round) = {
+            let Some(peer) = self.peers.get(peer_id) else {
+                return;
+            };
+            (peer.height, peer.round, peer.step, peer.proposal_pol_round)
         };
-        let height = peer.height;
-        let round = peer.round;
-        let pending: Vec<Vote> = self
-            .votes
-            .iter()
-            .filter(|vote| vote.height == height && vote.round == round)
-            .filter(|vote| !vote_bit(peer, vote))
-            .cloned()
-            .collect();
-        for vote in pending {
-            let bytes = Message {
-                sum: Some(message::Sum::Vote(ProtoVote {
-                    vote: Some(vote.to_proto()),
-                })),
+        let (our_height, our_round) = self.consensus_hrs();
+        if peer_height == our_height {
+            if peer_step == Step::NewHeight.as_wal() && self.send_last_commit(switch, peer_id) {
+                return;
             }
-            .encode_to_vec();
-            if switch.try_send(peer_id, VOTE_CHANNEL, &bytes) {
-                self.mark_vote(peer_id, &vote);
+            if peer_step <= Step::Propose.as_wal()
+                && peer_round != -1
+                && peer_round <= our_round
+                && pol_round != -1
+                && self.send_round_votes(switch, peer_id, pol_round, SignedMsgType::Prevote)
+            {
+                return;
             }
+            if peer_step <= Step::PrevoteWait.as_wal()
+                && peer_round != -1
+                && peer_round <= our_round
+                && self.send_round_votes(switch, peer_id, peer_round, SignedMsgType::Prevote)
+            {
+                return;
+            }
+            if peer_step <= Step::PrecommitWait.as_wal()
+                && peer_round != -1
+                && peer_round <= our_round
+                && self.send_round_votes(switch, peer_id, peer_round, SignedMsgType::Precommit)
+            {
+                return;
+            }
+            if peer_round != -1
+                && peer_round <= our_round
+                && self.send_round_votes(switch, peer_id, peer_round, SignedMsgType::Prevote)
+            {
+                return;
+            }
+            if pol_round != -1
+                && self.send_round_votes(switch, peer_id, pol_round, SignedMsgType::Prevote)
+            {
+                return;
+            }
+        }
+        if peer_height != 0
+            && our_height == peer_height + 1
+            && self.send_last_commit(switch, peer_id)
+        {
+            return;
+        }
+        if peer_height != 0 && our_height >= peer_height + 2 {
+            let _ = self.send_block_commit(switch, peer_id, peer_height);
         }
     }
 
@@ -658,16 +685,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         }
     }
 
-    fn mark_vote(&mut self, peer_id: &str, vote: &Vote) {
-        let Some(peer) = self.peers.get_mut(peer_id) else {
-            return;
-        };
-        if let Some(bits) = vote_slot(peer, vote.vote_type, self.validator_count) {
-            bits.set_index(i64::from(vote.validator_index), true);
-        }
-    }
-
-    fn handle(&mut self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
+    fn handle(&mut self, switch: &Switch, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let Ok(message) = Message::decode(bytes) else {
             return false;
         };
@@ -687,7 +705,11 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
             (STATE_CHANNEL, message::Sum::NewValidBlock(msg)) => {
                 self.apply_new_valid_block(peer_id, &msg);
             }
-            (STATE_CHANNEL, message::Sum::VoteSetMaj23(_)) => {}
+            (STATE_CHANNEL, message::Sum::VoteSetMaj23(msg)) => {
+                if !self.apply_vote_set_maj23(switch, peer_id, &msg) {
+                    return false;
+                }
+            }
             (DATA_CHANNEL, message::Sum::Proposal(msg)) => {
                 if !self.apply_proposal(peer_id, msg) {
                     return false;
@@ -698,7 +720,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
                     return false;
                 }
             }
-            (DATA_CHANNEL, message::Sum::ProposalPol(_)) => {}
+            (DATA_CHANNEL, message::Sum::ProposalPol(msg)) => {
+                self.apply_proposal_pol(peer_id, &msg);
+            }
             (VOTE_CHANNEL, message::Sum::Vote(msg)) => {
                 if !self.apply_vote(peer_id, msg) {
                     return false;
@@ -740,12 +764,13 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         if matches_peer {
             self.mark_part(peer_id, part.index);
         }
+        let mut ok = true;
         for node in &mut self.nodes {
-            if node.height() == msg.height {
-                node.deliver(Msg::Part(part.clone()));
+            if node.height() == msg.height && !node.deliver(Msg::Part(part.clone())) {
+                ok = false;
             }
         }
-        true
+        ok
     }
 
     fn apply_vote(&mut self, peer_id: &str, msg: ProtoVote) -> bool {
@@ -755,8 +780,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         let Ok(vote) = Vote::try_from_proto(proto) else {
             return false;
         };
-        self.mark_vote(peer_id, &vote);
-        self.remember_vote(vote.clone());
+        self.note_incoming_vote(peer_id, &vote);
         for node in &mut self.nodes {
             node.deliver(Msg::Vote(vote.clone()));
         }
@@ -791,25 +815,381 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Inner<E, C, D> {
         let Some(peer) = self.peers.get_mut(peer_id) else {
             return;
         };
+        if peer.height != msg.height {
+            return;
+        }
         let Some(kind) = vote_type(msg.r#type) else {
             return;
         };
-        if let Some(bits) = vote_slot(peer, kind, self.validator_count) {
+        if let Some(bits) = vote_bits(peer, msg.height, msg.round, kind) {
             bits.set_index(i64::from(msg.index), true);
         }
     }
 
+    /// `ApplyVoteSetBitsMessage`.
     fn apply_vote_set_bits(&mut self, peer_id: &str, msg: &VoteSetBits) {
-        let Ok(Some(bits)) = BitArray::try_from_proto(msg.votes.as_ref()) else {
+        let Ok(Some(msg_bits)) = BitArray::try_from_proto(msg.votes.as_ref()) else {
+            return;
+        };
+        let Some(kind) = vote_type(msg.r#type) else {
+            return;
+        };
+        let our_votes = if self.nodes.iter().any(|node| node.height() == msg.height) {
+            self.bits_for_block(msg.round, kind, msg.block_id.as_ref())
+        } else {
+            None
+        };
+        let Some(peer) = self.peers.get_mut(peer_id) else {
+            return;
+        };
+        let Some(votes) = vote_bits(peer, msg.height, msg.round, kind) else {
+            return;
+        };
+        if let Some(ours) = our_votes.as_ref() {
+            let other = BitArray::sub(Some(votes), Some(ours));
+            let has = BitArray::or(other.as_ref(), Some(&msg_bits));
+            votes.update(has.as_ref());
+        } else {
+            votes.update(Some(&msg_bits));
+        }
+    }
+
+    /// `ApplyProposalPOLMessage`. Bits are replaced only when the height and POL round match.
+    fn apply_proposal_pol(&mut self, peer_id: &str, msg: &ProposalPol) {
+        let Ok(bits) = BitArray::try_from_proto(msg.proposal_pol.as_ref()) else {
             return;
         };
         let Some(peer) = self.peers.get_mut(peer_id) else {
             return;
         };
-        match vote_type(msg.r#type) {
-            Some(SignedMsgType::Prevote) => peer.prevotes = Some(bits),
-            Some(SignedMsgType::Precommit) => peer.precommits = Some(bits),
-            _ => {}
+        if peer.height != msg.height || peer.proposal_pol_round != msg.proposal_pol_round {
+            return;
+        }
+        peer.proposal_pol = bits;
+    }
+
+    /// `VoteSetMaj23` receive. A conflicting claim from this peer returns `false`.
+    fn apply_vote_set_maj23(&mut self, switch: &Switch, peer_id: &str, msg: &VoteSetMaj23) -> bool {
+        let Some(kind) = vote_type(msg.r#type) else {
+            return false;
+        };
+        let Some(block_proto) = msg.block_id.as_ref() else {
+            return false;
+        };
+        let Ok(block_id) = BlockId::try_from_proto(block_proto) else {
+            return false;
+        };
+        if !self.nodes.iter().any(|node| node.height() == msg.height) {
+            return true;
+        }
+        let mut conflict = false;
+        for node in &mut self.nodes {
+            if node.height() != msg.height {
+                continue;
+            }
+            if node
+                .set_peer_maj23(msg.round, kind, peer_id, &block_id)
+                .is_err()
+            {
+                conflict = true;
+            }
+        }
+        if conflict {
+            return false;
+        }
+        let bits = self.bits_for_block(msg.round, kind, Some(block_proto));
+        let _ = switch.try_send(
+            peer_id,
+            VOTE_SET_BITS_CHANNEL,
+            &vote_set_bits_message(msg.height, msg.round, kind, &block_id, bits.as_ref()),
+        );
+        true
+    }
+
+    fn send_maj23(&mut self, switch: &Switch, peer_id: &str) {
+        let (peer_height, peer_round, pol_round, catchup_round) = {
+            let Some(peer) = self.peers.get(peer_id) else {
+                return;
+            };
+            (
+                peer.height,
+                peer.round,
+                peer.proposal_pol_round,
+                peer.catchup_commit_round,
+            )
+        };
+        let (our_height, _) = self.consensus_hrs();
+        if peer_height == our_height {
+            if let Some(block_id) = self.maj23(peer_round, SignedMsgType::Prevote) {
+                let _ = switch.try_send(
+                    peer_id,
+                    STATE_CHANNEL,
+                    &maj23_message(peer_height, peer_round, SignedMsgType::Prevote, &block_id),
+                );
+            }
+            if let Some(block_id) = self.maj23(peer_round, SignedMsgType::Precommit) {
+                let _ = switch.try_send(
+                    peer_id,
+                    STATE_CHANNEL,
+                    &maj23_message(peer_height, peer_round, SignedMsgType::Precommit, &block_id),
+                );
+            }
+            if pol_round >= 0 {
+                if let Some(block_id) = self.maj23(pol_round, SignedMsgType::Prevote) {
+                    let _ = switch.try_send(
+                        peer_id,
+                        STATE_CHANNEL,
+                        &maj23_message(peer_height, pol_round, SignedMsgType::Prevote, &block_id),
+                    );
+                }
+            }
+        }
+        if catchup_round != -1 && peer_height > 0 {
+            if let Some((round, block_id)) = self.block_commit_id(peer_height) {
+                let _ = switch.try_send(
+                    peer_id,
+                    STATE_CHANNEL,
+                    &maj23_message(peer_height, round, SignedMsgType::Precommit, &block_id),
+                );
+            }
+        }
+    }
+
+    fn consensus_hrs(&self) -> (i64, i32) {
+        let height = self.nodes.iter().map(Node::height).max().unwrap_or(0);
+        let round = self
+            .nodes
+            .iter()
+            .filter(|node| node.height() == height)
+            .map(Node::round)
+            .max()
+            .unwrap_or(0);
+        (height, round)
+    }
+
+    fn prevote_bits(&self, round: i32) -> Option<BitArray> {
+        or_bits(
+            self.nodes
+                .iter()
+                .filter_map(|node| node.prevote_bits(round)),
+        )
+    }
+
+    fn maj23(&self, round: i32, kind: SignedMsgType) -> Option<BlockId> {
+        self.nodes.iter().find_map(|node| match kind {
+            SignedMsgType::Prevote => node.prevote_maj23(round),
+            SignedMsgType::Precommit => node.precommit_maj23(round),
+            _ => None,
+        })
+    }
+
+    fn bits_for_block(
+        &self,
+        round: i32,
+        kind: SignedMsgType,
+        block_id: Option<&eld_tendermint_proto::types::BlockId>,
+    ) -> Option<BitArray> {
+        let block_id = BlockId::try_from_proto(block_id?).ok()?;
+        or_bits(self.nodes.iter().filter_map(|node| match kind {
+            SignedMsgType::Prevote => node.prevote_bits_by_block_id(round, &block_id),
+            SignedMsgType::Precommit => node.precommit_bits_by_block_id(round, &block_id),
+            _ => None,
+        }))
+    }
+
+    fn send_round_votes(
+        &mut self,
+        switch: &Switch,
+        peer_id: &str,
+        round: i32,
+        kind: SignedMsgType,
+    ) -> bool {
+        let (bits, size) = match kind {
+            SignedMsgType::Prevote => (
+                or_bits(
+                    self.nodes
+                        .iter()
+                        .filter_map(|node| node.prevote_bits(round)),
+                ),
+                self.validator_count,
+            ),
+            SignedMsgType::Precommit => (
+                or_bits(
+                    self.nodes
+                        .iter()
+                        .filter_map(|node| node.precommit_bits(round)),
+                ),
+                self.validator_count,
+            ),
+            _ => return false,
+        };
+        let Some(bits) = bits else {
+            return false;
+        };
+        let Some(height) = self.nodes.iter().find_map(|node| {
+            let present = match kind {
+                SignedMsgType::Prevote => node.prevote_bits(round).is_some(),
+                SignedMsgType::Precommit => node.precommit_bits(round).is_some(),
+                _ => false,
+            };
+            present.then(|| node.height())
+        }) else {
+            return false;
+        };
+        let Some(index) = self.pick_index(
+            peer_id,
+            &bits,
+            Pick {
+                height,
+                round,
+                kind,
+                is_commit: false,
+                size,
+            },
+        ) else {
+            return false;
+        };
+        let vote = self.nodes.iter().find_map(|node| match kind {
+            SignedMsgType::Prevote => node.prevote_at(round, index),
+            SignedMsgType::Precommit => node.precommit_at(round, index),
+            _ => None,
+        });
+        self.send_picked_vote(switch, peer_id, vote)
+    }
+
+    fn send_last_commit(&mut self, switch: &Switch, peer_id: &str) -> bool {
+        let Some(source) = self.last_commit_source() else {
+            return false;
+        };
+        let Some(index) = self.pick_index(
+            peer_id,
+            &source.bits,
+            Pick {
+                height: source.height,
+                round: source.round,
+                kind: SignedMsgType::Precommit,
+                is_commit: source.is_commit,
+                size: source.size,
+            },
+        ) else {
+            return false;
+        };
+        let vote = self
+            .nodes
+            .iter()
+            .find_map(|node| node.last_commit_vote(index));
+        self.send_picked_vote(switch, peer_id, vote)
+    }
+
+    fn send_block_commit(&mut self, switch: &Switch, peer_id: &str, height: i64) -> bool {
+        let Some(commit) = self.nodes.iter().find_map(|node| node.block_commit(height)) else {
+            return false;
+        };
+        if !self.nodes.iter().any(|node| {
+            let base = node.store_base();
+            base > 0 && height >= base && node.store_height() >= height
+        }) {
+            return false;
+        }
+        let Some(bits) = commit_bit_array(&commit) else {
+            return false;
+        };
+        let size = i64::try_from(commit.signatures.len()).unwrap_or(0);
+        let Some(index) = self.pick_index(
+            peer_id,
+            &bits,
+            Pick {
+                height: commit.height,
+                round: commit.round,
+                kind: SignedMsgType::Precommit,
+                is_commit: !commit.signatures.is_empty(),
+                size,
+            },
+        ) else {
+            return false;
+        };
+        self.send_picked_vote(switch, peer_id, commit_vote(&commit, index))
+    }
+
+    fn last_commit_source(&self) -> Option<CommitSource> {
+        let mut combined: Option<CommitSource> = None;
+        for node in &self.nodes {
+            let Some(source) = node.last_commit_source() else {
+                continue;
+            };
+            combined = Some(match combined {
+                None => source,
+                Some(mut have) => {
+                    if let Some(bits) = BitArray::or(Some(&have.bits), Some(&source.bits)) {
+                        have.bits = bits;
+                    }
+                    have.is_commit = have.is_commit || source.is_commit;
+                    have
+                }
+            });
+        }
+        combined
+    }
+
+    fn block_commit_id(&self, height: i64) -> Option<(i32, BlockId)> {
+        let commit = self
+            .nodes
+            .iter()
+            .find_map(|node| node.block_commit(height))?;
+        if !self.nodes.iter().any(|node| {
+            let base = node.store_base();
+            base > 0 && height >= base && node.store_height() >= height
+        }) {
+            return None;
+        }
+        Some((commit.round, commit.block_id))
+    }
+
+    fn pick_index(&mut self, peer_id: &str, our_bits: &BitArray, pick: Pick) -> Option<i32> {
+        if pick.size == 0 {
+            return None;
+        }
+        let peer = self.peers.get_mut(peer_id)?;
+        if pick.is_commit {
+            ensure_catchup_commit_round(peer, pick.height, pick.round, pick.size);
+        }
+        ensure_vote_bit_arrays(peer, pick.height, pick.size);
+        let peer_bits = vote_bits(peer, pick.height, pick.round, pick.kind)?.copy();
+        let missing = BitArray::sub(Some(our_bits), Some(&peer_bits))?;
+        let index = missing.pick_random()?;
+        i32::try_from(index).ok()
+    }
+
+    fn send_picked_vote(&mut self, switch: &Switch, peer_id: &str, vote: Option<Vote>) -> bool {
+        let Some(vote) = vote else {
+            return false;
+        };
+        if !send_vote(switch, peer_id, &vote) {
+            return false;
+        }
+        self.note_sent_vote(peer_id, &vote);
+        true
+    }
+
+    fn note_incoming_vote(&mut self, peer_id: &str, vote: &Vote) {
+        let size = self.validator_count.max(1);
+        let (our_height, _) = self.consensus_hrs();
+        let Some(peer) = self.peers.get_mut(peer_id) else {
+            return;
+        };
+        ensure_vote_bit_arrays(peer, our_height, size);
+        ensure_vote_bit_arrays(peer, our_height - 1, size);
+        if let Some(bits) = vote_bits(peer, vote.height, vote.round, vote.vote_type) {
+            bits.set_index(i64::from(vote.validator_index), true);
+        }
+    }
+
+    fn note_sent_vote(&mut self, peer_id: &str, vote: &Vote) {
+        let Some(peer) = self.peers.get_mut(peer_id) else {
+            return;
+        };
+        if let Some(bits) = vote_bits(peer, vote.height, vote.round, vote.vote_type) {
+            bits.set_index(i64::from(vote.validator_index), true);
         }
     }
 }
@@ -865,7 +1245,7 @@ fn round_step_message<E: ExecApp, C: MempoolApp, D: Db>(node: &Node<E, C, D>) ->
             round: node.round(),
             step: node.step().as_wal(),
             seconds_since_start_time: 0,
-            last_commit_round: -1,
+            last_commit_round: node.last_commit_round(),
         })),
     }
     .encode_to_vec()
@@ -878,29 +1258,158 @@ fn ensure_parts(peer: &mut PeerState, total: u32) {
     }
 }
 
-fn vote_bit(peer: &PeerState, vote: &Vote) -> bool {
-    let bits = match vote.vote_type {
-        SignedMsgType::Prevote => peer.prevotes.as_ref(),
-        SignedMsgType::Precommit => peer.precommits.as_ref(),
-        _ => None,
-    };
-    bits.is_some_and(|bits| bits.get_index(i64::from(vote.validator_index)))
+/// `getVoteBitArray`.
+fn vote_bits(
+    peer: &mut PeerState,
+    height: i64,
+    round: i32,
+    kind: SignedMsgType,
+) -> Option<&mut BitArray> {
+    if kind != SignedMsgType::Prevote && kind != SignedMsgType::Precommit {
+        return None;
+    }
+    if peer.height == height {
+        if peer.round == round {
+            return match kind {
+                SignedMsgType::Prevote => peer.prevotes.as_mut(),
+                SignedMsgType::Precommit => peer.precommits.as_mut(),
+                _ => None,
+            };
+        }
+        if peer.catchup_commit_round == round {
+            return match kind {
+                SignedMsgType::Precommit => peer.catchup_commit.as_mut(),
+                _ => None,
+            };
+        }
+        if peer.proposal_pol_round == round {
+            return match kind {
+                SignedMsgType::Prevote => peer.proposal_pol.as_mut(),
+                _ => None,
+            };
+        }
+        return None;
+    }
+    if peer.height == height + 1 && peer.last_commit_round == round {
+        return match kind {
+            SignedMsgType::Precommit => peer.last_commit.as_mut(),
+            _ => None,
+        };
+    }
+    None
 }
 
-fn vote_slot(
-    peer: &mut PeerState,
-    kind: SignedMsgType,
-    validator_count: i64,
-) -> Option<&mut BitArray> {
-    let slot = match kind {
-        SignedMsgType::Prevote => &mut peer.prevotes,
-        SignedMsgType::Precommit => &mut peer.precommits,
-        _ => return None,
-    };
-    if slot.is_none() {
-        *slot = BitArray::new(validator_count.max(1));
+fn ensure_vote_bit_arrays(peer: &mut PeerState, height: i64, num_validators: i64) {
+    if num_validators <= 0 {
+        return;
     }
-    slot.as_mut()
+    if peer.height == height {
+        if peer.prevotes.is_none() {
+            peer.prevotes = BitArray::new(num_validators);
+        }
+        if peer.precommits.is_none() {
+            peer.precommits = BitArray::new(num_validators);
+        }
+        if peer.catchup_commit.is_none() {
+            peer.catchup_commit = BitArray::new(num_validators);
+        }
+        if peer.proposal_pol.is_none() {
+            peer.proposal_pol = BitArray::new(num_validators);
+        }
+    } else if peer.height == height + 1 && peer.last_commit.is_none() {
+        peer.last_commit = BitArray::new(num_validators);
+    }
+}
+
+fn ensure_catchup_commit_round(peer: &mut PeerState, height: i64, round: i32, num_validators: i64) {
+    if peer.height != height || peer.catchup_commit_round == round {
+        return;
+    }
+    peer.catchup_commit_round = round;
+    if round == peer.round {
+        peer.catchup_commit = peer.precommits.clone();
+    } else {
+        peer.catchup_commit = BitArray::new(num_validators);
+    }
+}
+
+fn or_bits(bits: impl Iterator<Item = BitArray>) -> Option<BitArray> {
+    let mut combined = None;
+    for bits in bits {
+        combined = BitArray::or(combined.as_ref(), Some(&bits));
+    }
+    combined
+}
+
+fn proposal_pol_message(height: i64, pol_round: i32, bits: &BitArray) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::ProposalPol(ProposalPol {
+            height,
+            proposal_pol_round: pol_round,
+            proposal_pol: bits.to_proto(),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn maj23_message(height: i64, round: i32, kind: SignedMsgType, block_id: &BlockId) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::VoteSetMaj23(VoteSetMaj23 {
+            height,
+            round,
+            r#type: kind as i32,
+            block_id: Some(block_id.to_proto()),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn vote_set_bits_message(
+    height: i64,
+    round: i32,
+    kind: SignedMsgType,
+    block_id: &BlockId,
+    bits: Option<&BitArray>,
+) -> Vec<u8> {
+    Message {
+        sum: Some(message::Sum::VoteSetBits(VoteSetBits {
+            height,
+            round,
+            r#type: kind as i32,
+            block_id: Some(block_id.to_proto()),
+            votes: bits.and_then(BitArray::to_proto),
+        })),
+    }
+    .encode_to_vec()
+}
+
+fn commit_bit_array(commit: &Commit) -> Option<BitArray> {
+    let mut bits = BitArray::new(i64::try_from(commit.signatures.len()).unwrap_or(0))?;
+    for (index, sig) in commit.signatures.iter().enumerate() {
+        if !sig.is_absent() {
+            bits.set_index(i64::try_from(index).unwrap_or(0), true);
+        }
+    }
+    Some(bits)
+}
+
+fn commit_vote(commit: &Commit, index: i32) -> Option<Vote> {
+    let sig = commit.signatures.get(usize::try_from(index).ok()?)?;
+    let block_id = if sig.block_id_flag == BlockIdFlag::Nil {
+        BlockId::default()
+    } else {
+        commit.block_id.clone()
+    };
+    Some(Vote {
+        vote_type: SignedMsgType::Precommit,
+        height: commit.height,
+        round: commit.round,
+        block_id,
+        timestamp: sig.timestamp,
+        validator_address: sig.validator_address.clone(),
+        validator_index: index,
+        signature: sig.signature.clone(),
+    })
 }
 
 fn vote_type(value: i32) -> Option<SignedMsgType> {

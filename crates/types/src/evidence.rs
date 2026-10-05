@@ -545,6 +545,15 @@ impl EvidenceList {
         Ok(())
     }
 
+    /// `EvidenceData.ByteSize`. Protobuf size of the evidence list. Empty is 0.
+    #[must_use]
+    pub fn byte_size(&self) -> i64 {
+        if self.evidence.is_empty() {
+            return 0;
+        }
+        i64::try_from(self.to_proto().encoded_len()).unwrap_or(i64::MAX)
+    }
+
     /// `EvidenceList.Hash`: merkle root of each item's evidence bytes.
     ///
     /// An empty list is the empty Merkle root.

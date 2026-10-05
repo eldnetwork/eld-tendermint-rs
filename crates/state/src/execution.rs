@@ -8,7 +8,7 @@ use eld_tendermint_proto::abci::{
     ResponseCommit, ResponseDeliverTx, ResponseEndBlock, ValidatorUpdate, VoteInfo,
 };
 use eld_tendermint_types::{
-    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Validator, hash_consensus_params,
+    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Validator, hash_consensus_params, median_time,
 };
 use prost::Message;
 use prost::bytes::Bytes;
@@ -215,6 +215,25 @@ pub fn validate_block(state: &State, block: &Block) -> Result<(), Error> {
                 return Err(Error::WrongLastCommitHash);
             }
         }
+    }
+    if block.header.height == state.initial_height {
+        if block.header.time != state.last_block_time {
+            return Err(Error::WrongBlockTime);
+        }
+    } else if let Some(commit) = &block.last_commit {
+        if block.header.time <= state.last_block_time {
+            return Err(Error::BlockTimeNotIncreasing);
+        }
+        if block.header.time != median_time(commit, &state.last_validators) {
+            return Err(Error::WrongBlockTime);
+        }
+    }
+    let evidence_bytes = block.evidence.byte_size();
+    if evidence_bytes > state.consensus_params.evidence.max_bytes {
+        return Err(Error::EvidenceOverflow {
+            max: state.consensus_params.evidence.max_bytes,
+            got: evidence_bytes,
+        });
     }
     Ok(())
 }

@@ -330,7 +330,7 @@ impl ValidatorSet {
         Ok(())
     }
 
-    fn get_by_address(&self, address: &[u8]) -> Option<&Validator> {
+    pub(crate) fn get_by_address(&self, address: &[u8]) -> Option<&Validator> {
         self.validators
             .iter()
             .find(|validator| validator.address == address)

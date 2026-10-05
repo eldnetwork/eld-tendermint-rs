@@ -6,7 +6,8 @@ use prost::Message;
 
 use crate::evidence::EvidenceList;
 use crate::{
-    BlockId, ChainId, Commit, ConsensusVersion, Error, Hash, Header, PartSet, Time, Tx, Txs,
+    BlockId, ChainId, Commit, ConsensusVersion, Error, Hash, Header, MAX_COMMIT_OVERHEAD_BYTES,
+    MAX_COMMIT_SIG_BYTES, MAX_HEADER_BYTES, MAX_OVERHEAD_FOR_BLOCK, PartSet, Time, Tx, Txs,
 };
 
 /// `types.Block`.
@@ -161,4 +162,25 @@ impl Block {
         let bytes = self.to_proto().encode_to_vec();
         PartSet::from_data(&bytes, part_size)
     }
+}
+
+/// `types.MaxCommitBytes`. Overhead plus each signature and its protobuf key.
+#[must_use]
+pub fn max_commit_bytes(vals_count: usize) -> i64 {
+    let count = i64::try_from(vals_count).unwrap_or(i64::MAX);
+    // Repeated field key is 2 bytes on top of `MaxCommitSigBytes`.
+    MAX_COMMIT_OVERHEAD_BYTES + (MAX_COMMIT_SIG_BYTES + 2) * count
+}
+
+/// `types.MaxDataBytes`. `None` when the header, commit, and evidence do not fit.
+///
+/// Go panics on a negative result. Callers skip the proposal instead.
+#[must_use]
+pub fn max_data_bytes(max_bytes: i64, evidence_bytes: i64, vals_count: usize) -> Option<i64> {
+    let max_data = max_bytes
+        .checked_sub(MAX_OVERHEAD_FOR_BLOCK)?
+        .checked_sub(MAX_HEADER_BYTES)?
+        .checked_sub(max_commit_bytes(vals_count))?
+        .checked_sub(evidence_bytes)?;
+    (max_data >= 0).then_some(max_data)
 }

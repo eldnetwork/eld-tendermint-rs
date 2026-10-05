@@ -13,11 +13,12 @@ use eld_tendermint_proto::abci::{
     ResponseDeliverTx, ResponseEndBlock,
 };
 use eld_tendermint_proto::blockchain::{self, Message};
+use eld_tendermint_proto::types::BlockIdFlag;
 use eld_tendermint_state::{App, State, StateStore, apply_block, make_genesis_state};
 use eld_tendermint_store::{BlockStore, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, Block, BlockId, ChainId, Commit, CommitSig, EvidenceList, GenesisDoc,
-    GenesisValidator, PartSetHeader, Time, Txs, hash_consensus_params,
+    GenesisValidator, PartSetHeader, Time, Txs, hash_consensus_params, median_time,
 };
 use prost::Message as ProstMessage;
 use prost::bytes::Bytes;
@@ -146,7 +147,13 @@ fn genesis_state() -> State {
 
 fn fill_header(block: &mut Block, state: &State) {
     block.header.chain_id = state.chain_id.clone();
-    block.header.time = state.last_block_time;
+    block.header.time = if block.header.height == state.initial_height {
+        state.last_block_time
+    } else if let Some(commit) = &block.last_commit {
+        median_time(commit, &state.last_validators)
+    } else {
+        state.last_block_time
+    };
     block.header.last_block_id = state.last_block_id.clone();
     block.header.validators_hash = state
         .validators
@@ -190,7 +197,19 @@ fn next_block(state: &State, blocks: &BlockStore<MemDb>) -> Block {
             height: state.last_block_height,
             round: 0,
             block_id: prev.block_id,
-            signatures: vec![CommitSig::absent()],
+            signatures: vec![CommitSig {
+                block_id_flag: BlockIdFlag::Commit,
+                validator_address: state
+                    .last_validators
+                    .validators()
+                    .first()
+                    .map(|validator| validator.address.clone())
+                    .unwrap_or_default(),
+                timestamp: state
+                    .last_block_time
+                    .add_millis(state.consensus_params.block.time_iota_ms),
+                signature: vec![0; 64],
+            }],
         }
     };
     let mut block = Block::make_block(

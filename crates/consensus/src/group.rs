@@ -26,6 +26,12 @@ where
         &mut self.nodes
     }
 
+    /// Validators, in construction order.
+    #[must_use]
+    pub fn into_nodes(self) -> Vec<Node<E, C>> {
+        self.nodes
+    }
+
     /// Deliver queued messages, including each message back to its sender.
     /// `allow_to_others` drops a message for every validator except the sender.
     ///
@@ -108,7 +114,9 @@ where
                     progress = true;
                     self.nodes[index].deliver(msg.clone());
                     match only_other {
-                        Some(dest) if dest != index => self.nodes[dest].deliver(msg),
+                        Some(dest) if dest != index => {
+                            self.nodes[dest].deliver(msg);
+                        }
                         Some(_) => {}
                         None => {
                             for other in 0..self.nodes.len() {

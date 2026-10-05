@@ -6,7 +6,7 @@ use eld_tendermint_crypto::hash_from_byte_slices;
 use eld_tendermint_proto::types::BlockIdFlag;
 use eld_tendermint_types::{
     ADDRESS_SIZE, Block, BlockId, Commit, CommitSig, Error, EvidenceList, PartSetHeader, Time, Tx,
-    Txs,
+    Txs, max_commit_bytes, max_data_bytes,
 };
 use prost::Message;
 
@@ -136,4 +136,16 @@ fn validate_basic_rejects_negative_height_and_nil_last_commit() {
     let mut nil_commit = hello_world();
     nil_commit.header.proposer_address = vec![0x22; ADDRESS_SIZE];
     assert_eq!(nil_commit.validate_basic(), Err(Error::NilLastCommit));
+}
+
+#[test]
+fn max_data_bytes_reserves_header_commit_and_evidence() {
+    assert_eq!(max_commit_bytes(0), 94);
+    assert_eq!(max_commit_bytes(1), 94 + 111);
+    assert_eq!(max_commit_bytes(4), 94 + 111 * 4);
+    // 1000 - 11 - 626 - 205 = 158
+    assert_eq!(max_data_bytes(1_000, 0, 1), Some(158));
+    assert_eq!(max_data_bytes(1_000, 50, 1), Some(108));
+    assert_eq!(max_data_bytes(100, 0, 1), None);
+    assert_eq!(max_data_bytes(842, 0, 1), Some(0));
 }

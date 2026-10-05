@@ -6,6 +6,7 @@ use prost::Message;
 use eld_tendermint_crypto::hash_from_byte_slices;
 
 use crate::time::Time;
+use crate::validator::ValidatorSet;
 use crate::vote::{Vote, check_signature};
 use crate::{ADDRESS_SIZE, BlockId, Error, Hash};
 
@@ -197,4 +198,34 @@ impl Commit {
         commit.validate_basic()?;
         Ok(commit)
     }
+}
+
+/// `state.MedianTime`. Weighted median of non-absent commit times.
+///
+/// Each signer's voting power is taken from `validators` by address. An unknown
+/// address adds nothing. Absent signatures are skipped. The result is Go's zero
+/// time when no weighted time remains.
+#[must_use]
+pub fn median_time(commit: &Commit, validators: &ValidatorSet) -> Time {
+    let mut weighted = Vec::new();
+    let mut total_voting_power = 0i64;
+    for signature in &commit.signatures {
+        if signature.is_absent() {
+            continue;
+        }
+        let Some(validator) = validators.get_by_address(&signature.validator_address) else {
+            continue;
+        };
+        total_voting_power = total_voting_power.saturating_add(validator.voting_power);
+        weighted.push((signature.timestamp, validator.voting_power));
+    }
+    weighted.sort_by_key(|(time, _)| time.unix_nanos());
+    let mut median = total_voting_power / 2;
+    for (time, weight) in weighted {
+        if median <= weight {
+            return time;
+        }
+        median -= weight;
+    }
+    Time::GO_ZERO
 }

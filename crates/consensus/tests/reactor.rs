@@ -170,7 +170,7 @@ fn switch_for(reactor: &Reactor<Exec, Check>) -> Arc<Switch> {
             "consensus",
             channel_descriptors(),
             move |peer_id, ch_id, bytes| {
-                if !callback_reactor.handle(peer_id, ch_id, &bytes) {
+                if !callback_reactor.handle(&callback_switch, peer_id, ch_id, &bytes) {
                     callback_switch.stop_peer(peer_id);
                 }
             },

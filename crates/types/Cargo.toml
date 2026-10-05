@@ -12,6 +12,7 @@ eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 hex = "0.4"
 prost = "0.13"
 prost-types = "0.13"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 

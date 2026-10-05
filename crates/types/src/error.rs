@@ -117,6 +117,8 @@ pub enum Error {
     UnexpectedVoteStep,
     InvalidVoteIndex,
     ConflictingVote,
+    /// `setPeerMaj23`: this peer already claimed a different block id.
+    ConflictingPeerMaj23,
     DuplicateVoteSignature,
     MissingConflictingBlock,
     MissingSignedHeader,
@@ -297,6 +299,9 @@ impl fmt::Display for Error {
             Self::UnexpectedVoteStep => write!(f, "unexpected vote step"),
             Self::InvalidVoteIndex => write!(f, "invalid vote validator index"),
             Self::ConflictingVote => write!(f, "conflicting vote"),
+            Self::ConflictingPeerMaj23 => {
+                write!(f, "setPeerMaj23: conflicting blockID from peer")
+            }
             Self::DuplicateVoteSignature => write!(f, "vote signature is non-deterministic"),
             Self::MissingConflictingBlock => write!(f, "conflicting block is nil"),
             Self::MissingSignedHeader => write!(f, "missing signed header"),

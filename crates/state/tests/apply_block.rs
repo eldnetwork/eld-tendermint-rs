@@ -7,14 +7,17 @@ use eld_tendermint_proto::abci::{
     RequestBeginBlock, RequestDeliverTx, RequestEndBlock, ResponseBeginBlock, ResponseCommit,
     ResponseDeliverTx, ResponseEndBlock, ValidatorUpdate,
 };
+use eld_tendermint_proto::types::{BlockIdFlag, SignedMsgType};
 use eld_tendermint_store::MemDb;
 use eld_tendermint_types::{
-    Block, BlockId, ChainId, Commit, CommitSig, EvidenceList, GenesisDoc, GenesisValidator, Time,
-    Txs, ValidatorSet, hash_consensus_params,
+    Block, BlockId, ChainId, Commit, CommitSig, DuplicateVoteEvidence, EvidenceList, GenesisDoc,
+    GenesisValidator, Time, Txs, ValidatorSet, Vote, hash_consensus_params, median_time,
 };
 use prost::bytes::Bytes;
 
-use eld_tendermint_state::{App, Error, State, StateStore, apply_block, make_genesis_state};
+use eld_tendermint_state::{
+    App, Error, State, StateStore, apply_block, make_genesis_state, validate_block,
+};
 
 const APP_HASH: [u8; 32] = [0xab; 32];
 
@@ -92,9 +95,41 @@ fn genesis(pub_key: PubKey) -> GenesisDoc {
     }
 }
 
+fn commit_time(state: &State) -> Time {
+    state
+        .last_block_time
+        .add_millis(state.consensus_params.block.time_iota_ms)
+}
+
+fn signing_commit(state: &State, block_id: BlockId) -> Commit {
+    let address = state
+        .last_validators
+        .validators()
+        .first()
+        .map(|validator| validator.address.clone())
+        .unwrap_or_default();
+    Commit {
+        height: state.last_block_height,
+        round: 0,
+        block_id,
+        signatures: vec![CommitSig {
+            block_id_flag: BlockIdFlag::Commit,
+            validator_address: address,
+            timestamp: commit_time(state),
+            signature: vec![0; 64],
+        }],
+    }
+}
+
 fn fill_header(block: &mut Block, state: &State) {
     block.header.chain_id = state.chain_id.clone();
-    block.header.time = state.last_block_time;
+    block.header.time = if block.header.height == state.initial_height {
+        state.last_block_time
+    } else if let Some(commit) = &block.last_commit {
+        median_time(commit, &state.last_validators)
+    } else {
+        state.last_block_time
+    };
     block.header.last_block_id = state.last_block_id.clone();
     block.header.validators_hash = state
         .validators
@@ -208,12 +243,7 @@ fn validator_update_lands_one_block_later() {
         "next_validators missing the update"
     );
 
-    let commit = Commit {
-        height: after_one.last_block_height,
-        round: 0,
-        block_id: id.clone(),
-        signatures: vec![CommitSig::absent()],
-    };
+    let commit = signing_commit(&after_one, id.clone());
     let mut block = Block::make_block(
         after_one.last_block_height + 1,
         Txs::new(Vec::new()),
@@ -228,6 +258,63 @@ fn validator_update_lands_one_block_later() {
     assert!(
         contains(&after_two.validators, added_address.as_slice()),
         "validators missing the update after the next block"
+    );
+}
+
+#[test]
+fn non_median_block_time_is_rejected() {
+    let mut doc = genesis(key());
+    let state = make_genesis_state(&mut doc).expect("genesis");
+    let (block, id) = height_one(&state);
+    let mut app = FakeApp::new(None);
+    let after_one = apply_block(&state, &id, &block, &mut app)
+        .expect("apply height 1")
+        .state;
+    let commit = signing_commit(&after_one, id.clone());
+    let mut block = Block::make_block(
+        after_one.last_block_height + 1,
+        Txs::new(Vec::new()),
+        Some(commit),
+        EvidenceList::new(Vec::new()),
+    );
+    fill_header(&mut block, &after_one);
+    block.header.time = block.header.time.add_millis(1);
+    let err = validate_block(&after_one, &block).expect_err("time is not the median");
+    assert!(matches!(err, Error::WrongBlockTime), "{err}");
+}
+
+#[test]
+fn evidence_larger_than_max_bytes_is_rejected() {
+    let mut doc = genesis(key());
+    let mut state = make_genesis_state(&mut doc).expect("genesis");
+    let (mut block, _) = height_one(&state);
+    let vote = Vote {
+        vote_type: SignedMsgType::Prevote,
+        height: 1,
+        round: 0,
+        block_id: BlockId::default(),
+        timestamp: Time::from_unix_parts(1, 0),
+        validator_address: vec![0x11; 20],
+        validator_index: 0,
+        signature: vec![0x22; 64],
+    };
+    block.evidence = EvidenceList::new(vec![
+        DuplicateVoteEvidence {
+            vote_a: vote.clone(),
+            vote_b: vote,
+            total_voting_power: 10,
+            validator_power: 10,
+            timestamp: Time::from_unix_parts(1, 0),
+        }
+        .into(),
+    ]);
+    let got = block.evidence.byte_size();
+    assert!(got > 0);
+    state.consensus_params.evidence.max_bytes = 0;
+    let err = validate_block(&state, &block).expect_err("evidence overflow");
+    assert!(
+        matches!(err, Error::EvidenceOverflow { max: 0, got: n } if n == got),
+        "{err}"
     );
 }
 

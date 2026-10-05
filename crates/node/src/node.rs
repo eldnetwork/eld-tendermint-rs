@@ -355,12 +355,13 @@ fn register(
     let consensus_switch = Arc::downgrade(switch);
     switch
         .add_reactor("consensus", consensus_desc, move |peer_id, ch_id, bytes| {
-            if consensus_cb.handle(peer_id, ch_id, &bytes) {
+            let Some(switch) = consensus_switch.upgrade() else {
+                return;
+            };
+            if consensus_cb.handle(&switch, peer_id, ch_id, &bytes) {
                 return;
             }
-            if let Some(switch) = consensus_switch.upgrade() {
-                stop_bad_peer(&switch, peer_id);
-            }
+            stop_bad_peer(&switch, peer_id);
         })
         .map_err(fail)?;
 

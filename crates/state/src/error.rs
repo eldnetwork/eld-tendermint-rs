@@ -25,6 +25,15 @@ pub enum Error {
     NilLastCommit,
     InitialCommitHasSignatures,
     WrongLastCommitHash,
+    /// Header time is not strictly after the previous block.
+    BlockTimeNotIncreasing,
+    /// Header time is not the weighted median, or not the genesis time.
+    WrongBlockTime,
+    /// `ErrEvidenceOverflow`. The block's evidence list is larger than `Evidence.MaxBytes`.
+    EvidenceOverflow {
+        max: i64,
+        got: i64,
+    },
     NegativeVotingPower,
     /// Genesis had no validators and `InitChain` did not return any.
     NilValidatorSet,
@@ -68,6 +77,13 @@ impl fmt::Display for Error {
                 write!(f, "initial block can't have LastCommit signatures")
             }
             Self::WrongLastCommitHash => write!(f, "wrong Header.LastCommitHash"),
+            Self::BlockTimeNotIncreasing => {
+                write!(f, "block time is not greater than the last block time")
+            }
+            Self::WrongBlockTime => write!(f, "invalid block time"),
+            Self::EvidenceOverflow { max, got } => {
+                write!(f, "evidence exceeds max bytes ({got} > {max})")
+            }
             Self::NegativeVotingPower => write!(f, "voting power can't be negative"),
             Self::NilValidatorSet => {
                 write!(

@@ -26,9 +26,9 @@ mod vote;
 mod vote_set;
 
 pub use bits::BitArray;
-pub use block::Block;
+pub use block::{Block, max_commit_bytes, max_data_bytes};
 pub use block_id::{BlockId, PartSetHeader};
-pub use commit::{Commit, CommitSig};
+pub use commit::{Commit, CommitSig, median_time};
 pub use error::Error;
 pub use evidence::{DuplicateVoteEvidence, Evidence, EvidenceList, LightClientAttackEvidence};
 pub use genesis::{GenesisDoc, GenesisValidator};
@@ -66,6 +66,18 @@ pub const BLOCK_PROTOCOL: u64 = 11;
 
 /// `types.MaxTotalVotingPower` (`math.MaxInt64 / 8`).
 pub const MAX_TOTAL_VOTING_POWER: i64 = i64::MAX / 8;
+
+/// `types.MaxHeaderBytes`. A soft cap; the app hash is not bounded.
+pub const MAX_HEADER_BYTES: i64 = 626;
+
+/// `types.MaxOverheadForBlock`. Protobuf overhead for a block, excluding txs.
+pub const MAX_OVERHEAD_FOR_BLOCK: i64 = 11;
+
+/// `types.MaxCommitOverheadBytes`. Commit without any signatures.
+pub const MAX_COMMIT_OVERHEAD_BYTES: i64 = 94;
+
+/// `types.MaxCommitSigBytes`. One signature, address, flag, and timestamp.
+pub const MAX_COMMIT_SIG_BYTES: i64 = 109;
 
 /// `types.MaxBlockSizeBytes` (100 MiB).
 pub const MAX_BLOCK_SIZE_BYTES: i64 = 104_857_600;
