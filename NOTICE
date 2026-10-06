@@ -1,0 +1,9 @@
+eld-tendermint-rs
+Copyright (c) 2026 Eld network
+
+This product is a Rust port of Tendermint 0.34.42.
+Tendermint Core is Copyright 2016 All in Bits, Inc. and later contributors,
+including The Interchain Foundation.
+See the Apache License 2.0 in LICENSE.
+
+`proto/` and `spec/` are that version. The Rust sources are a port of it.

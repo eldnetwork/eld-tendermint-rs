@@ -3,23 +3,26 @@
 [![CI](https://github.com/eldnetwork/eld-tendermint-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/eldnetwork/eld-tendermint-rs/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/eldnetwork/eld-tendermint-rs?include_prereleases&sort=date&display_name=tag)](https://github.com/eldnetwork/eld-tendermint-rs/releases/latest)
 [![Docker image](https://img.shields.io/badge/docker-ghcr.io%2Feldnetwork%2Feld--tendermint--rs-2496ED?logo=docker&logoColor=white)](https://github.com/eldnetwork/eld-tendermint-rs/pkgs/container/eld-tendermint-rs)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.86.0-DEA584?logo=rust&logoColor=white)](rust-toolchain.toml)
 
 ## Project intro
 
-eld-tendermint-rs is a Rust port of the Tendermint consensus engine project. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3` as per this tendermint repo: https://github.com/eldnetwork/eld-tendermint.
+eld-tendermint-rs is a Rust port of Tendermint 0.34.42.
 
 
-Protocol specs have been copied from https://github.com/eldnetwork/eld-tendermint/tree/eld/v0.34.24/spec to https://github.com/eldnetwork/eld-tendermint-rs/tree/main/spec
+Protocol specs are in `spec/`.
 
 This port will be used as the base for later Eld network work to extend and modify the protocol for Eld's requirements, but those modifications will happen in a separate project. This project will remain a direct port.
 
 ## Quickstart
 
-Check out: `39f16d0190877f8f0771c3905fdeb578ae5ab3bd` (latest tested)
+Check out the latest release tag.
 
-Home directory. The directory can be any directory of your choice; pass it as `--home`.
+Add tendermint configuration files to your Home directory. The Home directory can be any directory of your choice; pass it as `--home`.
+
+
+Required config files:
 
 ```text
 $HOME/.eld-tendermint/
@@ -137,7 +140,7 @@ When `--home` is omitted, the node uses `TMHOME` if that variable is set, and ot
 
 `proto/` is the schema. `crates/proto/` is the Rust library generated from it.
 
-`proto/` is a copy of the Eld Go tree at `v0.34.24-eld.3` (`79dcdd712`), recorded in `proto/GO_REF`. It holds the 24 `.proto` files under `proto/tendermint/` plus `proto/third_party/gogoproto/gogo.proto`. These files are the source of truth for field numbers and message layout, and they match upstream Tendermint `v0.34.24` (ABCI 0.17.0). Cargo does not compile this directory. `scripts/gen-proto.sh` reads it and writes Prost output.
+`proto/` is the Tendermint 0.34.42 schema, recorded in `proto/GO_REF`. It holds the 24 `.proto` files under `proto/tendermint/` plus `proto/third_party/gogoproto/gogo.proto`. These files are the source of truth for field numbers and message layout (ABCI 0.17.0). Cargo does not compile this directory. `scripts/gen-proto.sh` reads it and writes Prost output.
 
 `crates/proto/` is the Cargo package `eld-tendermint-proto`. `src/prost/*.rs` is the generated output, and `src/lib.rs` exposes it as `eld_tendermint_proto::abci`, `::types`, and the other packages. Later crates depend on this package.
 
@@ -149,7 +152,7 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 
 `tendermint-rs` (`tendermint-proto` 0.40) already has Prost types for this ABCI shape, under `tendermint_proto::v0_34`. This repo does not depend on that crate:
 
-- Its `v0_34` module was generated from CometBFT `v0.34.35`, a later pin than Eld `v0.34.24-eld.3`.
+- Its `v0_34` module was generated from CometBFT `v0.34.35`, which is not Tendermint 0.34.42.
 - The crate root re-exports CometBFT 0.38 (`pub use v0_38::*`), so `tendermint_proto::abci` is `FinalizeBlock`-era ABCI.
 - `tendermint-abci` in that repo speaks the 0.38 socket codec.
 - Those bindings are not tested against Eld’s Go hex vectors.
@@ -158,7 +161,7 @@ We copied the generator settings from `tendermint-rs`, not the library. The gene
 
 ## Spec
 
-`spec/` is a copy of the Eld Go tree at `v0.34.24-eld.3` (`79dcdd712`), the same commit as `proto/GO_REF`. The markdown and the files it links to are left as they are in that tree. Do not edit them here.
+`spec/` is the Tendermint 0.34.42 spec. The markdown and the files it links to are left as they are. Do not edit them here.
 
 ## Still to do
 
