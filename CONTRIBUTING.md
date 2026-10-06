@@ -1,6 +1,6 @@
 # Contributing
 
-This repository is a Rust port of Tendermint 0.34.42. Work that extends the protocol for Eld belongs in a separate project.
+This repository is a Rust port of Tendermint Core v0.34.24. Work that extends the protocol for Eld belongs in a separate project.
 
 ## Before you start
 
@@ -10,11 +10,11 @@ A vulnerability, a validator key, or a node key does not belong in an issue. Rep
 
 ## What a change may touch
 
-- Rust that matches Tendermint 0.34.42.
+- Rust that matches Tendermint Core v0.34.24.
 - Tests, including hex checks against the Go encoding.
 - `proto/` only when that Go schema changes. Regenerate with `scripts/gen-proto.sh`. Do not hand-edit `crates/proto/src/prost/`.
 
-Do not edit `spec/`. It is a copy of the Go tree.
+Do not edit `spec/` or the `.proto` files. They are vendored verbatim from the commit in `proto/GO_REF`.
 
 Do not commit a node home, `priv_validator_key.json`, `node_key.json`, or anything under `data/`.
 

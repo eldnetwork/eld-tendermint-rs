@@ -4,11 +4,11 @@ about: This port produced different bytes, or different consensus behavior, than
 title: "compat: "
 ---
 
-The port is Tendermint 0.34.42.
+The port is Tendermint Core v0.34.24. `proto/` and `spec/` are the commit in `proto/GO_REF`.
 
 **Rust revision** (release tag or commit):
 
-**Go revision** (Tendermint 0.34.42, or the commit you compared):
+**Go revision** (Tendermint v0.34.24, or the commit you compared):
 
 **Where they diverge** (message, RPC method, file, or height / round / step):
 

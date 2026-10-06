@@ -8,10 +8,9 @@
 
 ## Project intro
 
-eld-tendermint-rs is a Rust port of Tendermint 0.34.42.
+eld-tendermint-rs is a Rust port of Tendermint Core v0.34.24.
 
-
-Protocol specs are in `spec/`.
+`proto/` and `spec/` are vendored verbatim from [eld-tendermint](https://github.com/eldnetwork/eld-tendermint) commit `79dcdd71257e56285c3abc2aad5f89e8e2ef02d5` (`v0.34.24-eld.3`). That pin is [`proto/GO_REF`](proto/GO_REF). Those files match upstream Tendermint [v0.34.24](https://github.com/tendermint/tendermint/commit/014cdcf09844d48f6d30f3e520034b7edffd9670). Copyright for that code stays with Tendermint Core. See [NOTICE](NOTICE).
 
 This port will be used as the base for later Eld network work to extend and modify the protocol for Eld's requirements, but those modifications will happen in a separate project. This project will remain a direct port.
 
@@ -142,7 +141,7 @@ When `--home` is omitted, the node uses `TMHOME` if that variable is set, and ot
 
 `proto/` is the schema. `crates/proto/` is the Rust library generated from it.
 
-`proto/` is the Tendermint 0.34.42 schema, recorded in `proto/GO_REF`. It holds the 24 `.proto` files under `proto/tendermint/` plus `proto/third_party/gogoproto/gogo.proto`. These files are the source of truth for field numbers and message layout (ABCI 0.17.0). Cargo does not compile this directory. `scripts/gen-proto.sh` reads it and writes Prost output.
+`proto/` is vendored verbatim from the commit in `proto/GO_REF` (`79dcdd71257e56285c3abc2aad5f89e8e2ef02d5`). It holds the 24 `.proto` files under `proto/tendermint/` plus `proto/third_party/gogoproto/gogo.proto`. These files are the source of truth for field numbers and message layout (ABCI 0.17.0). They match upstream Tendermint v0.34.24. Cargo does not compile this directory. `scripts/gen-proto.sh` reads it and writes Prost output.
 
 `crates/proto/` is the Cargo package `eld-tendermint-proto`. `src/prost/*.rs` is the generated output, and `src/lib.rs` exposes it as `eld_tendermint_proto::abci`, `::types`, and the other packages. Later crates depend on this package.
 
@@ -154,7 +153,7 @@ Amino JSON for keys, the privval files, and `node_key.json` is implemented on th
 
 `tendermint-rs` (`tendermint-proto` 0.40) already has Prost types for this ABCI shape, under `tendermint_proto::v0_34`. This repo does not depend on that crate:
 
-- Its `v0_34` module was generated from CometBFT `v0.34.35`, which is not Tendermint 0.34.42.
+- Its `v0_34` module was generated from CometBFT `v0.34.35`, which is not Tendermint v0.34.24.
 - The crate root re-exports CometBFT 0.38 (`pub use v0_38::*`), so `tendermint_proto::abci` is `FinalizeBlock`-era ABCI.
 - `tendermint-abci` in that repo speaks the 0.38 socket codec.
 - Those bindings are not tested against Eld’s Go hex vectors.
@@ -163,7 +162,7 @@ We copied the generator settings from `tendermint-rs`, not the library. The gene
 
 ## Spec
 
-`spec/` is the Tendermint 0.34.42 spec. The markdown and the files it links to are left as they are. Do not edit them here.
+`spec/` is vendored verbatim from that same commit (`79dcdd71257e56285c3abc2aad5f89e8e2ef02d5`, recorded in `proto/GO_REF`). The markdown and the files it links to are left as they are. Do not edit them here.
 
 ## Still to do
 

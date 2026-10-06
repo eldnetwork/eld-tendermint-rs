@@ -2,7 +2,7 @@
 
 ## Go reference commit
 
-The port is Tendermint 0.34.42.
+The port is Tendermint Core v0.34.24. Copied protos and specs are the commit in `proto/GO_REF`.
 
 - Commit this change was checked against:
 - File or message in that Go tree:

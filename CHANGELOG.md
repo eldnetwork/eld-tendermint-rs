@@ -45,4 +45,4 @@ All notable changes to this workspace are recorded here. The packages are unpubl
 - `config.toml` and genesis loaders that start from the Go defaults and overlay the file. `eld-tendermint-config` prints chain id, moniker, proxy app, and the genesis validator set for a node home.
 - Core types with `ValidateBasic`, header and Merkle hashes, and length-prefixed canonical sign bytes for votes and proposals.
 - Ed25519 key bytes and Amino JSON (`tendermint/PubKeyEd25519`, `tendermint/PrivKeyEd25519`) so addresses and validator key files match the Go node.
-- Prost messages generated from the Tendermint 0.34.42 protos (ABCI 0.17.0), plus the first mempool, blockchain, privval, and ABCI hex checks.
+- Prost messages generated from the protos vendored in `proto/` (Tendermint v0.34.24, ABCI 0.17.0), plus the first mempool, blockchain, privval, and ABCI hex checks.

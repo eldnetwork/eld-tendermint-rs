@@ -4,7 +4,7 @@ about: A change that still belongs in this direct port of the Go node.
 title: "feature: "
 ---
 
-Protocol changes for Eld's own requirements belong in a separate project. This repository stays a direct port of Tendermint 0.34.42.
+Protocol changes for Eld's own requirements belong in a separate project. This repository stays a direct port of Tendermint Core v0.34.24.
 
 **Summary**:
 

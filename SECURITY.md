@@ -16,8 +16,8 @@ A flaw in this port: consensus, the peer handshake, signatures, the private vali
 
 A byte mismatch with the Go node that is not a vulnerability is a public compatibility issue. Use the compatibility template.
 
-## Tendermint 0.34.42
+## Tendermint v0.34.24
 
-This port is Tendermint 0.34.42. Report a flaw in this binary here. Name the commit you ran.
+This port is Tendermint Core v0.34.24. Report a flaw in this binary here. Name the commit you ran.
 
 This repository does not run a bug bounty. The upstream Tendermint bounty does not cover this port.

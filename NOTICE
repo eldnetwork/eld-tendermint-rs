@@ -1,9 +1,24 @@
 eld-tendermint-rs
 Copyright (c) 2026 Eld network
 
-This product is a Rust port of Tendermint 0.34.42.
-Tendermint Core is Copyright 2016 All in Bits, Inc. and later contributors,
-including The Interchain Foundation.
+This product is a Rust port of Tendermint Core, Copyright 2016 All in Bits, Inc.
+and later contributors, including The Interchain Foundation.
 See the Apache License 2.0 in LICENSE.
 
-`proto/` and `spec/` are that version. The Rust sources are a port of it.
+```text
+Upstream: github.com/tendermint/tendermint
+Tag:      v0.34.24
+Commit:   014cdcf09844d48f6d30f3e520034b7edffd9670
+License:  Apache-2.0
+```
+
+`proto/` and `spec/` are vendored verbatim from the Eld Go tree at the commit
+recorded in `proto/GO_REF`:
+
+```text
+Repo:   https://github.com/eldnetwork/eld-tendermint
+Tag:    v0.34.24-eld.3
+Commit: 79dcdd71257e56285c3abc2aad5f89e8e2ef02d5
+```
+
+That commit matches upstream Tendermint v0.34.24. The Rust sources are a port of it.
