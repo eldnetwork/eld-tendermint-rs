@@ -28,6 +28,18 @@ Rust 1.86.0, from `rust-toolchain.toml`.
 
 That is the same check GitHub runs: the Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are errors. The store tests build RocksDB, which needs CMake.
 
+## Dependency updates
+
+Dependabot opens pull requests for Cargo crates and for GitHub Actions. It does not merge them. Review the diff. `./scripts/ci.sh` has to pass, including `cargo audit` and `cargo deny`.
+
+A RustSec alert is its own pull request. Other Cargo updates are one weekly pull request, and other Actions updates are another. Read the lockfile diff. A change in cryptography, encoding, or the database crate needs the same care as any other change to the wire format.
+
+These stay manual. Dependabot does not bump them:
+
+- `cargo-audit` and `cargo-deny` in `.github/workflows/ci.yml`. The workflow checks each download against a SHA-256. Change the version and the hash together.
+- `gitleaks` in that same file. The version is pinned. Change it by hand.
+- Rust 1.86.0. Change `rust-toolchain.toml` and `dtolnay/rust-toolchain@1.86.0` in the workflow together.
+
 ## Pull requests
 
 The pull request template asks for three things:

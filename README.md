@@ -67,6 +67,8 @@ Rust 1.86.0 (see `rust-toolchain.toml`). Install [gitleaks](https://github.com/g
 
 That runs the same checks as GitHub Actions: the tendermint Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are treated as errors. A tag runs this workflow before the image job.
 
+Dependabot opens pull requests for Cargo and GitHub Actions. It does not merge them. The policy is in [CONTRIBUTING.md](CONTRIBUTING.md). The SHA-256 pins for `cargo-audit` and `cargo-deny`, and the pinned `gitleaks` download, stay manual.
+
 ## What the project covers
 
 - Consensus, with a write-ahead log and gossip to peers.

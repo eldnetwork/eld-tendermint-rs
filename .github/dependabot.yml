@@ -1,0 +1,36 @@
+# Policy: CONTRIBUTING.md, "Dependency updates".
+# Dependabot opens pull requests. It does not merge them.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    labels:
+      - dependencies
+    groups:
+      cargo:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    labels:
+      - dependencies
+    ignore:
+      # The tag is the Rust version in rust-toolchain.toml. Change both by hand.
+      - dependency-name: "dtolnay/rust-toolchain"
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
