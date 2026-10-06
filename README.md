@@ -1,10 +1,15 @@
 # eld-tendermint-rs
 
+[![CI](https://github.com/eldnetwork/eld-tendermint-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/eldnetwork/eld-tendermint-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/eldnetwork/eld-tendermint-rs?include_prereleases&sort=date&display_name=tag)](https://github.com/eldnetwork/eld-tendermint-rs/releases/latest)
+[![Docker image](https://img.shields.io/badge/docker-ghcr.io%2Feldnetwork%2Feld--tendermint--rs-2496ED?logo=docker&logoColor=white)](https://github.com/eldnetwork/eld-tendermint-rs/pkgs/container/eld-tendermint-rs)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Rust](https://img.shields.io/badge/rust-1.86.0-DEA584?logo=rust&logoColor=white)](rust-toolchain.toml)
+
 ## Project intro
 
-eld-tendermint-rs is a Rust port of the Tendermint consensus engine Eld runs. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3`.
+eld-tendermint-rs is a Rust port of the Tendermint consensus engine project. Encodings stay byte-compatible with the Go node at `v0.34.24-eld.3` as per this tendermint repo: https://github.com/eldnetwork/eld-tendermint.
 
-A copy of the tendermint golang project can be found here: https://github.com/eldnetwork/eld-tendermint
 
 Protocol specs have been copied from https://github.com/eldnetwork/eld-tendermint/tree/eld/v0.34.24/spec to https://github.com/eldnetwork/eld-tendermint-rs/tree/main/spec
 
