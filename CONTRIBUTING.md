@@ -14,7 +14,7 @@ A vulnerability, a validator key, or a node key does not belong in an issue. Rep
 - Tests, including hex checks against the Go encoding.
 - `proto/` only when that Go schema changes. Regenerate with `scripts/gen-proto.sh`. Do not hand-edit `crates/proto/src/prost/`.
 
-Do not edit `spec/` or the `.proto` files. They are vendored verbatim from the commit in `proto/GO_REF`.
+Do not edit `spec/` or the `.proto` files. They are vendored verbatim from the commit in `proto/GO_REF`. The only local edit allowed in `spec/` is the note at the top of `spec/README.md`.
 
 Do not commit a node home, `priv_validator_key.json`, `node_key.json`, or anything under `data/`.
 

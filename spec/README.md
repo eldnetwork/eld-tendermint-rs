@@ -6,6 +6,12 @@ parent:
   order: 7
 ---
 
+> **Local note for this port.** The text below this note is the upstream spec index, left as it was copied. This directory is an unmodified copy of the spec shipped with the Go tree this port tracks (`proto/GO_REF`, Eld Tendermint `v0.34.24-eld.3`). Do not edit the spec body here. The only local text in `spec/` is this note.
+>
+> The canonical consensus spec is Tendermint v0.34.24: [spec/consensus/readme.md](consensus/readme.md) in this tree, and [the upstream spec](https://github.com/tendermint/tendermint/tree/v0.34.24/spec).
+>
+> The upstream tree uses more than one language. Markdown under `spec/` is the protocol text. TLA+ models are under `spec/light-client/` and `spec/consensus/proposer-based-timestamp/`. The TeX paper is under `spec/consensus/consensus-paper/`. Ivy proofs are under `spec/ivy-proofs/`.
+
 # Tendermint Spec
 
 This is a markdown specification of the Tendermint blockchain.
