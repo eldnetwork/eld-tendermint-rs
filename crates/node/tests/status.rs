@@ -47,7 +47,25 @@ fn status_health_and_unknown_method() {
     );
     assert_eq!(status["id"], 7);
     assert_eq!(status["result"]["node_info"]["network"], CHAIN_ID);
-    assert_eq!(status["result"]["sync_info"]["latest_block_height"], 0);
+    assert_eq!(status["result"]["sync_info"]["latest_block_height"], "0");
+    assert_eq!(
+        status["result"]["node_info"]["protocol_version"]["p2p"],
+        "8"
+    );
+    assert_eq!(
+        status["result"]["node_info"]["protocol_version"]["block"],
+        "11"
+    );
+    assert_eq!(
+        status["result"]["node_info"]["protocol_version"]["app"],
+        "0"
+    );
+    assert_eq!(status["result"]["validator_info"]["voting_power"], "10");
+    let address = status["result"]["validator_info"]["address"]
+        .as_str()
+        .expect("validator address");
+    assert_eq!(address.len(), 40);
+    assert_eq!(address, address.to_ascii_uppercase());
     assert_eq!(status["result"]["sync_info"]["catching_up"], false);
     assert_eq!(status["result"]["sync_info"]["latest_block_hash"], "");
     assert_eq!(
@@ -399,13 +417,11 @@ skip_timeout_commit = false
         .expect("block hash");
     assert_eq!(decoded.len(), 32);
     let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
-    let latest = base64::engine::general_purpose::STANDARD
-        .decode(
-            status["result"]["sync_info"]["latest_block_hash"]
-                .as_str()
-                .expect("latest hash"),
-        )
-        .expect("latest hash bytes");
+    let latest = decode_hex(
+        status["result"]["sync_info"]["latest_block_hash"]
+            .as_str()
+            .expect("latest hash"),
+    );
     assert_eq!(decoded, latest);
 
     let (_code, _headers, commit) = post(
@@ -609,9 +625,10 @@ skip_timeout_commit = true
 
 fn chain_height(addr: &str) -> i64 {
     let (_code, _headers, status) = post(addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
-    status["result"]["sync_info"]["latest_block_height"]
-        .as_i64()
-        .unwrap_or_else(|| panic!("height: {status}"))
+    status_height(
+        &status["result"]["sync_info"]["latest_block_height"],
+        &status,
+    )
 }
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -739,8 +756,11 @@ fn validators_at_height_one_are_the_genesis_set() {
     assert_eq!(body["result"]["count"], 1);
     assert_eq!(body["result"]["total"], 1);
     let validator = &body["result"]["validators"][0];
+    let validator_bytes = base64::engine::general_purpose::STANDARD
+        .decode(validator["address"].as_str().expect("validator address"))
+        .expect("validator address bytes");
     assert_eq!(
-        validator["address"],
+        hex_upper(&validator_bytes),
         status["result"]["validator_info"]["address"]
     );
     assert_eq!(validator["voting_power"], 10);
@@ -870,7 +890,7 @@ fn broadcast_tx_async_returns_before_the_next_block() {
     let mut node = NodeChild::spawn(&home.path);
     let addr = node.rpc_addr();
     let (_code, _headers, before) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
-    assert_eq!(before["result"]["sync_info"]["latest_block_height"], 0);
+    assert_eq!(before["result"]["sync_info"]["latest_block_height"], "0");
     let tx = b"pay";
     let (_code, _headers, body) = post(&addr, &broadcast("broadcast_tx_async", tx));
     assert!(body.get("error").is_none(), "{body}");
@@ -878,16 +898,14 @@ fn broadcast_tx_async_returns_before_the_next_block() {
     assert_eq!(body["result"]["hash"], b64(&sum(tx)));
     assert_eq!(body["result"]["data"], "");
     let (_code, _headers, after) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
-    assert_eq!(after["result"]["sync_info"]["latest_block_height"], 0);
+    assert_eq!(after["result"]["sync_info"]["latest_block_height"], "0");
 }
 
 fn wait_for_height(addr: &str, want: i64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let (_code, _headers, body) = post(addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
-        let height = body["result"]["sync_info"]["latest_block_height"]
-            .as_i64()
-            .unwrap_or(0);
+        let height = status_height(&body["result"]["sync_info"]["latest_block_height"], &body);
         if height >= want {
             return;
         }
@@ -903,6 +921,28 @@ fn broadcast(method: &str, tx: &[u8]) -> String {
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+fn decode_hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&text[index..index + 2], 16)
+                .unwrap_or_else(|err| panic!("{err}: {text}"))
+        })
+        .collect()
+}
+
+fn status_height(value: &Value, body: &Value) -> i64 {
+    value
+        .as_str()
+        .unwrap_or_else(|| panic!("height: {body}"))
+        .parse()
+        .unwrap_or_else(|err| panic!("{err}: {body}"))
 }
 
 struct TestHome {

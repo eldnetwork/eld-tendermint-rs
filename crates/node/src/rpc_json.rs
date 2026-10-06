@@ -1,7 +1,10 @@
-//! RPC JSON for the methods whose byte fields are standard base64.
+//! RPC JSON.
 //!
-//! Field names are the Go `json` tags. Public keys stay the Amino envelope from
-//! [`marshal_pub_key`](eld_tendermint_crypto::marshal_pub_key).
+//! `status` follows Tendermint 0.34 JSON-RPC: protocol versions, heights, and
+//! voting power are decimal strings; block hashes, app hashes, and the
+//! validator address are uppercase hex. Other methods keep standard base64 for
+//! byte fields. Field names are the Go `json` tags. Public keys stay the Amino
+//! envelope from [`marshal_pub_key`](eld_tendermint_crypto::marshal_pub_key).
 
 use base64::Engine;
 use serde::Serialize;
@@ -14,6 +17,12 @@ use eld_tendermint_types::{BlockId, Header, Validator};
 #[must_use]
 pub(crate) fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Uppercase hex. An empty slice is `""`, which Tendermint uses for a missing hash.
+#[must_use]
+pub(crate) fn hex_upper(bytes: &[u8]) -> String {
+    hex::encode(bytes).to_ascii_uppercase()
 }
 
 pub(crate) fn to_json<T: Serialize>(value: &T) -> Value {
@@ -41,9 +50,9 @@ pub(crate) struct NodeInfo {
 
 #[derive(Serialize)]
 pub(crate) struct ProtocolVersion {
-    pub p2p: u64,
-    pub block: u64,
-    pub app: u64,
+    pub p2p: String,
+    pub block: String,
+    pub app: String,
 }
 
 #[derive(Serialize)]
@@ -56,11 +65,11 @@ pub(crate) struct NodeInfoOther {
 pub(crate) struct SyncInfo {
     pub latest_block_hash: String,
     pub latest_app_hash: String,
-    pub latest_block_height: i64,
+    pub latest_block_height: String,
     pub latest_block_time: String,
     pub earliest_block_hash: String,
     pub earliest_app_hash: String,
-    pub earliest_block_height: i64,
+    pub earliest_block_height: String,
     pub earliest_block_time: String,
     pub catching_up: bool,
 }
@@ -69,7 +78,7 @@ pub(crate) struct SyncInfo {
 pub(crate) struct ValidatorInfo {
     pub address: String,
     pub pub_key: Value,
-    pub voting_power: i64,
+    pub voting_power: String,
 }
 
 #[derive(Serialize)]
@@ -166,4 +175,67 @@ impl RpcHeader {
 
 fn amino_pub_key(key: &PubKey) -> Option<Value> {
     serde_json::from_str(&marshal_pub_key(key)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_json_uses_tendermint_0_34_strings_and_hex() {
+        let value = to_json(&StatusResponse {
+            node_info: NodeInfo {
+                protocol_version: ProtocolVersion {
+                    p2p: "8".to_owned(),
+                    block: "11".to_owned(),
+                    app: "0".to_owned(),
+                },
+                id: "9ab26a12cbdbebbfaa962841ae782a5459b4d704".to_owned(),
+                listen_addr: "tcp://0.0.0.0:26656".to_owned(),
+                network: "eld-testnet-tempelhof".to_owned(),
+                version: "0.34.24".to_owned(),
+                channels: "3020212223004038".to_owned(),
+                moniker: "tendermint-1".to_owned(),
+                other: NodeInfoOther {
+                    tx_index: "on".to_owned(),
+                    rpc_address: "tcp://0.0.0.0:26657".to_owned(),
+                },
+            },
+            sync_info: SyncInfo {
+                latest_block_hash: hex_upper(&[0xab, 0xcd]),
+                latest_app_hash: String::new(),
+                latest_block_height: 12.to_string(),
+                latest_block_time: "2026-10-06T03:57:37.135126836Z".to_owned(),
+                earliest_block_hash: String::new(),
+                earliest_app_hash: String::new(),
+                earliest_block_height: 1.to_string(),
+                earliest_block_time: "1970-01-01T00:00:00Z".to_owned(),
+                catching_up: false,
+            },
+            validator_info: ValidatorInfo {
+                address: hex_upper(&[
+                    0x8b, 0x81, 0xcc, 0x2b, 0xa4, 0x1d, 0x4c, 0x29, 0xd0, 0xa0, 0xf9, 0x01, 0x23,
+                    0x39, 0x69, 0x93, 0x49, 0x1c, 0x3e, 0xa6,
+                ]),
+                pub_key: serde_json::json!({
+                    "type": "tendermint/PubKeyEd25519",
+                    "value": "7EtfyZfBMTZ+rh7zHE+swgcH6roeoRYOvdFMoDW9+eU="
+                }),
+                voting_power: 1.to_string(),
+            },
+        });
+
+        assert_eq!(value["node_info"]["protocol_version"]["p2p"], "8");
+        assert_eq!(value["node_info"]["protocol_version"]["block"], "11");
+        assert_eq!(value["node_info"]["protocol_version"]["app"], "0");
+        assert_eq!(value["sync_info"]["latest_block_hash"], "ABCD");
+        assert_eq!(value["sync_info"]["latest_app_hash"], "");
+        assert_eq!(value["sync_info"]["latest_block_height"], "12");
+        assert_eq!(value["sync_info"]["earliest_block_height"], "1");
+        assert_eq!(
+            value["validator_info"]["address"],
+            "8B81CC2BA41D4C29D0A0F90123396993491C3EA6"
+        );
+        assert_eq!(value["validator_info"]["voting_power"], "1");
+    }
 }

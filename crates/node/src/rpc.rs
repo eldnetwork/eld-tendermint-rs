@@ -160,9 +160,9 @@ fn status_result(status: &NodeStatus) -> Value {
     rpc_json::to_json(&StatusResponse {
         node_info: rpc_json::NodeInfo {
             protocol_version: rpc_json::ProtocolVersion {
-                p2p: 8,
-                block: 11,
-                app: 0,
+                p2p: "8".to_owned(),
+                block: "11".to_owned(),
+                app: "0".to_owned(),
             },
             id: status.id.clone(),
             listen_addr: status.listen_addr.clone(),
@@ -182,18 +182,18 @@ fn status_result(status: &NodeStatus) -> Value {
         sync_info: rpc_json::SyncInfo {
             latest_block_hash: latest_hash,
             latest_app_hash: latest_app,
-            latest_block_height: height,
+            latest_block_height: height.to_string(),
             latest_block_time: latest_time,
             earliest_block_hash: earliest_hash,
             earliest_app_hash: earliest_app,
-            earliest_block_height: earliest_height,
+            earliest_block_height: earliest_height.to_string(),
             earliest_block_time: earliest_time,
             catching_up: false,
         },
         validator_info: rpc_json::ValidatorInfo {
-            address: b64(&hex::decode(&status.address).unwrap_or_default()),
+            address: status.address.clone(),
             pub_key: status.pub_key.clone(),
-            voting_power: status.voting_power,
+            voting_power: status.voting_power.to_string(),
         },
     })
 }
@@ -207,8 +207,8 @@ fn block_at(store: &BlockStore<RocksDb>, height: i64) -> (String, String, String
         return (String::new(), String::new(), epoch);
     };
     (
-        b64(&meta.block_id.hash),
-        b64(&meta.header.app_hash),
+        rpc_json::hex_upper(&meta.block_id.hash),
+        rpc_json::hex_upper(&meta.header.app_hash),
         meta.header.time.to_rfc3339(),
     )
 }
