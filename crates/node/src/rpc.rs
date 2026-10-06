@@ -12,8 +12,8 @@ use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_p2p::Switch;
 use eld_tendermint_proto::abci::{
-    Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseQuery,
-    TxResult,
+    Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseInfo,
+    ResponseQuery, TxResult,
 };
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_state::{StateStore, TxIndex};
@@ -139,6 +139,7 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "consensus_state" => rpc_result(id, consensus_state_result(status)),
         "broadcast_tx_commit" => broadcast_tx_commit(&id, request, status),
         "abci_query" => abci_query(&id, request, status),
+        "abci_info" => abci_info(&id, status),
         "block" => rpc_block(&id, request, status),
         "commit" => rpc_commit(&id, request, status),
         "tx" => rpc_tx(&id, request, status),
@@ -536,6 +537,30 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
         "key": b64(&attribute.key),
         "value": b64(&attribute.value),
         "index": attribute.index,
+    })
+}
+
+/// `ABCIInfo`. No parameters. `InfoSync` on the query connection with `proxy.RequestInfo`.
+///
+/// Integer fields are decimal strings and `last_block_app_hash` is standard base64, which is
+/// what Tendermint 0.34 JSON and `tendermint-rpc` 0.40 both accept.
+fn abci_info(id: &Value, status: &NodeStatus) -> Value {
+    match status.app.info() {
+        Ok(response) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "response": info_json(&response) }),
+        ),
+        Err(err) => internal_error(id.clone(), &err),
+    }
+}
+
+fn info_json(response: &ResponseInfo) -> Value {
+    serde_json::json!({
+        "data": response.data,
+        "version": response.version,
+        "app_version": response.app_version.to_string(),
+        "last_block_height": response.last_block_height.to_string(),
+        "last_block_app_hash": b64(&response.last_block_app_hash),
     })
 }
 

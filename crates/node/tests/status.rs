@@ -19,9 +19,9 @@ use eld_tendermint_mempool::{App, Mempool};
 use eld_tendermint_p2p::NodeKey;
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{
-    Request, RequestCheckTx, Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit,
-    ResponseDeliverTx, ResponseEndBlock, ResponseException, ResponseFlush, ResponseInfo,
-    ResponseInitChain, ResponseQuery, request, response,
+    Request, RequestCheckTx, RequestInfo, Response, ResponseBeginBlock, ResponseCheckTx,
+    ResponseCommit, ResponseDeliverTx, ResponseEndBlock, ResponseException, ResponseFlush,
+    ResponseInfo, ResponseInitChain, ResponseQuery, request, response,
 };
 use eld_tendermint_types::Tx;
 use serde_json::Value;
@@ -353,6 +353,62 @@ fn broadcast_tx_commit_times_out_when_undelivered() {
         body["error"]["data"],
         "timed out waiting for tx to be included in a block"
     );
+}
+
+#[test]
+fn abci_info_returns_the_app_response() {
+    let info = ResponseInfo {
+        data: "{\"size\":3}".to_owned(),
+        version: "eld-app".to_owned(),
+        app_version: 7,
+        last_block_height: 42,
+        last_block_app_hash: vec![0; 32].into(),
+    };
+    let info_requests = Arc::new(std::sync::Mutex::new(Vec::<RequestInfo>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let saved = Arc::clone(&info_requests);
+    let response_info = info.clone();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let saved = Arc::clone(&saved);
+            let response_info = response_info.clone();
+            thread::spawn(move || {
+                serve_abci_script(
+                    stream,
+                    Arc::new(AtomicU64::new(0)),
+                    None,
+                    response_info,
+                    Some(saved),
+                );
+            });
+        }
+    });
+    let home = TestHome::new("abci-info");
+    write_home(&home.path, &format!("tcp://{addr}"), "tcp://127.0.0.1:0");
+    let mut node = NodeChild::spawn(&home.path);
+    let (_code, _headers, body) = post(
+        &node.rpc_addr(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"abci_info","params":null}"#,
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    assert_eq!(body["id"], 1);
+    let response = &body["result"]["response"];
+    assert_eq!(response["data"], "{\"size\":3}");
+    assert_eq!(response["version"], "eld-app");
+    assert_eq!(response["app_version"], "7");
+    assert_eq!(response["last_block_height"], "42");
+    assert_eq!(
+        response["last_block_app_hash"],
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    );
+    let requests = info_requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "handshake Info plus the RPC Info");
+    for req in requests.iter() {
+        assert_eq!(req.version, "0.34.24");
+        assert_eq!(req.block_version, 11);
+        assert_eq!(req.p2p_version, 8);
+    }
 }
 
 #[test]
@@ -1405,9 +1461,25 @@ struct OpenSocket {
 }
 
 fn serve_abci(
+    stream: TcpStream,
+    init_chain_calls: Arc<AtomicU64>,
+    seen: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+) {
+    serve_abci_script(
+        stream,
+        init_chain_calls,
+        seen,
+        ResponseInfo::default(),
+        None,
+    );
+}
+
+fn serve_abci_script(
     mut stream: TcpStream,
     init_chain_calls: Arc<AtomicU64>,
     seen: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+    info_response: ResponseInfo,
+    info_requests: Option<Arc<std::sync::Mutex<Vec<RequestInfo>>>>,
 ) {
     loop {
         let req: Request = match read_message(&mut stream) {
@@ -1415,8 +1487,11 @@ fn serve_abci(
             Err(_) => return,
         };
         let (name, value) = match req.value {
-            Some(request::Value::Info(_)) => {
-                ("info", response::Value::Info(ResponseInfo::default()))
+            Some(request::Value::Info(req)) => {
+                if let Some(saved) = &info_requests {
+                    saved.lock().unwrap().push(req);
+                }
+                ("info", response::Value::Info(info_response.clone()))
             }
             Some(request::Value::InitChain(_)) => {
                 init_chain_calls.fetch_add(1, Ordering::SeqCst);

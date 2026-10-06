@@ -150,9 +150,9 @@ A tag `v0.34.24-eld-tm-rs.N` publishes the image after CI passes. Pushes run CI 
 
 `POST /` is the only HTTP JSON-RPC route. Any other method and path is 404, including the Go `GET /status` style URLs. `GET /websocket` upgrades to a WebSocket.
 
-These `POST /` methods are served: `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `block`, `commit`, `tx`, `tx_search`.
+These `POST /` methods are served: `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `abci_info`, `block`, `commit`, `tx`, `tx_search`.
 
-Any other method name returns `-32601` and `Method not found`. That includes `block_by_hash`, `block_results`, `genesis_chunked`, `consensus_params`, `unconfirmed_txs`, `num_unconfirmed_txs`, `check_tx`, `abci_info`, and `broadcast_evidence`.
+Any other method name returns `-32601` and `Method not found`. That includes `block_by_hash`, `block_results`, `genesis_chunked`, `consensus_params`, `unconfirmed_txs`, `num_unconfirmed_txs`, `check_tx`, and `broadcast_evidence`.
 
 A few limits are easy to miss:
 

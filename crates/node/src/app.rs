@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use eld_tendermint_abci::SocketClient;
 use eld_tendermint_crypto::sum;
 use eld_tendermint_proto::abci::{
-    RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, RequestInitChain,
-    RequestQuery, ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx,
-    ResponseEndBlock, ResponseInitChain, ResponseQuery,
+    RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, RequestInfo,
+    RequestInitChain, RequestQuery, ResponseBeginBlock, ResponseCheckTx, ResponseCommit,
+    ResponseDeliverTx, ResponseEndBlock, ResponseInfo, ResponseInitChain, ResponseQuery,
 };
-use eld_tendermint_state::Error as StateError;
+use eld_tendermint_state::{Error as StateError, TM_CORE_SEMVER};
+use eld_tendermint_types::BLOCK_PROTOCOL;
 
 use crate::wait::{DeliveredTx, TxWaiter};
 
@@ -73,6 +74,24 @@ impl AbciApp {
         request: RequestQuery,
     ) -> Result<ResponseQuery, eld_tendermint_abci::Error> {
         lock(&self.shared.query).query(request)
+    }
+
+    /// `InfoSync` on the query socket. Same connection Go uses for `ABCIInfo`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the socket error. The RPC layer turns that into an internal error.
+    pub(crate) fn info(&self) -> Result<ResponseInfo, eld_tendermint_abci::Error> {
+        lock(&self.shared.query).info(info_request())
+    }
+}
+
+/// `proxy.RequestInfo`: core `0.34.24`, block protocol 11, p2p protocol 8.
+pub(crate) fn info_request() -> RequestInfo {
+    RequestInfo {
+        version: TM_CORE_SEMVER.to_owned(),
+        block_version: BLOCK_PROTOCOL,
+        p2p_version: 8,
     }
 }
 

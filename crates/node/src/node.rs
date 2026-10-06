@@ -26,14 +26,13 @@ use eld_tendermint_mempool::{
 };
 use eld_tendermint_p2p::{AddrBook, NodeKey, PexReactor, Switch, pex_channel_descriptors};
 use eld_tendermint_privval::{FilePV, PrivValidator, RemoteSigner};
-use eld_tendermint_proto::abci::RequestInfo;
 use eld_tendermint_state::{
     CommitEvents, IndexTxs, StateStore, TM_CORE_SEMVER, TxIndex, load_or_init_chain,
 };
 use eld_tendermint_store::{BlockStore, RocksDb};
 use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line, upper_hex};
 
-use crate::app::AbciApp;
+use crate::app::{AbciApp, info_request};
 use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
 use crate::ws::{CommitPublisher, SubscriptionHub};
@@ -501,11 +500,7 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
     let snapshot = dial_abci(proxy_app, addr, "snapshot");
     let mempool = dial_abci(proxy_app, addr, "mempool");
     let consensus = dial_abci(proxy_app, addr, "consensus");
-    let info = match query.info(RequestInfo {
-        version: TM_CORE_SEMVER.to_owned(),
-        block_version: BLOCK_PROTOCOL,
-        p2p_version: 8,
-    }) {
+    let info = match query.info(info_request()) {
         Ok(info) => info,
         Err(err) => return Err(abci_failed(err)),
     };
