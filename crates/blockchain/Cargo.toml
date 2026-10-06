@@ -20,7 +20,7 @@ eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 eld-tendermint-state = { version = "0.0.1", path = "../state" }
 eld-tendermint-store = { version = "0.0.1", path = "../store" }
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
-prost = "0.13"
+prost = "0.14"
 
 [dev-dependencies]
 eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }

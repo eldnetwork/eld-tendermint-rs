@@ -21,7 +21,7 @@ eld-tendermint-state = { version = "0.0.1", path = "../state" }
 eld-tendermint-store = { version = "0.0.1", path = "../store" }
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
-prost = "0.13"
+prost = "0.14"
 
 [dev-dependencies]
 eld-tendermint-config = { version = "0.0.1", path = "../config" }

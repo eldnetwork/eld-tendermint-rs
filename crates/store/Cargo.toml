@@ -18,10 +18,10 @@ categories = ["database"]
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
-prost = "0.13"
+prost = "0.14"
 # Compression codecs are off so the build does not need system snappy/lz4/zstd.
 # bindgen-runtime uses the crate's pregenerated bindings.
-rocksdb = { version = "0.24", default-features = false, features = ["bindgen-runtime"] }
+rocksdb = { version = "0.25", default-features = false, features = ["bindgen-runtime"] }
 
 [lints]
 workspace = true
