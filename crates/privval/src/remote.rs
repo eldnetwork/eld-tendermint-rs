@@ -16,6 +16,7 @@ use eld_tendermint_proto::privval::{
 use eld_tendermint_types::{Proposal, Time, Vote};
 use prost::Message;
 
+use crate::ensured::Ensured;
 use crate::{Error, FilePVLastSignState, PrivValidator, STEP_NONE, STEP_PROPOSE, vote_step};
 
 /// `maxRemoteSignerMsgSize`.
@@ -298,11 +299,11 @@ pub fn read_delimited<R: Read + ?Sized>(reader: &mut R) -> Result<PvMessage, Err
 fn put_uvarint(buf: &mut [u8], mut value: u64) -> usize {
     let mut i = 0;
     while value >= 0x80 {
-        buf[i] = u8::try_from(value & 0x7f).expect("low 7 bits") | 0x80;
+        buf[i] = u8::try_from(value & 0x7f).ensured("low 7 bits") | 0x80;
         value >>= 7;
         i += 1;
     }
-    buf[i] = u8::try_from(value).expect("last varint byte");
+    buf[i] = u8::try_from(value).ensured("last varint byte");
     i + 1
 }
 

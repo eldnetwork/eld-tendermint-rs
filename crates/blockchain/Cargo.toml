@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-blockchain"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 v0 blockchain reactor. Fast sync on channel 0x40."
+description = "Tendermint 0.34 v0 fast sync. Asks a taller peer for up to 20 blocks on channel 0x40 and applies each block at the next height."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/blockchain/README.md"
+keywords = ["tendermint", "blockchain", "fast-sync"]
+categories = ["network-programming"]
 
 [dependencies]
 eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }

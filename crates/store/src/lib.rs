@@ -12,6 +12,7 @@
 
 mod block_store;
 mod db;
+mod ensured;
 mod error;
 mod keys;
 

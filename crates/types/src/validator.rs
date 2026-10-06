@@ -11,6 +11,7 @@ use prost::Message;
 
 use eld_tendermint_crypto::{PubKey, hash_from_byte_slices, pub_key_from_proto, pub_key_to_proto};
 
+use crate::ensured::Ensured;
 use crate::{ADDRESS_SIZE, Error, Hash, MAX_TOTAL_VOTING_POWER};
 
 /// `types.PriorityWindowSizeFactor`. The priority gap is capped at twice the total power.
@@ -234,12 +235,12 @@ impl ValidatorSet {
     /// `"Cannot represent avg ProposerPriority as an int64"`. That does not happen while
     /// each priority fits in `i64`.
     fn average_proposer_priority(&self) -> i64 {
-        let count = i128::try_from(self.validators.len()).expect("validator count fits in i128");
+        let count = i128::try_from(self.validators.len()).ensured("validator count fits in i128");
         let sum = self.validators.iter().fold(0i128, |sum, validator| {
             sum + i128::from(validator.proposer_priority)
         });
         let average = sum / count;
-        i64::try_from(average).expect("avg proposer priority fits in i64")
+        i64::try_from(average).ensured("avg proposer priority fits in i64")
     }
 
     /// One step of `incrementProposerPriority`: add voting power, then subtract the total
@@ -346,12 +347,12 @@ impl ValidatorSet {
         loop {
             match (existing.peek(), updates.peek()) {
                 (Some(current), Some(update)) => match current.address.cmp(&update.address) {
-                    Ordering::Less => merged.push(existing.next().expect("peeked")),
+                    Ordering::Less => merged.push(existing.next().ensured("peeked")),
                     Ordering::Equal => {
                         existing.next();
-                        merged.push(updates.next().expect("peeked"));
+                        merged.push(updates.next().ensured("peeked"));
                     }
-                    Ordering::Greater => merged.push(updates.next().expect("peeked")),
+                    Ordering::Greater => merged.push(updates.next().ensured("peeked")),
                 },
                 (Some(_), None) => {
                     merged.extend(existing);
@@ -510,7 +511,7 @@ impl ValidatorSet {
                 continue;
             }
             let validator = &self.validators[index];
-            let vote = commit.vote(index).expect("index is in range");
+            let vote = commit.vote(index).ensured("index is in range");
             let pub_key = validator.pub_key.as_ref().ok_or(Error::MissingPubKey)?;
             vote.verify_signature(pub_key, chain_id)?;
             tallied += validator.voting_power;
@@ -558,7 +559,7 @@ impl ValidatorSet {
                 return Err(Error::DoubleCommitVote);
             }
             let validator = &self.validators[val_index];
-            let vote = commit.vote(index).expect("index is in range");
+            let vote = commit.vote(index).ensured("index is in range");
             let pub_key = validator.pub_key.as_ref().ok_or(Error::MissingPubKey)?;
             vote.verify_signature(pub_key, chain_id)?;
             tallied += validator.voting_power;

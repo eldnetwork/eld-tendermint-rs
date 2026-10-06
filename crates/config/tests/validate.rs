@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `ValidateBasic` cases from `config/config_test.go`.
 
 use eld_tendermint_config::{

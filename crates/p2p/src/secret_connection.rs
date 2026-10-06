@@ -22,6 +22,7 @@ use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 
 use crate::Error;
+use crate::ensured::Ensured;
 
 const DATA_LEN_SIZE: usize = 4;
 const DATA_MAX_SIZE: usize = 1024;
@@ -58,7 +59,7 @@ pub fn derive_secrets(dh_secret: &[u8; 32], loc_is_least: bool) -> ([u8; 32], [u
     let hkdf = Hkdf::<Sha256>::new(None, dh_secret);
     let mut okm = [0u8; 2 * AEAD_KEY_SIZE + 32];
     hkdf.expand(HKDF_INFO, &mut okm)
-        .expect("HKDF-SHA256 expands 96 bytes");
+        .ensured("HKDF-SHA256 expands 96 bytes");
     let mut recv = [0u8; AEAD_KEY_SIZE];
     let mut send = [0u8; AEAD_KEY_SIZE];
     if loc_is_least {
@@ -270,8 +271,8 @@ fn open_frame<R: Read>(
     if plain.len() != TOTAL_FRAME_SIZE {
         return Err(Error::Decrypt);
     }
-    let chunk_len = u32::from_le_bytes(plain[..DATA_LEN_SIZE].try_into().expect("4 bytes"));
-    if chunk_len > u32::try_from(DATA_MAX_SIZE).expect("1024 fits in u32") {
+    let chunk_len = u32::from_le_bytes(plain[..DATA_LEN_SIZE].try_into().ensured("4 bytes"));
+    if chunk_len > u32::try_from(DATA_MAX_SIZE).ensured("1024 fits in u32") {
         return Err(Error::ChunkTooBig);
     }
     let end = DATA_LEN_SIZE + chunk_len as usize;
@@ -285,12 +286,12 @@ fn seal_frame<W: Write>(
     chunk: &[u8],
 ) -> Result<(), Error> {
     let mut frame = [0u8; TOTAL_FRAME_SIZE];
-    let chunk_len = u32::try_from(chunk.len()).expect("chunk fits in u32");
+    let chunk_len = u32::try_from(chunk.len()).ensured("chunk fits in u32");
     frame[..DATA_LEN_SIZE].copy_from_slice(&chunk_len.to_le_bytes());
     frame[DATA_LEN_SIZE..DATA_LEN_SIZE + chunk.len()].copy_from_slice(chunk);
     let sealed = send_aead
         .encrypt(Nonce::from_slice(send_nonce), frame.as_slice())
-        .expect("ChaCha20-Poly1305 seals a 12-byte nonce");
+        .ensured("ChaCha20-Poly1305 seals a 12-byte nonce");
     incr_nonce(send_nonce)?;
     conn.write_all(&sealed).map_err(Error::Io)
 }
@@ -425,7 +426,7 @@ fn copy32(src: &[u8]) -> [u8; 32] {
 }
 
 fn incr_nonce(nonce: &mut [u8; AEAD_NONCE_SIZE]) -> Result<(), Error> {
-    let counter = u64::from_le_bytes(nonce[4..].try_into().expect("8 nonce bytes"));
+    let counter = u64::from_le_bytes(nonce[4..].try_into().ensured("8 nonce bytes"));
     if counter == u64::MAX {
         return Err(Error::NonceOverflow);
     }
@@ -444,10 +445,10 @@ pub(crate) fn read_msg<R: Read, M: Message + Default>(
     max_size: usize,
 ) -> Result<M, Error> {
     let len = read_uvarint(reader)?;
-    if len > u64::try_from(max_size).expect("max size fits in u64") {
+    if len > u64::try_from(max_size).ensured("max size fits in u64") {
         return Err(Error::MessageTooBig { len });
     }
-    let mut buf = vec![0u8; usize::try_from(len).expect("len checked against max size")];
+    let mut buf = vec![0u8; usize::try_from(len).ensured("len checked against max size")];
     reader.read_exact(&mut buf).map_err(Error::Io)?;
     M::decode(buf.as_slice()).map_err(|err| Error::Proto(err.to_string()))
 }

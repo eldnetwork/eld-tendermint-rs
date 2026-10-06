@@ -7,6 +7,7 @@ use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Error;
+use crate::ensured::Ensured;
 
 /// Thread-unsafe port of `bits.BitArray`.
 ///
@@ -218,7 +219,7 @@ impl BitArray {
     /// `BitArray.Bytes`. Little-endian words, truncated to `(bits + 7) / 8` bytes.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
-        let num_bytes = usize::try_from((self.bits + 7) / 8).expect("byte length fits");
+        let num_bytes = usize::try_from((self.bits + 7) / 8).ensured("byte length fits");
         let mut bytes = vec![0_u8; num_bytes];
         for (i, elem) in self.elems.iter().enumerate() {
             let start = i * 8;
@@ -340,7 +341,7 @@ impl BitArray {
     }
 
     fn copy_bits(&self, bits: i64) -> Self {
-        let len = word_len(bits).expect("bit count is positive and fits");
+        let len = word_len(bits).ensured("bit count is positive and fits");
         let mut elems = vec![0; len];
         let n = len.min(self.elems.len());
         elems[..n].copy_from_slice(&self.elems[..n]);
@@ -369,7 +370,7 @@ impl BitArray {
         })?;
         for (i, byte) in pattern.bytes().enumerate() {
             if byte == b'x' {
-                bit_array.set_index(i64::try_from(i).expect("index fits"), true);
+                bit_array.set_index(i64::try_from(i).ensured("index fits"), true);
             }
         }
         Ok(bit_array)

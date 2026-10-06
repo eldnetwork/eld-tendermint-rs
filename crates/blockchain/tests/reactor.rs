@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Two switches. A seeded chain, an empty peer, and a bad commit.
 
 use std::os::unix::net::UnixStream;

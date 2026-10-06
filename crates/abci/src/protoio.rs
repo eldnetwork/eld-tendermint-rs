@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use prost::Message;
 
 use crate::Error;
+use crate::ensured::Ensured;
 
 /// `maxMsgSize` (100 MiB).
 const MAX_MSG_SIZE: i64 = 104_857_600;
@@ -38,7 +39,7 @@ pub fn read_message<R: Read, M: Message + Default>(reader: &mut R) -> Result<M, 
     if !(0..=MAX_MSG_SIZE).contains(&len) {
         return Err(Error::MessageTooBig { len });
     }
-    let mut buf = vec![0u8; usize::try_from(len).expect("length fits in usize")];
+    let mut buf = vec![0u8; usize::try_from(len).ensured("length fits in usize")];
     reader.read_exact(&mut buf).map_err(Error::Io)?;
     M::decode(buf.as_slice()).map_err(|err| Error::Proto(err.to_string()))
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! In-process rounds. No sockets and no sleeps.
 
 use std::sync::atomic::{AtomicU64, Ordering};

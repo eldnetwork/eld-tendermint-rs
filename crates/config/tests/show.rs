@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! The `eld-tendermint-config` binary prints chain id, moniker, proxy app, and validators.
 
 use std::fs;

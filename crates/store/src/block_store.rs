@@ -10,6 +10,7 @@ use eld_tendermint_types::{Block, BlockId, Commit, Header, Part, PartSet};
 use prost::Message;
 
 use crate::db::{Batch, Db};
+use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::keys::{
     BLOCK_STORE_KEY, block_commit_key, block_hash_key, block_meta_key, block_part_key,
@@ -61,19 +62,19 @@ impl<D: Db> BlockStore<D> {
     /// First contiguous height, or 0 when the store is empty.
     #[must_use]
     pub fn base(&self) -> i64 {
-        self.state.lock().expect("block store state lock").base
+        self.state.lock().ensured("block store state lock").base
     }
 
     /// Last contiguous height, or 0 when the store is empty.
     #[must_use]
     pub fn height(&self) -> i64 {
-        self.state.lock().expect("block store state lock").height
+        self.state.lock().ensured("block store state lock").height
     }
 
     /// `height - base + 1`, or 0 when `height` is 0.
     #[must_use]
     pub fn size(&self) -> i64 {
-        let state = self.state.lock().expect("block store state lock");
+        let state = self.state.lock().ensured("block store state lock");
         if state.height == 0 {
             0
         } else {
@@ -137,9 +138,9 @@ impl<D: Db> BlockStore<D> {
         };
         let meta = eld_tendermint_proto::types::BlockMeta {
             block_id: Some(block_id.to_proto()),
-            block_size: i64::try_from(block.to_proto().encoded_len()).expect("block size fits"),
+            block_size: i64::try_from(block.to_proto().encoded_len()).ensured("block size fits"),
             header: Some(block.header.to_proto()),
-            num_txs: i64::try_from(block.data.as_slice().len()).expect("tx count fits"),
+            num_txs: i64::try_from(block.data.as_slice().len()).ensured("tx count fits"),
         };
         must_set(&self.db, &block_meta_key(height), &meta.encode_to_vec());
         must_set(
@@ -163,7 +164,7 @@ impl<D: Db> BlockStore<D> {
         );
 
         {
-            let mut state = self.state.lock().expect("block store state lock");
+            let mut state = self.state.lock().ensured("block store state lock");
             state.height = height;
             if state.base == 0 {
                 state.base = height;
@@ -194,7 +195,7 @@ impl<D: Db> BlockStore<D> {
             return Err(Error::PruneHeight);
         }
         let (base, latest) = {
-            let state = self.state.lock().expect("block store state lock");
+            let state = self.state.lock().ensured("block store state lock");
             (state.base, state.height)
         };
         if height > latest {
@@ -329,7 +330,7 @@ impl<D: Db> BlockStore<D> {
     /// Writes `base` into `blockStore`, then applies `batch`.
     fn flush_prune(&self, batch: &Batch, base: i64) {
         {
-            let mut state = self.state.lock().expect("block store state lock");
+            let mut state = self.state.lock().ensured("block store state lock");
             state.base = base;
         }
         self.save_state();
@@ -340,7 +341,7 @@ impl<D: Db> BlockStore<D> {
 
     fn save_state(&self) {
         let (base, height) = {
-            let state = self.state.lock().expect("block store state lock");
+            let state = self.state.lock().ensured("block store state lock");
             (state.base, state.height)
         };
         let proto = eld_tendermint_proto::store::BlockStoreState { base, height };

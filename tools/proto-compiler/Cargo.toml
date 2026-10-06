@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-proto-compiler"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Regenerates crates/proto/src/prost from proto/tendermint."
+description = "prost-build binary that regenerates crates/proto/src/prost from proto/tendermint. Run it through scripts/gen-proto.sh."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/tools/proto-compiler/README.md"
+keywords = ["tendermint", "protobuf", "codegen"]
+categories = ["development-tools"]
 
 [dependencies]
 prost-build = "0.13"

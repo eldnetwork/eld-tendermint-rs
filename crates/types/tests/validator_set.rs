@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Proposer selection from `types/validator_set_test.go`.
 //!
 //! Random keys, protobuf round-trips, and commit checks are not here.

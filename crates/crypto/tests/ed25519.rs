@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Ed25519 sign/verify. The Go test generates a random key, so the fixed vector
 //! is RFC 8032 test 2, which `golang.org/x/crypto/ed25519` also implements.
 

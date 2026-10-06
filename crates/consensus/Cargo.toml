@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-consensus"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 consensus rounds and the consensus gossip reactor."
+description = "Tendermint 0.34 consensus. Runs propose, prevote, and precommit, gossips on channels 0x20-0x23, and keeps a CRC32C write-ahead log."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/consensus/README.md"
+keywords = ["tendermint", "consensus", "bft"]
+categories = ["algorithms", "cryptography"]
 
 [dependencies]
 eld-tendermint-config = { version = "0.0.1", path = "../config" }

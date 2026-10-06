@@ -7,6 +7,7 @@
 mod amino;
 mod ed25519;
 mod encoding;
+mod ensured;
 mod merkle;
 mod tmhash;
 

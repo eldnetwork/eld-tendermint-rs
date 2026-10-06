@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use rocksdb::{DB, Direction, IteratorMode, WriteOptions};
 
+use crate::ensured::Ensured;
 use crate::error::Error;
 
 /// One key and its value from [`Db::iter_prefix`].
@@ -123,12 +124,12 @@ impl MemDb {
 
 impl Db for MemDb {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let map = self.map.lock().expect("memdb lock");
+        let map = self.map.lock().ensured("memdb lock");
         Ok(map.get(key).filter(|value| !value.is_empty()).cloned())
     }
 
     fn set(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let mut map = self.map.lock().expect("memdb lock");
+        let mut map = self.map.lock().ensured("memdb lock");
         map.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
@@ -138,19 +139,19 @@ impl Db for MemDb {
     }
 
     fn delete(&self, key: &[u8]) -> Result<(), Error> {
-        let mut map = self.map.lock().expect("memdb lock");
+        let mut map = self.map.lock().ensured("memdb lock");
         map.remove(key);
         Ok(())
     }
 
     fn write_sync(&self, batch: &Batch) -> Result<(), Error> {
-        let mut map = self.map.lock().expect("memdb lock");
+        let mut map = self.map.lock().ensured("memdb lock");
         apply_batch(&mut map, batch);
         Ok(())
     }
 
     fn iter_prefix(&self, prefix: &[u8]) -> Result<Vec<PrefixRow>, Error> {
-        let map = self.map.lock().expect("memdb lock");
+        let map = self.map.lock().ensured("memdb lock");
         let rows = match prefix_end(prefix) {
             Some(end) => map
                 .range(prefix.to_vec()..end)

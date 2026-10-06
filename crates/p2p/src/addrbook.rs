@@ -11,6 +11,7 @@ use serde_json::ser::PrettyFormatter;
 
 use crate::Error;
 use crate::address::NetAddress;
+use crate::ensured::Ensured;
 
 const BUCKET_NEW: u8 = 0x01;
 const BUCKET_OLD: u8 = 0x02;
@@ -147,7 +148,7 @@ impl AddrBook {
         let mut buf = Vec::new();
         let formatter = PrettyFormatter::with_indent(b"\t");
         let mut ser = Serializer::with_formatter(&mut buf, formatter);
-        file.serialize(&mut ser).expect("addrbook json serializes");
+        file.serialize(&mut ser).ensured("addrbook json serializes");
         buf.push(b'\n');
         fs::write(&self.path, buf).map_err(Error::Io)
     }

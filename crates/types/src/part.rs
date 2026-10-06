@@ -4,6 +4,7 @@
 
 use eld_tendermint_crypto::{Proof, proofs_from_byte_slices};
 
+use crate::ensured::Ensured;
 use crate::{BLOCK_PART_SIZE_BYTES, BitArray, Error, PartSetHeader};
 
 /// `types.Part`.
@@ -23,7 +24,7 @@ impl Part {
     /// [`BLOCK_PART_SIZE_BYTES`], or [`Error::Proof`] when the proof fails
     /// `ValidateBasic`.
     pub fn validate_basic(&self) -> Result<(), Error> {
-        if self.bytes.len() > usize::try_from(BLOCK_PART_SIZE_BYTES).expect("part size fits") {
+        if self.bytes.len() > usize::try_from(BLOCK_PART_SIZE_BYTES).ensured("part size fits") {
             return Err(Error::PartTooBig {
                 len: self.bytes.len(),
             });
@@ -91,7 +92,7 @@ impl PartSet {
         if part_size == 0 {
             return Err(Error::ZeroPartSize);
         }
-        let part_size = usize::try_from(part_size).expect("part size fits");
+        let part_size = usize::try_from(part_size).ensured("part size fits");
         let total_usize = data.len().div_ceil(part_size);
         let total =
             u32::try_from(total_usize).map_err(|_| Error::TooManyParts { count: total_usize })?;
@@ -107,10 +108,10 @@ impl PartSet {
         let mut parts = Vec::with_capacity(chunks.len());
         for (index, (bytes, proof)) in chunks.into_iter().zip(proofs).enumerate() {
             if let Some(bits) = bit_array.as_mut() {
-                bits.set_index(i64::try_from(index).expect("part index fits"), true);
+                bits.set_index(i64::try_from(index).ensured("part index fits"), true);
             }
             parts.push(Some(Part {
-                index: u32::try_from(index).expect("part index fits"),
+                index: u32::try_from(index).ensured("part index fits"),
                 bytes: bytes.to_vec(),
                 proof,
             }));
@@ -121,7 +122,7 @@ impl PartSet {
             parts,
             parts_bit_array: bit_array,
             count: total,
-            byte_size: i64::try_from(data.len()).expect("data length fits in i64"),
+            byte_size: i64::try_from(data.len()).ensured("data length fits in i64"),
         })
     }
 
@@ -132,7 +133,7 @@ impl PartSet {
         Self {
             total,
             hash: header.hash,
-            parts: vec![None; usize::try_from(total).expect("part count fits")],
+            parts: vec![None; usize::try_from(total).ensured("part count fits")],
             parts_bit_array: BitArray::new(i64::from(total)),
             count: 0,
             byte_size: 0,
@@ -215,7 +216,7 @@ impl PartSet {
                 total: self.total,
             });
         }
-        let index = usize::try_from(part.index).expect("part index fits");
+        let index = usize::try_from(part.index).ensured("part index fits");
         if self.parts[index].is_some() {
             return Ok(false);
         }
@@ -225,7 +226,7 @@ impl PartSet {
         if let Some(bits) = self.parts_bit_array.as_mut() {
             bits.set_index(i64::from(part.index), true);
         }
-        self.byte_size += i64::try_from(part.bytes.len()).expect("part length fits in i64");
+        self.byte_size += i64::try_from(part.bytes.len()).ensured("part length fits in i64");
         self.count += 1;
         self.parts[index] = Some(part);
         Ok(true)

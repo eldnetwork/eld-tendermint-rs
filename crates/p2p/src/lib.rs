@@ -9,6 +9,7 @@
 mod addrbook;
 mod address;
 mod connection;
+mod ensured;
 mod error;
 mod node_key;
 mod pex;

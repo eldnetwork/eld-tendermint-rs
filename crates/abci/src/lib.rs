@@ -4,6 +4,7 @@
 //! and a flush. There is no server and no consensus loop.
 
 mod client;
+mod ensured;
 mod error;
 mod protoio;
 

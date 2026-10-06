@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! v0 mempool against an in-process app.
 
 use std::cell::RefCell;

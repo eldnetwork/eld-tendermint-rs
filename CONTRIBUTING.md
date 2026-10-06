@@ -26,7 +26,7 @@ Rust 1.86.0, from `rust-toolchain.toml`.
 ./scripts/ci.sh
 ```
 
-That is the same check GitHub runs: the Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are errors. The store tests build RocksDB, which needs CMake.
+That is the same check GitHub runs: the Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are errors. Clippy also denies `.unwrap()`, `.expect()`, `dbg!`, and `todo!` outside tests. Tests may use unwrap, expect, and `dbg!`. A length or lock that cannot fail uses `.ensured()`, which panics if the invariant is broken. A path that can fail returns `Result`. Formatting is rustfmt's defaults. There is no `rustfmt.toml`. The store tests build RocksDB, which needs CMake.
 
 ## Dependency updates
 

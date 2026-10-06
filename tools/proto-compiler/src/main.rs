@@ -4,6 +4,9 @@
 //! ABCI byte fields, and extern paths for `google.protobuf.Timestamp` and
 //! `Duration`. Service stubs are not generated.
 
+mod ensured;
+
+use ensured::Ensured;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,7 +17,7 @@ fn main() {
     let repo_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
-        .expect("tools/proto-compiler lives two levels below the repo root");
+        .ensured("tools/proto-compiler lives two levels below the repo root");
 
     let proto_dir = repo_root.join("proto");
     let mut protos = Vec::new();
@@ -112,7 +115,7 @@ fn copy_rs(from: &Path, to: &Path) {
             })
             .path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-            let dest = to.join(path.file_name().expect("file name"));
+            let dest = to.join(path.file_name().ensured("file name"));
             fs::copy(&path, &dest).unwrap_or_else(|err| {
                 eprintln!("copy {} -> {}: {err}", path.display(), dest.display());
                 process::exit(1);

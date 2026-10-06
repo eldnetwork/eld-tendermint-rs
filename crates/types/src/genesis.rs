@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_json::{Map, Value};
 
+use crate::ensured::Ensured;
 use crate::time::Time;
 use crate::{ChainId, ConsensusParams, Error, Hash, Validator, ValidatorSet};
 
@@ -128,7 +129,7 @@ impl GenesisDoc {
 
 fn genesis_validator_json(validator: &GenesisValidator) -> Value {
     let pub_key = serde_json::from_str::<Value>(&marshal_pub_key(&validator.pub_key))
-        .expect("Amino public key JSON is valid");
+        .ensured("Amino public key JSON is valid");
     let mut object = Map::new();
     object.insert(
         "address".to_owned(),

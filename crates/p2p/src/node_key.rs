@@ -10,6 +10,7 @@ use std::path::Path;
 use eld_tendermint_crypto::{PrivKey, PubKey, marshal_priv_key, unmarshal_priv_key};
 
 use crate::Error;
+use crate::ensured::Ensured;
 
 /// `p2p.NodeKey`. The persistent peer authentication key.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,9 +63,9 @@ impl NodeKey {
     /// Returns an error when the file cannot be created or written.
     pub fn save_as(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         let priv_key: serde_json::Value = serde_json::from_str(&marshal_priv_key(&self.priv_key))
-            .expect("amino private key json is an object");
+            .ensured("amino private key json is an object");
         let bytes = serde_json::to_vec(&serde_json::json!({ "priv_key": priv_key }))
-            .expect("node key json");
+            .ensured("node key json");
         write_secret(path.as_ref(), &bytes)
     }
 

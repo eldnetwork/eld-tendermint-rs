@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! FilePV cases from `privval/file_test.go`, with a synthesized Amino key file.
 
 use std::fs;

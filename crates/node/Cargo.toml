@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-node"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 node process. Serves JSON-RPC status, health, and broadcast tx."
+description = "Tendermint 0.34 node binary. Runs consensus, the mempool, the evidence pool, peer exchange, and v0 fast sync, and serves JSON-RPC health, status, genesis, validators, blockchain, net_info, consensus_state, broadcast_tx_sync, broadcast_tx_async, broadcast_tx_commit, abci_query, block, commit, tx, and tx_search."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/node/README.md"
+keywords = ["tendermint", "consensus", "blockchain", "abci", "json-rpc"]
+categories = ["cryptography", "network-programming"]
 
 [[bin]]
 name = "eld-tendermint"

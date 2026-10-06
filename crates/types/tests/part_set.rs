@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Part set cases from `types/part_set_test.go`, using a known byte string.
 
 use eld_tendermint_crypto::hash_from_byte_slices;

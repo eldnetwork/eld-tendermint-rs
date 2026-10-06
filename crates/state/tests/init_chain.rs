@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `InitChain` against an in-process response. No socket.
 
 use std::cell::Cell;

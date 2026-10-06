@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `ApplyBlock` against an in-process app. No socket.
 
 use std::sync::Arc;

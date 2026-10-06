@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Two switches gossiping mempool txs. No WAL and no consensus height gate.
 
 use std::os::unix::net::UnixStream;

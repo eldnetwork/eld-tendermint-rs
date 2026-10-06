@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Block cases from `types/block_test.go`.
 //!
 //! Cases that need duplicate-vote evidence or a random vote set are left for later.

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! A duplicate vote is proposed once, then omitted after commit.
 
 use std::sync::Arc;

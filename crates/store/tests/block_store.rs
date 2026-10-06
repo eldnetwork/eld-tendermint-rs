@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Cases from `store/store_test.go`, including `PruneBlocks`. No genesis file.
 
 use std::fs;

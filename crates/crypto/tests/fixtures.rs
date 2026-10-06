@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Golden vectors from the Go tree.
 //!
 //! Amino strings are the Ed25519 rows in `crypto/README.md`.

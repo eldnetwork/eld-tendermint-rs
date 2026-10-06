@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `WriteMessage` of `RequestEcho` from `abci/types/messages_test.go`.
 
 use eld_tendermint_abci::{read_message, write_message};

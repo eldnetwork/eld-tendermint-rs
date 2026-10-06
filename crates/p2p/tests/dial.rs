@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! TCP dial, accept, address book, and PEX.
 
 use std::sync::{Arc, Mutex, Weak};

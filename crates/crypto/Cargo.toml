@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-crypto"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 tmhash, Merkle roots, Ed25519 key bytes, and Amino JSON."
+description = "Tendermint 0.34 tmhash, RFC-6962 Merkle inclusion proofs, Ed25519 sign and verify, and Amino JSON for keys."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/crypto/README.md"
+keywords = ["tendermint", "ed25519", "merkle", "amino"]
+categories = ["cryptography"]
 
 [dependencies]
 base64 = "0.22"

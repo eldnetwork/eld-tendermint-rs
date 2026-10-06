@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Golden `deriveSecrets` vectors and an in-process handshake.
 
 use std::io::{Read, Write};

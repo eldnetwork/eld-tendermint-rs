@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Two in-process switches on a secret connection.
 
 use std::io::{Read, Write};

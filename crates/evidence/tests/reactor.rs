@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Evidence gossip. A peer is not echoed, and a bad vote does not disconnect it.
 
 use std::os::unix::net::UnixStream;

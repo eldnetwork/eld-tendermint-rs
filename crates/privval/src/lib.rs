@@ -18,10 +18,12 @@ use eld_tendermint_crypto::{
 };
 use eld_tendermint_proto::types::{CanonicalProposal, CanonicalVote};
 use eld_tendermint_types::{Proposal, SignedMsgType, Time, Vote};
+use ensured::Ensured;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod ensured;
 mod error;
 mod remote;
 
@@ -156,7 +158,7 @@ impl FilePV {
         let priv_key = PrivKey::generate();
         let pub_key = priv_key
             .public_key()
-            .expect("generated key includes its public key");
+            .ensured("generated key includes its public key");
         Self {
             key: FilePVKey {
                 address: pub_key.address(),
@@ -385,15 +387,15 @@ impl FilePVKey {
 
     fn to_json(&self) -> Vec<u8> {
         let pub_key: Value = serde_json::from_str(&marshal_pub_key(&self.pub_key))
-            .expect("amino public key json is an object");
+            .ensured("amino public key json is an object");
         let priv_key: Value = serde_json::from_str(&marshal_priv_key(&self.priv_key))
-            .expect("amino private key json is an object");
+            .ensured("amino private key json is an object");
         let file = KeyFile {
             address: hex::encode_upper(self.address),
             pub_key,
             priv_key,
         };
-        let mut bytes = serde_json::to_vec_pretty(&file).expect("key json");
+        let mut bytes = serde_json::to_vec_pretty(&file).ensured("key json");
         bytes.push(b'\n');
         bytes
     }
@@ -471,7 +473,7 @@ impl FilePVLastSignState {
             signature: self.signature.clone().filter(|bytes| !bytes.is_empty()),
             signbytes: self.sign_bytes.clone().filter(|bytes| !bytes.is_empty()),
         };
-        let mut bytes = serde_json::to_vec_pretty(&file).expect("state json");
+        let mut bytes = serde_json::to_vec_pretty(&file).ensured("state json");
         bytes.push(b'\n');
         bytes
     }

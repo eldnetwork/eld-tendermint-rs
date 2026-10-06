@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-state"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 genesis state and ApplyBlock."
+description = "Tendermint 0.34 chain state. Builds genesis state, calls InitChain once, applies blocks, and indexes committed transactions."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/state/README.md"
+keywords = ["tendermint", "blockchain", "state"]
+categories = ["cryptography"]
 
 [dependencies]
 eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }

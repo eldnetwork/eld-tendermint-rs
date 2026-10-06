@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Optional check against a running eld-node. Ignored so CI does not dial it.
 //!
 //! See the crate README.

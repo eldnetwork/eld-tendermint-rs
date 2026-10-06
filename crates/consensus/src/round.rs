@@ -19,6 +19,7 @@ use eld_tendermint_types::{
 };
 use prost::Message;
 
+use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::votes::HeightVoteSet;
 use crate::wal::{self, Replay, Wal};
@@ -1558,7 +1559,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .as_ref()
             .and_then(Block::hash)
             .is_some_and(|hash| hash.as_bytes() == block_id.hash.as_slice());
-        if proposal_matches && self.block_ok(self.proposal_block.as_ref().expect("block")) {
+        if proposal_matches && self.block_ok(self.proposal_block.as_ref().ensured("block")) {
             self.locked_block = self.proposal_block.clone();
             self.locked_parts = self.proposal_parts.clone();
             self.log_precommit(&block_id, "proposal");
@@ -1968,7 +1969,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         while self
             .wal
             .as_ref()
-            .expect("wal")
+            .ensured("wal")
             .messages_after_end_height(self.height)?
             .is_some()
         {
@@ -1989,7 +1990,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let Some(messages) = self
             .wal
             .as_ref()
-            .expect("wal")
+            .ensured("wal")
             .messages_after_end_height(end_height)?
         else {
             return Err(Error::MissingEndHeight { height: end_height });

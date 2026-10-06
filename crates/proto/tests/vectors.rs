@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Hex vectors copied from Eld Tendermint `v0.34.24-eld.3` tests.
 //!
 //! Covered here:

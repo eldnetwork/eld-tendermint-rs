@@ -9,6 +9,7 @@ mod block;
 mod block_id;
 mod cdc;
 mod commit;
+mod ensured;
 mod error;
 mod evidence;
 mod genesis;

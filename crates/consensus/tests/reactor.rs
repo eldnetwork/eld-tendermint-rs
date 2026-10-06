@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Two switches gossiping consensus. A node one or two blocks behind catches up
 //! from block-store parts and seen-commit votes, with the blockchain reactor off.
 

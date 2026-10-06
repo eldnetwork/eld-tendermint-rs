@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use eld_tendermint_proto::p2p::{Packet, PacketMsg, PacketPing, PacketPong, packet};
 use prost::Message;
 
+use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::secret_connection::{IoShutdown, SecretReader, SecretWriter};
 
@@ -455,7 +456,7 @@ where
     if msg.channel_id < 0 || msg.channel_id > i32::from(u8::MAX) {
         return Err(Error::UnknownChannel { id: msg.channel_id });
     }
-    let id = u8::try_from(msg.channel_id).expect("channel id checked against u8");
+    let id = u8::try_from(msg.channel_id).ensured("channel id checked against u8");
     let Some(channel) = channels.get_mut(&id) else {
         return Err(Error::UnknownChannel { id: msg.channel_id });
     };
@@ -664,7 +665,7 @@ impl SendChannel {
         writer: &mut SecretWriter<W>,
         max_payload: usize,
     ) -> Result<usize, Error> {
-        let sending = self.sending.take().expect("channel has a pending message");
+        let sending = self.sending.take().ensured("channel has a pending message");
         let n = sending.len().min(max_payload);
         let eof = sending.len() <= max_payload;
         let data = sending[..n].to_vec();

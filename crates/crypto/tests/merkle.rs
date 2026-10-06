@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! RFC-6962 vectors from `crypto/merkle/rfc6962_test.go` and proof cases from
 //! `crypto/merkle/tree_test.go` and `proof_test.go`.
 

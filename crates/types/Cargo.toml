@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-types"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 core types, ValidateBasic, and canonical sign bytes."
+description = "Tendermint 0.34 blocks, votes, validators, and genesis. ValidateBasic, header hashes, and canonical sign bytes."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/types/README.md"
+keywords = ["tendermint", "blockchain", "consensus"]
+categories = ["data-structures", "cryptography"]
 
 [dependencies]
 eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }

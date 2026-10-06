@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-store"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 block store."
+description = "Tendermint 0.34 block store on RocksDB. Keys match the Go block store. A goleveldb data directory is refused."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/store/README.md"
+keywords = ["tendermint", "blockchain", "rocksdb"]
+categories = ["database"]
 
 [dependencies]
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }

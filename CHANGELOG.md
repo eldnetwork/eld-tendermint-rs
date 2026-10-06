@@ -15,6 +15,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `status` is Tendermint 0.34 JSON, so a client can read the local validator address.
+- Crate manifests inherit authors, license, edition, and repository from the workspace, and each description matches what that crate actually does.
+- Clippy denies `.unwrap()`, `.expect()`, `dbg!`, and `todo!` outside tests.
 - `proto/` and `spec/` name the Tendermint v0.34.24 commit they were copied from.
 
 ## [v0.34.24-eld-tm-rs.3] - 2026-10-05

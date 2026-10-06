@@ -7,6 +7,7 @@
 //! A peer still inside the block store, and behind this node's consensus height,
 //! catches up on the consensus reactor. Fast sync and state sync are not in this crate.
 
+mod ensured;
 mod error;
 mod group;
 mod reactor;

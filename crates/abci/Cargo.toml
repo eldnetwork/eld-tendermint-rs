@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-abci"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.17 ABCI socket client."
+description = "Blocking ABCI 0.17 socket client for Tendermint 0.34. Each call writes one request, then Flush, and reads both responses."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/abci/README.md"
+keywords = ["tendermint", "abci", "blockchain"]
+categories = ["network-programming"]
 
 [dependencies]
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }

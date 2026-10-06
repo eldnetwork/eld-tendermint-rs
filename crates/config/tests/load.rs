@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! TOML overlay, path helpers, and genesis loading.
 
 use std::fs;

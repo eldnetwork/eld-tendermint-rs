@@ -2,6 +2,7 @@
 //!
 //! Matches `crypto/merkle.HashFromByteSlices` and `merkle.Proof` in the Go tree.
 
+use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::tmhash::{SIZE, sum};
 
@@ -79,13 +80,13 @@ struct Trail {
 #[must_use]
 pub fn proofs_from_byte_slices<T: AsRef<[u8]>>(items: &[T]) -> ([u8; SIZE], Vec<Proof>) {
     let (trails, root) = trails_from_byte_slices(items);
-    let total = i64::try_from(items.len()).expect("item count fits in i64");
+    let total = i64::try_from(items.len()).ensured("item count fits in i64");
     let proofs = trails
         .into_iter()
         .enumerate()
         .map(|(index, trail)| Proof {
             total,
-            index: i64::try_from(index).expect("proof index fits in i64"),
+            index: i64::try_from(index).ensured("proof index fits in i64"),
             leaf_hash: trail.leaf_hash.to_vec(),
             aunts: trail.aunts,
         })

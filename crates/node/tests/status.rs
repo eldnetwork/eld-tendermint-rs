@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `eld-tendermint start` serves genesis `status` at height 0.
 
 use std::io::{BufRead, ErrorKind, Read, Write};

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Golden vectors from `types/block_test.go` `TestHeaderHash` and header `ValidateBasic`.
 
 use eld_tendermint_crypto::{address_hash, sum};

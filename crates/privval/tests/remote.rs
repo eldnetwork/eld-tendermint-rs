@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! A dialed signer returns the FilePV signature and rejects a conflicting second sign.
 
 use std::fs;

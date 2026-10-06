@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Genesis JSON cases from `types/genesis_test.go`.
 
 use eld_tendermint_crypto::unmarshal_pub_key;

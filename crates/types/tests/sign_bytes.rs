@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Vote and proposal sign-byte vectors from the Go tests.
 
 use eld_tendermint_proto::types::SignedMsgType;

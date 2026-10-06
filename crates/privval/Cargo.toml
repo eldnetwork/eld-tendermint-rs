@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-privval"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 file privval and a dialer for a remote signer."
+description = "Tendermint 0.34 private validator. Signs votes and proposals from priv_validator_key.json, or dials a remote signer, and rejects a second conflicting signature at the same height, round, and step."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/privval/README.md"
+keywords = ["tendermint", "validator", "ed25519"]
+categories = ["cryptography"]
 
 [dependencies]
 eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }

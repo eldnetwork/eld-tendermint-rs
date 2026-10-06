@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-evidence"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 evidence pool and the evidence reactor."
+description = "Tendermint 0.34 evidence pool. Checks duplicate votes and light-client attacks, stores them, and gossips them on channel 0x38."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/evidence/README.md"
+keywords = ["tendermint", "evidence", "consensus"]
+categories = ["cryptography"]
 
 [dependencies]
 eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }

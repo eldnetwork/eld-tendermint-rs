@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `libs/bits` cases from `bit_array_test.go`.
 
 use eld_tendermint_proto::libs::bits::BitArray as ProtoBitArray;

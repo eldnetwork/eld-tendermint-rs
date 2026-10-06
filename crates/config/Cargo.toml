@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-config"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 config.toml and genesis.json loaders."
+description = "Tendermint 0.34 config.toml and genesis.json loaders. Parsing starts from the Go defaults and overlays the file."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/config/README.md"
+keywords = ["tendermint", "config", "genesis"]
+categories = ["config"]
 
 [[bin]]
 name = "eld-tendermint-config"

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Conflicting and non-conflicting cases from `TestDuplicateVoteEvidenceValidation`.
 //!
 //! The random-key `TestEvidenceList` is skipped. Light-client attack evidence is covered

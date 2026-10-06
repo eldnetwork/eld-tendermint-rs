@@ -18,5 +18,21 @@ members = [
     "tools/proto-compiler",
 ]
 
+[workspace.package]
+authors = ["Eld network"]
+edition = "2024"
+rust-version = "1.86.0"
+license = "Apache-2.0"
+repository = "https://github.com/eldnetwork/eld-tendermint-rs"
+homepage = "https://github.com/eldnetwork/eld-tendermint-rs"
+
 [workspace.lints.rust]
 warnings = "deny"
+
+# Denied outside tests. `clippy.toml` allows unwrap, expect, and dbg! in test code.
+# `todo!` stays denied everywhere. rustfmt uses its defaults; there is no rustfmt.toml.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"

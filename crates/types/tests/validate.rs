@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `ValidateBasic` matrices from `vote_test.go`, `proposal_test.go`, and `block_test.go`.
 
 use eld_tendermint_proto::types::SignedMsgType;

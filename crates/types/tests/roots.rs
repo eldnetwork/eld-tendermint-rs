@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! Transaction roots, validator-set hash, and consensus-params hash from the Go tree.
 
 use eld_tendermint_crypto::{PubKey, unmarshal_pub_key};

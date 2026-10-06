@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-p2p"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Tendermint 0.34 node key, secret connection, switch, address book, and PEX."
+description = "Tendermint 0.34 peer networking. Node key, secret-connection handshake, multiplexed switch, address book, and peer exchange on channel 0x00."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/p2p/README.md"
+keywords = ["tendermint", "p2p", "networking"]
+categories = ["network-programming", "cryptography"]
 
 [dependencies]
 base64 = "0.22"

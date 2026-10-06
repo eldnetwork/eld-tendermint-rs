@@ -1,10 +1,18 @@
 [package]
 name = "eld-tendermint-proto"
 version = "0.0.1"
-edition = "2024"
-license = "Apache-2.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
-description = "Prost types for Eld Tendermint v0.34.24 (ABCI 0.17)."
+description = "Prost messages generated from the Eld Tendermint v0.34.24-eld.3 protos (ABCI 0.17). Field numbers match that Go schema."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/proto/README.md"
+keywords = ["tendermint", "protobuf", "abci"]
+categories = ["encoding"]
 
 [dependencies]
 bytes = "1"

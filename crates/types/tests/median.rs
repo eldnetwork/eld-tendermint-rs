@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 //! `MedianTime` from `spec/consensus/bft-time.md`.
 
 use eld_tendermint_proto::types::BlockIdFlag;

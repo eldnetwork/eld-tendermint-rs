@@ -1,0 +1,7 @@
+# `unwrap_used`, `expect_used`, and `dbg_macro` are denied on library and binary code.
+# `#[test]` functions and `#[cfg(test)]` modules may still use them.
+# Integration tests also allow those lints at the top of each file under `tests/`.
+# `todo!` is denied everywhere.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
