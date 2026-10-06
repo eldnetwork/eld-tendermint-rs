@@ -23,6 +23,10 @@ impl Part {
     /// Returns [`Error::PartTooBig`] when `bytes` is longer than
     /// [`BLOCK_PART_SIZE_BYTES`], or [`Error::Proof`] when the proof fails
     /// `ValidateBasic`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when [`BLOCK_PART_SIZE_BYTES`] does not fit in `usize`.
     pub fn validate_basic(&self) -> Result<(), Error> {
         if self.bytes.len() > usize::try_from(BLOCK_PART_SIZE_BYTES).ensured("part size fits") {
             return Err(Error::PartTooBig {
@@ -88,6 +92,11 @@ impl PartSet {
     ///
     /// Returns [`Error::ZeroPartSize`] when `part_size` is 0, or
     /// [`Error::TooManyParts`] when the chunk count does not fit in `u32`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `part_size`, a part index, or the byte length does not fit in the
+    /// integer the proof uses. A `part_size` that fits in `u32` fits in `usize` here.
     pub fn from_data(data: &[u8], part_size: u32) -> Result<Self, Error> {
         if part_size == 0 {
             return Err(Error::ZeroPartSize);

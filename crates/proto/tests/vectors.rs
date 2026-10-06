@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
-//! Hex vectors copied from Eld Tendermint `v0.34.24-eld.3` tests.
+//! Hex vectors from `tests/vectors/`, copied from the commit in `proto/GO_REF`.
 //!
 //! Covered here:
 //! - `mempool/v0/reactor_test.go` and `mempool/v1/reactor_test.go` `TestMempoolVectors`
@@ -16,9 +16,7 @@
 //! `types/vote_test.go` `TestVoteSignBytesTestVectors` lives in
 //! `crates/types/tests/sign_bytes.rs` (canonical bytes, not a proto wrapper).
 //! `types/protobuf_test.go` generates keys and has no static hex.
-//! `p2p/conn/secret_connection_test.go` (`TestSecretConnectionHandshake`,
-//! `TestDeriveSecretsAndChallengeGolden`) is a handshake and KDF, not a proto
-//! message. Those stay with the later p2p crate.
+//! The secret-connection golden file is `tests/vectors/secret-connection.golden`.
 
 use prost::Message;
 use prost_types::Timestamp;
@@ -102,6 +100,13 @@ fn merkle_root(leaves: &[impl AsRef<[u8]>]) -> Vec<u8> {
     hash_from_byte_slices(leaves).to_vec()
 }
 
+fn vector_hex(text: &'static str) -> Vec<&'static str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
 fn assert_hex<M>(msg: &M, expected: &str)
 where
     M: Message + Default + PartialEq + std::fmt::Debug,
@@ -132,11 +137,17 @@ where
 /// `mempool/v0/reactor_test.go` and `mempool/v1/reactor_test.go` `TestMempoolVectors`.
 #[test]
 fn mempool_vectors() {
+    let mut expected =
+        vector_hex(include_str!("../../../tests/vectors/mempool-v0.hex")).into_iter();
+    assert_eq!(
+        vector_hex(include_str!("../../../tests/vectors/mempool-v0.hex")),
+        vector_hex(include_str!("../../../tests/vectors/mempool-v1.hex")),
+    );
     let cases = [
-        (vec![0x7b], "0a030a017b"),
+        (vec![0x7b], expected.next().expect("vector")),
         (
             b"proto encoding in mempool".to_vec(),
-            "0a1b0a1970726f746f20656e636f64696e6720696e206d656d706f6f6c",
+            expected.next().expect("vector"),
         ),
     ];
     for (tx, expected) in cases {
@@ -183,12 +194,14 @@ fn hello_world_block() -> Block {
 /// `blockchain/msgs_test.go` `TestBlockchainMessageVectors`.
 #[test]
 fn blockchain_message_vectors() {
+    let mut expected =
+        vector_hex(include_str!("../../../tests/vectors/blockchain.hex")).into_iter();
     let cases: Vec<(BcMessage, &str)> = vec![
         (
             BcMessage {
                 sum: Some(bc_message::Sum::BlockRequest(BlockRequest { height: 1 })),
             },
-            "0a020801",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -196,7 +209,7 @@ fn blockchain_message_vectors() {
                     height: i64::MAX,
                 })),
             },
-            "0a0a08ffffffffffffffff7f",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -204,7 +217,7 @@ fn blockchain_message_vectors() {
                     block: Some(hello_world_block()),
                 })),
             },
-            "1a700a6e0a5b0a02080b1803220b088092b8c398feffffff012a0212003a20c4da88e876062aa1543400d50d0eaa0dac88096057949cfb7bca7f3a48c04bf96a20e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855120d0a0b48656c6c6f20576f726c641a00",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -212,7 +225,7 @@ fn blockchain_message_vectors() {
                     height: 1,
                 })),
             },
-            "12020801",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -220,13 +233,13 @@ fn blockchain_message_vectors() {
                     height: i64::MAX,
                 })),
             },
-            "120a08ffffffffffffffff7f",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
                 sum: Some(bc_message::Sum::StatusRequest(StatusRequest {})),
             },
-            "2200",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -235,7 +248,7 @@ fn blockchain_message_vectors() {
                     base: 2,
                 })),
             },
-            "2a0408011002",
+            expected.next().expect("vector"),
         ),
         (
             BcMessage {
@@ -244,7 +257,7 @@ fn blockchain_message_vectors() {
                     base: i64::MAX,
                 })),
             },
-            "2a1408ffffffffffffffff7f10ffffffffffffffff7f",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -317,6 +330,7 @@ fn empty_proposal() -> types::Proposal {
 /// `privval/msgs_test.go` `TestPrivvalVectors`.
 #[test]
 fn privval_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/privval.hex")).into_iter();
     let ed25519 = hex::decode("556a436f1218d30942efe798420f51dc9b6a311b929c578257457d05c5fcf230")
         .expect("pubkey hex");
     let remote_error = RemoteSignerError {
@@ -331,13 +345,13 @@ fn privval_vectors() {
             PvMessage {
                 sum: Some(pv_message::Sum::PingRequest(PingRequest {})),
             },
-            "3a00",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
                 sum: Some(pv_message::Sum::PingResponse(PingResponse {})),
             },
-            "4200",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -345,7 +359,7 @@ fn privval_vectors() {
                     chain_id: String::new(),
                 })),
             },
-            "0a00",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -356,7 +370,7 @@ fn privval_vectors() {
                     error: None,
                 })),
             },
-            "12240a220a20556a436f1218d30942efe798420f51dc9b6a311b929c578257457d05c5fcf230",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -366,7 +380,7 @@ fn privval_vectors() {
                     error: Some(remote_error.clone()),
                 })),
             },
-            "12140a0012100801120c697427732061206572726f72",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -375,7 +389,7 @@ fn privval_vectors() {
                     chain_id: String::new(),
                 })),
             },
-            "1a760a74080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0608f49a8ded0532146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb03",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -384,7 +398,7 @@ fn privval_vectors() {
                     error: None,
                 })),
             },
-            "22760a74080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0608f49a8ded0532146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb03",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -393,7 +407,7 @@ fn privval_vectors() {
                     error: Some(remote_error.clone()),
                 })),
             },
-            "22250a11220212002a0b088092b8c398feffffff0112100801120c697427732061206572726f72",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -402,7 +416,7 @@ fn privval_vectors() {
                     chain_id: String::new(),
                 })),
             },
-            "2a700a6e08011003180220022a4a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a320608f49a8ded053a10697427732061207369676e6174757265",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -413,7 +427,7 @@ fn privval_vectors() {
                     },
                 )),
             },
-            "32700a6e08011003180220022a4a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a320608f49a8ded053a10697427732061207369676e6174757265",
+            expected.next().expect("vector"),
         ),
         (
             PvMessage {
@@ -424,7 +438,7 @@ fn privval_vectors() {
                     },
                 )),
             },
-            "32250a112a021200320b088092b8c398feffffff0112100801120c697427732061206572726f72",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -437,6 +451,7 @@ fn privval_vectors() {
 /// The block id hash is the raw 32-byte string, not a tmhash of it.
 #[test]
 fn cons_msgs_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/consensus.hex")).into_iter();
     let marks = b"add_more_exclamation_marks_code-".to_vec();
     let shorter = b"add_more_exclamation".to_vec();
     let psh = PartSetHeader {
@@ -491,7 +506,7 @@ fn cons_msgs_vectors() {
                     last_commit_round: 1,
                 })),
             },
-            "0a0a08011001180120012801",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -503,7 +518,7 @@ fn cons_msgs_vectors() {
                     last_commit_round: i32::MAX,
                 })),
             },
-            "0a2608ffffffffffffffff7f10ffffffff0718ffffffff0f20ffffffffffffffff7f28ffffffff07",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -515,7 +530,7 @@ fn cons_msgs_vectors() {
                     is_commit: false,
                 })),
             },
-            "1231080110011a24080112206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d22050801120100",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -525,7 +540,7 @@ fn cons_msgs_vectors() {
                     },
                 )),
             },
-            "1a720a7008201001180120012a480a206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d1224080112206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d320608c0b89fdc053a146164645f6d6f72655f6578636c616d6174696f6e",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -536,7 +551,7 @@ fn cons_msgs_vectors() {
                     proposal_pol: Some(empty_bit_array()),
                 })),
             },
-            "2206080110011a00",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -546,7 +561,7 @@ fn cons_msgs_vectors() {
                     part: Some(part),
                 })),
             },
-            "2a36080110011a3008011204746573741a26080110011a206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -554,7 +569,7 @@ fn cons_msgs_vectors() {
                     eld_tendermint_proto::consensus::Vote { vote: Some(vote) },
                 )),
             },
-            "32700a6e0802100122480a206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d1224080112206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d2a0608c0b89fdc0532146164645f6d6f72655f6578636c616d6174696f6e3801",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -565,7 +580,7 @@ fn cons_msgs_vectors() {
                     index: 1,
                 })),
             },
-            "3a080801100118012001",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -576,7 +591,7 @@ fn cons_msgs_vectors() {
                     index: i32::MAX,
                 })),
             },
-            "3a1808ffffffffffffffff7f10ffffffff07180120ffffffff07",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -587,7 +602,7 @@ fn cons_msgs_vectors() {
                     block_id: Some(block.clone()),
                 })),
             },
-            "425008011001180122480a206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d1224080112206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d",
+            expected.next().expect("vector"),
         ),
         (
             ConsMessage {
@@ -599,7 +614,7 @@ fn cons_msgs_vectors() {
                     votes: Some(bits),
                 })),
             },
-            "4a5708011001180122480a206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d1224080112206164645f6d6f72655f6578636c616d6174696f6e5f6d61726b735f636f64652d2a050801120100",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -610,6 +625,7 @@ fn cons_msgs_vectors() {
 /// `p2p/pex/pex_reactor_test.go` `TestPexVectors`. Wrapped in `p2p.Message`.
 #[test]
 fn pex_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/pex.hex")).into_iter();
     let addr = NetAddress {
         id: "1".to_string(),
         ip: "127.0.0.1".to_string(),
@@ -620,13 +636,13 @@ fn pex_vectors() {
             PexMessage {
                 sum: Some(pex_message::Sum::PexRequest(PexRequest {})),
             },
-            "0a00",
+            expected.next().expect("vector"),
         ),
         (
             PexMessage {
                 sum: Some(pex_message::Sum::PexAddrs(PexAddrs { addrs: vec![addr] })),
             },
-            "12130a110a013112093132372e302e302e31188247",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -637,18 +653,19 @@ fn pex_vectors() {
 /// `p2p/conn/connection_test.go` `TestConnVectors`. Wrapped in `p2p.Packet`.
 #[test]
 fn conn_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/conn.hex")).into_iter();
     let cases: Vec<(Packet, &str)> = vec![
         (
             Packet {
                 sum: Some(packet_sum::Sum::PacketPing(PacketPing {})),
             },
-            "0a00",
+            expected.next().expect("vector"),
         ),
         (
             Packet {
                 sum: Some(packet_sum::Sum::PacketPong(PacketPong {})),
             },
-            "1200",
+            expected.next().expect("vector"),
         ),
         (
             Packet {
@@ -658,7 +675,7 @@ fn conn_vectors() {
                     data: b"data transmitted over the wire".to_vec(),
                 })),
             },
-            "1a2208011a1e64617461207472616e736d6974746564206f766572207468652077697265",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -669,12 +686,13 @@ fn conn_vectors() {
 /// `statesync/messages_test.go` `TestStateSyncVectors`. Wrapped in `statesync.Message`.
 #[test]
 fn state_sync_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/statesync.hex")).into_iter();
     let cases: Vec<(SsMessage, &str)> = vec![
         (
             SsMessage {
                 sum: Some(ss_message::Sum::SnapshotsRequest(SnapshotsRequest {})),
             },
-            "0a00",
+            expected.next().expect("vector"),
         ),
         (
             SsMessage {
@@ -686,7 +704,7 @@ fn state_sync_vectors() {
                     metadata: b"snapshot metadata".to_vec(),
                 })),
             },
-            "1225080110021803220a636875636b20686173682a11736e617073686f74206d65746164617461",
+            expected.next().expect("vector"),
         ),
         (
             SsMessage {
@@ -696,7 +714,7 @@ fn state_sync_vectors() {
                     index: 3,
                 })),
             },
-            "1a06080110021803",
+            expected.next().expect("vector"),
         ),
         (
             SsMessage {
@@ -708,7 +726,7 @@ fn state_sync_vectors() {
                     missing: false,
                 })),
             },
-            "2214080110021803220c697427732061206368756e6b",
+            expected.next().expect("vector"),
         ),
     ];
     for (msg, expected) in cases {
@@ -741,6 +759,7 @@ fn example_evidence_vote(vote_type: SignedMsgType) -> types::Vote {
 /// `defaultEvidenceTime` is 2019-01-01 UTC. One validator of power 10.
 #[test]
 fn evidence_vectors() {
+    let mut expected = vector_hex(include_str!("../../../tests/vectors/evidence.hex")).into_iter();
     let list = EvidenceList {
         evidence: vec![Evidence {
             sum: Some(types::evidence::Sum::DuplicateVoteEvidence(
@@ -754,10 +773,7 @@ fn evidence_vectors() {
             )),
         }],
     };
-    assert_hex(
-        &list,
-        "0a85020a82020a79080210031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb031279080110031802224a0a208b01023386c371778ecb6368573e539afc3cc860ec3a2f614e54fe5652f4fc80122608c0843d122072db3d959635dff1bb567bedaa70573392c5159666a3f8caf11e413aac52207a2a0b08b1d381d20510809dca6f32146af1f4111082efb388211bc72c55bcd61e9ac3d538d5bb03180a200a2a060880dbaae105",
-    );
+    assert_hex(&list, expected.next().expect("vector"));
 }
 
 /// `types/results_test.go` `TestABCIResults` marshal checks.

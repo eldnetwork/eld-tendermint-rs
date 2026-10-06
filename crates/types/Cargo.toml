@@ -24,5 +24,8 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[dev-dependencies]
+proptest = { version = "1.6.0", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true

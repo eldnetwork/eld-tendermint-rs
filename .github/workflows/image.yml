@@ -9,7 +9,7 @@ on:
 env:
   REGISTRY: ghcr.io
 
-# CI jobs only read the repo. The image job grants packages: write.
+# CI jobs only read the repo. The image job writes the release digest and the package.
 permissions:
   contents: read
 
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: ci
     permissions:
-      contents: read
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -61,11 +61,30 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            REVISION=${{ github.sha }}
       - name: Record image digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          digest="${{ steps.build.outputs.digest }}"
+          tag="${{ github.ref_name }}"
+          image="ghcr.io/${{ steps.image.outputs.name }}@${digest}"
           {
             echo "### Image"
-            echo "ref: ${{ github.ref_name }}"
+            echo "ref: ${tag}"
             echo "tags: ${{ steps.meta.outputs.tags }}"
-            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo "digest: ${digest}"
           } >> "$GITHUB_STEP_SUMMARY"
+          note="Image: \`${image}\`"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            body="$(gh release view "${tag}" --json body --jq '.body // ""')"
+            if printf '%s\n' "${body}" | grep -F "${digest}" >/dev/null; then
+              exit 0
+            fi
+            notes="$(mktemp)"
+            printf '%s\n\n%s\n' "${body}" "${note}" > "${notes}"
+            gh release edit "${tag}" --notes-file "${notes}"
+          else
+            gh release create "${tag}" --title "${tag}" --notes "${note}"
+          fi

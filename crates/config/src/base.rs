@@ -16,7 +16,7 @@ pub struct BaseConfig {
     pub root_dir: String,
     #[serde(default = "default_proxy_app")]
     pub proxy_app: String,
-    #[serde(default = "default_moniker")]
+    #[serde(default = "crate::hostname::default_moniker")]
     pub moniker: String,
     #[serde(rename = "fast_sync", default = "crate::default_true")]
     pub fast_sync: bool,
@@ -50,7 +50,7 @@ impl BaseConfig {
         Self {
             root_dir: String::new(),
             proxy_app: default_proxy_app(),
-            moniker: default_moniker(),
+            moniker: crate::hostname::default_moniker(),
             fast_sync: true,
             db_backend: default_db_backend(),
             db_dir: default_db_dir(),
@@ -112,20 +112,6 @@ impl BaseConfig {
             _ => Err(Error::UnknownLogFormat),
         }
     }
-}
-
-/// `getDefaultMoniker`: the host name, or `"anonymous"` when it cannot be read.
-#[must_use]
-pub fn default_moniker() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: `buf` is a writable 256-byte buffer. `gethostname` writes at most `len`
-    // bytes and returns 0, or returns -1 without a hostname we can use.
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if rc != 0 {
-        return "anonymous".to_owned();
-    }
-    let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
-    String::from_utf8(buf[..end].to_vec()).unwrap_or_else(|_| "anonymous".to_owned())
 }
 
 pub(crate) fn default_proxy_app() -> String {

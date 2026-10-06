@@ -26,7 +26,13 @@ Rust 1.86.0, from `rust-toolchain.toml`.
 ./scripts/ci.sh
 ```
 
-That is the same check GitHub runs: the Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are errors. Clippy also denies `.unwrap()`, `.expect()`, `dbg!`, and `todo!` outside tests. Tests may use unwrap, expect, and `dbg!`. A length or lock that cannot fail uses `.ensured()`, which panics if the invariant is broken. A path that can fail returns `Result`. Formatting is rustfmt's defaults. There is no `rustfmt.toml`. The store tests build RocksDB, which needs CMake.
+That is the same check GitHub runs: the Go-version pin, the vector check, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are errors. Clippy also denies `.unwrap()`, `.expect()`, `dbg!`, and `todo!` outside tests. Tests may use unwrap, expect, and `dbg!`. A length or lock that cannot fail uses `.ensured()`, which panics if the invariant is broken. A path that can fail returns `Result`. Formatting is rustfmt's defaults. There is no `rustfmt.toml`. The store tests build RocksDB, which needs CMake.
+
+Library crates return their own `Error` enum and keep the source error. The `eld-tendermint` binary may collapse that into a string before it exits. Do not add `anyhow` to a library crate.
+
+`unsafe` is forbidden outside `crates/config`. The host-name lookup in `crates/config/src/hostname.rs` is the only `unsafe` block. RocksDB is opened from `crates/store/src/db.rs`; the FFI stays in the `rocksdb` crate. `eld-tendermint unsafe-reset-all` is the command that deletes chain data. Its tests are in `crates/node/tests/status.rs`.
+
+`tests/vectors/` holds the hex copied from the Go commit in `proto/GO_REF`. `scripts/refresh-vectors.sh --check` fails when those files and that commit disagree. Run `scripts/refresh-vectors.sh` after the pin changes, then commit the new files.
 
 ## Dependency updates
 

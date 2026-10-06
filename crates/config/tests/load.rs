@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
+// `std::env::set_var` is unsafe on this toolchain. This file is the only test that writes `TMHOME`.
+#![allow(unsafe_code)]
 //! TOML overlay, path helpers, and genesis loading.
 
 use std::fs;

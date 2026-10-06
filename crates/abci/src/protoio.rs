@@ -34,6 +34,11 @@ pub fn write_message<W: Write, M: Message>(writer: &mut W, msg: &M) -> Result<()
 ///
 /// Returns [`Error::InvalidVarint`], [`Error::MessageTooBig`], [`Error::Io`], or
 /// [`Error::Proto`].
+///
+/// # Panics
+///
+/// Panics when a length that already passed the 100 MiB cap does not fit in `usize`.
+/// On this node's pointer width that cap always fits.
 pub fn read_message<R: Read, M: Message + Default>(reader: &mut R) -> Result<M, Error> {
     let len = read_varint(reader)?;
     if !(0..=MAX_MSG_SIZE).contains(&len) {

@@ -136,7 +136,7 @@ eld-tendermint-config --home /path/to/node
 
 ## Docker
 
-The published image is `ghcr.io/eldnetwork/eld-tendermint-rs`. The binary in that image is `eld-tendermint-rs`. Config, genesis, and validator keys are not in the image. Mount them at `TMHOME` (default `/tendermint-rs/.tendermint`).
+The published image is `ghcr.io/eldnetwork/eld-tendermint-rs`. The binary in that image is `eld-tendermint`, the same name as the local binary. Config, genesis, and validator keys are not in the image. Mount them at `TMHOME` (default `/tendermint-rs/.tendermint`). Port 26660 is reserved the way a Go node reserves the Prometheus port. This process does not listen on it.
 
 ```bash
 docker build -t ghcr.io/eldnetwork/eld-tendermint-rs:local .
@@ -163,24 +163,11 @@ A few limits are easy to miss:
 
 ## Verify compatibility
 
-There is no generator script in this repo. The hex in `crates/proto/tests/vectors.rs` is copied from the Go tests at `v0.34.24-eld.3` (`proto/GO_REF`).
+`tests/vectors/` holds the hex copied from the Go commit in `proto/GO_REF`. `scripts/refresh-vectors.sh` downloads those Go tests and rewrites the files. `scripts/refresh-vectors.sh --check` fails when the files and that commit disagree. CI runs the check.
 
-To refresh the fixtures, check out [eld-tendermint](https://github.com/eldnetwork/eld-tendermint) at that tag and read the expected bytes in these tests:
+`TestABCIResults` and `TestWriteReadMessageSimple` do not embed hex. The script records that, plus the framed `RequestEcho{"Hello"}` bytes. `types/protobuf_test.go` generates keys and has no static hex, so it is not copied.
 
-- `mempool/v0/reactor_test.go` and `mempool/v1/reactor_test.go`: `TestMempoolVectors`
-- `blockchain/msgs_test.go`: `TestBlockchainMessageVectors`
-- `privval/msgs_test.go`: `TestPrivvalVectors`
-- `consensus/msgs_test.go`: `TestConsMsgsVectors`
-- `p2p/pex/pex_reactor_test.go`: `TestPexVectors`
-- `p2p/conn/connection_test.go`: `TestConnVectors`
-- `statesync/messages_test.go`: `TestStateSyncVectors`
-- `evidence/reactor_test.go`: `TestEvidenceVectors`
-- `types/results_test.go`: `TestABCIResults`
-- `abci/types/messages_test.go`: `TestWriteReadMessageSimple`
-
-Vote sign bytes stay in `crates/types/tests/sign_bytes.rs` (`TestVoteSignBytesTestVectors`). The secret-connection golden file stays in `crates/p2p` (`TestDeriveSecretsAndChallengeGolden`). The length-prefixed `RequestEcho` frame stays in `crates/abci`. `types/protobuf_test.go` generates keys and has no static hex, so it is not copied.
-
-Re-run the checks with:
+Re-run the Rust checks with:
 
 ```bash
 cargo test -p eld-tendermint-proto --test vectors
@@ -189,15 +176,27 @@ cargo test -p eld-tendermint-p2p --test secret_connection
 cargo test -p eld-tendermint-abci --test frame
 ```
 
+## Operators
+
+Log lines go to stderr as `LEVEL module=<name> <message> key=value`. Levels are `INFO`, `ERROR`, and `WARN`. A value that contains a space is quoted. There is no tracing subscriber and no Go log format.
+
+`[instrumentation]` is parsed so a Go `config.toml` loads. `prometheus` defaults to false, the listen address defaults to `:26660`, and the namespace defaults to `tendermint`. This node does not open that port and does not export Go metric names.
+
+Proposal, vote, and WAL timestamps use `Time::now()`, which reads `SystemTime`. After genesis, the header time is the median of the last commit. `Instant` is only for timeouts.
+
+The secret-connection ephemeral key comes from `OsRng`. The ChaCha20-Poly1305 nonce starts at zero and increments. Proposal bytes are not randomized.
+
+The WAL frame is a 4-byte Castagnoli CRC32C over the protobuf only, then a 4-byte big-endian length, then the protobuf. Each append is `fsync`ed. The head file rotates to `wal.NNN` at 10 MiB. Replay against a Go WAL depends on that frame.
+
 ## CI
 
-Rust 1.86.0 (see `rust-toolchain.toml`). Install [gitleaks](https://github.com/gitleaks/gitleaks), [cargo-audit](https://github.com/rustsec/rustsec) 0.22.2+, and [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`brew install gitleaks cargo-audit cargo-deny` on macOS).
+The minimum supported Rust is 1.86.0 with edition 2024. Both are pinned in `rust-toolchain.toml` and `[workspace.package]`. CI builds that toolchain, and it is the one this repo supports. Install [gitleaks](https://github.com/gitleaks/gitleaks), [cargo-audit](https://github.com/rustsec/rustsec) 0.22.2+, and [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`brew install gitleaks cargo-audit cargo-deny` on macOS).
 
 ```bash
 ./scripts/ci.sh
 ```
 
-That runs the same checks as GitHub Actions: the tendermint Go-version pin, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are treated as errors. A tag runs this workflow before the image job.
+That runs the same checks as GitHub Actions: the tendermint Go-version pin, the vector check, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are treated as errors. A tag runs this workflow before the image job. The image job records the image digest on the GitHub Release for that tag.
 
 Dependabot opens pull requests for Cargo and GitHub Actions. It does not merge them. The policy is in [CONTRIBUTING.md](CONTRIBUTING.md). The SHA-256 pins for `cargo-audit` and `cargo-deny`, and the pinned `gitleaks` download, stay manual.
 

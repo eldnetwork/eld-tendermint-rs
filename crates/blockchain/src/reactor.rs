@@ -18,6 +18,7 @@ use eld_tendermint_store::{BlockStore, Db};
 use eld_tendermint_types::{BLOCK_PART_SIZE_BYTES, Block, BlockId, Commit, CommitSig};
 use prost::Message as ProstMessage;
 
+use crate::error::Error;
 use crate::pool::{Incoming, Pool};
 
 /// `BlockchainChannel`.
@@ -241,8 +242,8 @@ impl<A: App, D: Db> Inner<A, D> {
             Incoming::Later | Incoming::Duplicate => Outcome::Ok,
             Incoming::Next(block) => {
                 let block = *block;
-                if let Err(bad_peer) = self.apply_block(peer_id, block) {
-                    return Outcome::StopOther(bad_peer);
+                if let Err(err) = self.apply_block(block) {
+                    return Outcome::StopOther(reject(peer_id, err));
                 }
                 match self.apply_ready().into_iter().next() {
                     Some(bad_peer) => Outcome::StopOther(bad_peer),
@@ -262,8 +263,8 @@ impl<A: App, D: Db> Inner<A, D> {
             let Some(buffered) = self.pool.pop_next(next) else {
                 break;
             };
-            if let Err(bad_peer) = self.apply_block(&buffered.peer_id, buffered.block) {
-                stopped.push(bad_peer);
+            if let Err(err) = self.apply_block(buffered.block) {
+                stopped.push(reject(&buffered.peer_id, err));
                 break;
             }
         }
@@ -272,27 +273,25 @@ impl<A: App, D: Db> Inner<A, D> {
 
     /// Check the commit, apply, then save the block and the state.
     ///
-    /// The error is the peer that sent the block. Nothing is written on failure.
-    fn apply_block(&mut self, peer_id: &str, block: Block) -> Result<(), String> {
+    /// Nothing is written on failure. The caller drops the peer that sent the block.
+    fn apply_block(&mut self, block: Block) -> Result<(), Error> {
         if !self.commit_matches(&block) {
-            return Err(peer_id.to_owned());
+            return Err(Error::BadCommit);
         }
-        if validate_block(&self.state, &block).is_err() {
-            return Err(peer_id.to_owned());
-        }
+        validate_block(&self.state, &block).map_err(Error::InvalidBlock)?;
         let parts = block
             .make_part_set(BLOCK_PART_SIZE_BYTES)
-            .map_err(|_| peer_id.to_owned())?;
+            .map_err(Error::PartSet)?;
         let hash = block
             .hash()
             .map(|hash| hash.as_bytes().to_vec())
-            .ok_or_else(|| peer_id.to_owned())?;
+            .ok_or(Error::MissingHash)?;
         let block_id = BlockId {
             hash,
             part_set_header: parts.header(),
         };
-        let applied = apply_block(&self.state, &block_id, &block, &mut self.app)
-            .map_err(|_| peer_id.to_owned())?;
+        let applied =
+            apply_block(&self.state, &block_id, &block, &mut self.app).map_err(Error::Apply)?;
         let seen = Commit {
             height: block.header.height,
             round: 0,
@@ -301,18 +300,16 @@ impl<A: App, D: Db> Inner<A, D> {
         };
         self.blocks
             .save_block(&block, &parts, &seen)
-            .map_err(|_| peer_id.to_owned())?;
+            .map_err(Error::Store)?;
         if let Some(index) = &self.tx_index {
             index
                 .index_committed(&block, &applied.deliver_txs)
-                .map_err(|_| peer_id.to_owned())?;
+                .map_err(Error::TxIndex)?;
         }
         if let Some(events) = &self.events {
             events.on_commit(&block, &seen, &applied.deliver_txs);
         }
-        self.states
-            .save(&applied.state)
-            .map_err(|_| peer_id.to_owned())?;
+        self.states.save(&applied.state).map_err(Error::State)?;
         self.state = applied.state;
         Ok(())
     }
@@ -333,6 +330,16 @@ impl<A: App, D: Db> Inner<A, D> {
         };
         commit.block_id == meta.block_id
     }
+}
+
+fn reject(peer_id: &str, err: Error) -> String {
+    eld_tendermint_types::log_line(
+        eld_tendermint_types::Level::Error,
+        "blockchain",
+        "fast sync rejected a block",
+        &[("peer", peer_id), ("err", &err.to_string())],
+    );
+    peer_id.to_owned()
 }
 
 fn status_request() -> blockchain::message::Sum {

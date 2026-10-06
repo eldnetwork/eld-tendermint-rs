@@ -15,7 +15,7 @@ mod round;
 mod votes;
 mod wal;
 
-pub use error::Error;
+pub use error::{Error, WalCorrupt};
 pub use group::Group;
 pub use reactor::{
     DATA_CHANNEL, Reactor, STATE_CHANNEL, VOTE_CHANNEL, VOTE_SET_BITS_CHANNEL, channel_descriptors,

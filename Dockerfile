@@ -34,9 +34,14 @@ RUN apt-get update \
     && mkdir -p /tendermint-rs/.tendermint/config /tendermint-rs/.tendermint/data \
     && chown -R tmuser:tmuser /tendermint-rs
 
-COPY --from=build /src/target/release/eld-tendermint /usr/local/bin/eld-tendermint-rs
+COPY --from=build /src/target/release/eld-tendermint /usr/local/bin/eld-tendermint
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 755 /usr/local/bin/eld-tendermint-rs /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/eld-tendermint /usr/local/bin/docker-entrypoint.sh
+
+ARG REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/eldnetwork/eld-tendermint-rs" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.revision="${REVISION}"
 
 USER tmuser
 WORKDIR /tendermint-rs
@@ -44,5 +49,10 @@ WORKDIR /tendermint-rs
 EXPOSE 26656 26657 26660
 ENV TMHOME=/tendermint-rs/.tendermint
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -sf -X POST -H "Content-Type: application/json" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"health\"}" \
+        http://127.0.0.1:26657/ || exit 1
+
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["eld-tendermint-rs", "start"]
+CMD ["eld-tendermint", "start"]

@@ -10,6 +10,25 @@ use crate::Error;
 use crate::ed25519::{PRIV_KEY_NAME, PUB_KEY_NAME, PrivKey, PubKey};
 
 /// Compact Amino JSON for `ed25519.PubKey`.
+///
+/// ```
+/// # fn main() -> Result<(), eld_tendermint_crypto::Error> {
+/// use eld_tendermint_crypto::{PubKey, marshal_pub_key, unmarshal_pub_key};
+/// let bytes = [
+///     0x01, 0x3f, 0xfe, 0x69, 0xa2, 0xf5, 0x78, 0x1d, 0x38, 0xef, 0xb3, 0x2e, 0x77, 0xd2, 0x4c,
+///     0x9b, 0xc4, 0xa1, 0xf0, 0x12, 0x2f, 0x39, 0x89, 0x4f, 0x18, 0x2f, 0x4a, 0x90, 0x85, 0x26,
+///     0x15, 0xa1,
+/// ];
+/// let key = PubKey::from_bytes(&bytes)?;
+/// let json = marshal_pub_key(&key);
+/// assert_eq!(
+///     json,
+///     r#"{"type":"tendermint/PubKeyEd25519","value":"AT/+aaL1eB0477Mud9JMm8Sh8BIvOYlPGC9KkIUmFaE="}"#
+/// );
+/// assert_eq!(unmarshal_pub_key(&json)?, key);
+/// Ok(())
+/// # }
+/// ```
 #[must_use]
 pub fn marshal_pub_key(key: &PubKey) -> String {
     marshal(PUB_KEY_NAME, key.as_bytes())

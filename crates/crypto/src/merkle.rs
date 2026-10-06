@@ -16,6 +16,23 @@ const INNER_PREFIX: u8 = 0x01;
 ///
 /// Empty input is `tmhash([])`. One item is `tmhash(0x00 || item)`.
 /// Larger inputs split at the largest power of two strictly below `len`.
+///
+/// ```
+/// use eld_tendermint_crypto::hash_from_byte_slices;
+/// let empty: &[&[u8]] = &[];
+/// assert_eq!(
+///     hash_from_byte_slices(empty),
+///     [
+///         0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+///         0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+///         0x78, 0x52, 0xb8, 0x55,
+///     ]
+/// );
+/// assert_ne!(
+///     hash_from_byte_slices(&[b"Hello".as_slice()]),
+///     hash_from_byte_slices(empty)
+/// );
+/// ```
 #[must_use]
 pub fn hash_from_byte_slices<T: AsRef<[u8]>>(items: &[T]) -> [u8; SIZE] {
     match items.len() {
@@ -77,6 +94,11 @@ struct Trail {
 ///
 /// The root matches [`hash_from_byte_slices`] of the same items. Empty input
 /// is the empty-tree hash and no proofs.
+///
+/// # Panics
+///
+/// Panics when the item count does not fit in `i64`. A tree that large is outside
+/// the proof limit of [`MAX_AUNTS`].
 #[must_use]
 pub fn proofs_from_byte_slices<T: AsRef<[u8]>>(items: &[T]) -> ([u8; SIZE], Vec<Proof>) {
     let (trails, root) = trails_from_byte_slices(items);

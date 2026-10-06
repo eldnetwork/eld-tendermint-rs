@@ -1,0 +1,3 @@
+# types/results_test.go TestABCIResults (no static hex; nil Data matches empty Data)
+# COMMIT=79dcdd71257e56285c3abc2aad5f89e8e2ef02d5
+# GO_REF=v0.34.24-eld.3

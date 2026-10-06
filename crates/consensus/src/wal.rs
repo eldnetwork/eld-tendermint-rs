@@ -18,7 +18,7 @@ use eld_tendermint_proto::consensus::{
 use eld_tendermint_types::{Part, Proposal, Time, Vote};
 use prost::Message;
 
-use crate::error::Error;
+use crate::error::{Error, WalCorrupt};
 
 /// `maxMsgSize + 24` from `consensus/wal.go`.
 const MAX_MSG_SIZE_BYTES: u32 = 1_048_576 + 24;
@@ -275,7 +275,7 @@ pub enum Replay {
 /// Returns [`Error::CorruptWal`] when a wrapped proposal, part, or vote will not decode.
 pub fn replay_of(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Result<Replay, Error> {
     let Some(body) = msg.msg.as_ref().and_then(|msg| msg.sum.as_ref()) else {
-        return Err(Error::CorruptWal("empty WAL message".to_owned()));
+        return Err(Error::CorruptWal(WalCorrupt::EmptyMessage));
     };
     match body {
         wal_message::Sum::EventDataRoundState(_) => Ok(Replay::Ignored),
@@ -299,21 +299,21 @@ pub fn replay_of(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Resu
 
 fn msg_info(info: &MsgInfo) -> Result<Replay, Error> {
     let Some(sum) = info.msg.as_ref().and_then(|msg| msg.sum.as_ref()) else {
-        return Err(Error::CorruptWal("empty msg info".to_owned()));
+        return Err(Error::CorruptWal(WalCorrupt::EmptyMsgInfo));
     };
     match sum {
         message::Sum::Proposal(proposal) => {
             let proto = proposal
                 .proposal
                 .as_ref()
-                .ok_or_else(|| Error::CorruptWal("missing proposal".to_owned()))?;
+                .ok_or(Error::CorruptWal(WalCorrupt::MissingProposal))?;
             Proposal::try_from_proto(proto)
                 .map(Replay::Proposal)
-                .map_err(|err| Error::CorruptWal(err.to_string()))
+                .map_err(|err| Error::CorruptWal(WalCorrupt::Decode(err.to_string())))
         }
         message::Sum::BlockPart(part) => {
             let decoded = Part::try_from_proto(part.part.as_ref())
-                .map_err(|err| Error::CorruptWal(err.to_string()))?;
+                .map_err(|err| Error::CorruptWal(WalCorrupt::Decode(err.to_string())))?;
             Ok(Replay::Part {
                 height: part.height,
                 round: part.round,
@@ -324,10 +324,10 @@ fn msg_info(info: &MsgInfo) -> Result<Replay, Error> {
             let proto = vote
                 .vote
                 .as_ref()
-                .ok_or_else(|| Error::CorruptWal("missing vote".to_owned()))?;
+                .ok_or(Error::CorruptWal(WalCorrupt::MissingVote))?;
             Vote::try_from_proto(proto)
                 .map(Replay::Vote)
-                .map_err(|err| Error::CorruptWal(err.to_string()))
+                .map_err(|err| Error::CorruptWal(WalCorrupt::Decode(err.to_string())))
         }
         _ => Ok(Replay::Ignored),
     }
@@ -362,7 +362,7 @@ fn last_end_height(messages: &[eld_tendermint_proto::consensus::TimedWalMessage]
 }
 
 fn io_err(err: std::io::Error) -> Error {
-    Error::Io(err.to_string())
+    Error::Io(err)
 }
 
 fn open_append(path: &Path) -> Result<File, Error> {
@@ -423,7 +423,7 @@ fn next_segment_index(head: &Path) -> Result<u32, Error> {
     indexes.into_iter().max().map_or(Ok(0), |index| {
         index
             .checked_add(1)
-            .ok_or_else(|| Error::Io("WAL segment index overflow".to_owned()))
+            .ok_or_else(|| Error::Io(std::io::Error::other("WAL segment index overflow")))
     })
 }
 
@@ -467,9 +467,10 @@ fn encode(msg: &eld_tendermint_proto::consensus::TimedWalMessage) -> Result<Vec<
     let data = msg.encode_to_vec();
     let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
     if length > MAX_MSG_SIZE_BYTES {
-        return Err(Error::CorruptWal(format!(
-            "msg is too big: {length} bytes, max: {MAX_MSG_SIZE_BYTES} bytes"
-        )));
+        return Err(Error::CorruptWal(WalCorrupt::MsgTooBig {
+            length,
+            max: MAX_MSG_SIZE_BYTES,
+        }));
     }
     let crc = crc32c::crc32c(&data);
     let mut out = Vec::with_capacity(8 + data.len());
@@ -487,26 +488,28 @@ fn decode_one(
         return Ok(None);
     };
     let Some(length) = read_u32(reader, false)? else {
-        return Err(Error::CorruptWal("failed to read length".to_owned()));
+        return Err(Error::CorruptWal(WalCorrupt::MissingLength));
     };
     if length > MAX_MSG_SIZE_BYTES {
-        return Err(Error::CorruptWal(format!(
-            "length {length} exceeded maximum possible value of {MAX_MSG_SIZE_BYTES} bytes"
-        )));
+        return Err(Error::CorruptWal(WalCorrupt::LengthTooBig {
+            length,
+            max: MAX_MSG_SIZE_BYTES,
+        }));
     }
     let mut data = vec![0_u8; length as usize];
     reader
         .read_exact(&mut data)
-        .map_err(|err| Error::CorruptWal(format!("failed to read data: {err}")))?;
+        .map_err(|err| Error::CorruptWal(WalCorrupt::ShortRead(err)))?;
     let actual = crc32c::crc32c(&data);
     if actual != crc {
-        return Err(Error::CorruptWal(format!(
-            "checksums do not match: read: {crc}, actual: {actual}"
-        )));
+        return Err(Error::CorruptWal(WalCorrupt::Checksum {
+            read: crc,
+            actual,
+        }));
     }
     eld_tendermint_proto::consensus::TimedWalMessage::decode(data.as_slice())
         .map(Some)
-        .map_err(|err| Error::CorruptWal(format!("failed to decode data: {err}")))
+        .map_err(|err| Error::CorruptWal(WalCorrupt::Proto(err)))
 }
 
 /// `allow_eof` is true only for the CRC word, matching `WALDecoder.Decode`.
@@ -518,14 +521,14 @@ fn read_u32(reader: &mut impl Read, allow_eof: bool) -> Result<Option<u32>, Erro
             Ok(0) if filled == 0 && allow_eof => return Ok(None),
             Ok(0) => {
                 return Err(Error::CorruptWal(if allow_eof {
-                    "failed to read checksum".to_owned()
+                    WalCorrupt::ShortChecksum
                 } else {
-                    "failed to read length".to_owned()
+                    WalCorrupt::MissingLength
                 }));
             }
             Ok(n) => filled += n,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(Error::CorruptWal(err.to_string())),
+            Err(err) => return Err(Error::CorruptWal(WalCorrupt::Io(err))),
         }
     }
     Ok(Some(u32::from_be_bytes(buf)))

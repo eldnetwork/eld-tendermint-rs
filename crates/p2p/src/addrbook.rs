@@ -40,7 +40,10 @@ pub struct AddrBook {
 impl AddrBook {
     /// Load `path`, or start empty when the file is missing.
     ///
-    /// A file that does not decode as `addrBookJSON` panics, matching Go `loadFromFile`.
+    /// # Panics
+    ///
+    /// Panics when the file exists but cannot be read, or when it is not `addrBookJSON`.
+    /// That matches Go `loadFromFile`.
     #[must_use]
     pub fn open(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
@@ -138,6 +141,11 @@ impl AddrBook {
     /// # Errors
     ///
     /// Returns [`Error::Io`] when the file cannot be created.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the in-memory book cannot be serialized. A book built by [`Self::open`]
+    /// and [`Self::add`] serializes.
     pub fn save(&self) -> Result<(), Error> {
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {

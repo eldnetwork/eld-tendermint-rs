@@ -15,6 +15,15 @@ step() {
 step "Go pin and core version"
 grep -q 'GO_REF=v0.34.24-eld.3' proto/GO_REF
 grep -q 'TM_CORE_SEMVER: &str = "0.34.24"' crates/state/src/state.rs
+go_commit="$(awk -F= '/^COMMIT=/{print $2}' proto/GO_REF)"
+vec_commit="$(awk -F= '/^COMMIT=/{print $2}' tests/vectors/SOURCE)"
+if [ "${go_commit}" != "${vec_commit}" ]; then
+  echo "proto/GO_REF COMMIT=${go_commit} but tests/vectors/SOURCE COMMIT=${vec_commit}" >&2
+  exit 1
+fi
+
+step "compatibility vectors"
+./scripts/refresh-vectors.sh --check
 
 step "cargo fmt --all -- --check"
 cargo fmt --all -- --check

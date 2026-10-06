@@ -1,0 +1,3 @@
+GO_REF=v0.34.24-eld.3
+COMMIT=79dcdd71257e56285c3abc2aad5f89e8e2ef02d5
+REPO=https://github.com/eldnetwork/eld-tendermint

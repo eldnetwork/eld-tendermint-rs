@@ -1,4 +1,7 @@
 //! One validator's round state. No network.
+//!
+//! [`Node`] walks NewHeight, Propose, Prevote, Precommit, and Commit. A proposal and
+//! its votes are method calls on that node. The WAL, when open, records the same steps.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

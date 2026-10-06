@@ -1,0 +1,4 @@
+# abci/types/messages_test.go TestWriteReadMessageSimple (no static hex; framed RequestEcho Hello)
+# COMMIT=79dcdd71257e56285c3abc2aad5f89e8e2ef02d5
+# GO_REF=v0.34.24-eld.3
+0e0a0548656c6c6f

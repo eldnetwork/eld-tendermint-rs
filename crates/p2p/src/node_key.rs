@@ -61,6 +61,11 @@ impl NodeKey {
     /// # Errors
     ///
     /// Returns an error when the file cannot be created or written.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the Amino private key is not a JSON object. Marshaling an Ed25519
+    /// private key always produces that object.
     pub fn save_as(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         let priv_key: serde_json::Value = serde_json::from_str(&marshal_priv_key(&self.priv_key))
             .ensured("amino private key json is an object");

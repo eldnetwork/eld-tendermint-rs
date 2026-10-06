@@ -54,6 +54,11 @@ struct BytesValue {
 /// Otherwise those halves swap. The last 32 bytes are unused.
 ///
 /// HKDF expand of a fixed 96-byte output does not fail. Go panics if the read fails.
+///
+/// # Panics
+///
+/// Panics when HKDF-SHA256 refuses to expand 96 bytes. That output length is within
+/// the HKDF limit, so this is an invariant of the algorithm.
 #[must_use]
 pub fn derive_secrets(dh_secret: &[u8; 32], loc_is_least: bool) -> ([u8; 32], [u8; 32]) {
     let hkdf = Hkdf::<Sha256>::new(None, dh_secret);

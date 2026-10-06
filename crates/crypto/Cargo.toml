@@ -23,6 +23,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 hex = "0.4"
+proptest = { version = "1.6.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

@@ -29,5 +29,15 @@ toml = "0.8"
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
 hex = "0.4"
 
-[lints]
-workspace = true
+# Not `lints.workspace = true`: Cargo cannot override one workspace lint.
+# This crate denies `unsafe_code` so `hostname.rs` and the `TMHOME` test can
+# allow the one block each of them needs. Every other crate forbids it.
+[lints.rust]
+warnings = "deny"
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"

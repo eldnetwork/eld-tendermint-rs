@@ -6,7 +6,13 @@ use eld_tendermint_proto::abci::RequestEcho;
 
 /// Zigzag length of the 7-byte `RequestEcho{"Hello"}`, then those bytes.
 /// An unsigned length prefix would start with `07`.
-const FRAMED_HELLO: &str = "0e0a0548656c6c6f";
+/// The Go test has no static hex. `tests/vectors/abci-frame.hex` records this frame.
+fn framed_hello() -> &'static str {
+    include_str!("../../../tests/vectors/abci-frame.hex")
+        .lines()
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .expect("frame")
+}
 
 #[test]
 fn request_echo_frame_matches_go_write_message() {
@@ -15,7 +21,7 @@ fn request_echo_frame_matches_go_write_message() {
     };
     let mut buf = Vec::new();
     write_message(&mut buf, &msg).expect("write");
-    assert_eq!(hex::encode(&buf), FRAMED_HELLO);
+    assert_eq!(hex::encode(&buf), framed_hello());
     assert_ne!(buf.first(), Some(&0x07));
 
     let decoded: RequestEcho = read_message(&mut buf.as_slice()).expect("read");

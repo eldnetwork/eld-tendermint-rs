@@ -4,7 +4,9 @@
 //! next blocks, at most 20 at a time. Each block is applied as soon as it is
 //! the next height. The commit inside block H is checked against block H-1.
 
+mod error;
 mod pool;
 mod reactor;
 
+pub use error::Error;
 pub use reactor::{BLOCKCHAIN_CHANNEL, Reactor, channel_descriptors};

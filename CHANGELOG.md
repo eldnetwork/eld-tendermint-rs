@@ -8,12 +8,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `tests/vectors/` and `scripts/refresh-vectors.sh`, so CI fails when the hex fixtures and `proto/GO_REF` disagree.
+- Property tests for Merkle roots, Amino JSON, vote sign bytes, and part-set hashes.
 - Apache-2.0 license, notices, and GitHub community files.
 - Dependabot configuration for Cargo and GitHub Actions.
 - README badges, a compatibility matrix, the home layout, every CLI flag, and a short README for each crate.
 
 ### Changed
 
+- The container binary is `eld-tendermint`, the same name as the local binary. The image is still `ghcr.io/eldnetwork/eld-tendermint-rs`. A published tag writes the image digest onto the GitHub Release.
+- Operator logs, time, the secret-connection nonce, and the WAL frame are described in the README. Prometheus metrics from the Go node are not served.
 - `status` is Tendermint 0.34 JSON, so a client can read the local validator address.
 - Crate manifests inherit authors, license, edition, and repository from the workspace, and each description matches what that crate actually does.
 - Clippy denies `.unwrap()`, `.expect()`, `dbg!`, and `todo!` outside tests.

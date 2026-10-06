@@ -51,6 +51,10 @@ where
     ///
     /// The next height's round is started so its proposal exists. Those votes stay
     /// queued, so a later height is not committed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `height` is still missing after 10_000 rounds of pumping and timeouts.
     pub fn run_until_height(&mut self, height: i64) {
         for _ in 0..10_000 {
             if self.all_at_least(height) {

@@ -28,6 +28,12 @@ homepage = "https://github.com/eldnetwork/eld-tendermint-rs"
 
 [workspace.lints.rust]
 warnings = "deny"
+# Production code has no `unsafe`. `crates/config` lists its own lints and
+# denies `unsafe_code`, so the hostname FFI and the `TMHOME` test can allow
+# the one block they need. RocksDB is called only from `crates/store/src/db.rs`;
+# its FFI stays in the `rocksdb` crate. `eld-tendermint unsafe-reset-all` is
+# the CLI name for wiping chain data. It is tested in `crates/node/tests/status.rs`.
+unsafe_code = "forbid"
 
 # Denied outside tests. `clippy.toml` allows unwrap, expect, and dbg! in test code.
 # `todo!` stays denied everywhere. rustfmt uses its defaults; there is no rustfmt.toml.

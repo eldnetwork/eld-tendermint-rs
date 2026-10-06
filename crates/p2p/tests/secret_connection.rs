@@ -11,11 +11,7 @@ use eld_tendermint_p2p::{derive_secrets, make_secret_connection};
 
 #[test]
 fn derive_secrets_matches_go_golden() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/testdata/TestDeriveSecretsAndChallengeGolden.golden"
-    );
-    let text = std::fs::read_to_string(path).expect("golden file");
+    let text = include_str!("../../../tests/vectors/secret-connection.golden");
     let mut lines = 0;
     for line in text.lines() {
         if line.is_empty() {

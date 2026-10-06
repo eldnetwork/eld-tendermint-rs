@@ -72,6 +72,16 @@ impl Vote {
     ///
     /// Validator address and index are omitted. A zero block id is omitted.
     /// The timestamp is always encoded, including Go's zero time.
+    ///
+    /// ```
+    /// use eld_tendermint_types::Vote;
+    /// assert_eq!(
+    ///     Vote::default().sign_bytes(""),
+    ///     [
+    ///         0x0d, 0x2a, 0x0b, 0x08, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x01,
+    ///     ]
+    /// );
+    /// ```
     #[must_use]
     pub fn sign_bytes(&self, chain_id: &str) -> Vec<u8> {
         self.to_canonical(chain_id).encode_length_delimited_to_vec()
