@@ -198,7 +198,7 @@ The minimum supported Rust is 1.86.0 with edition 2024. Both are pinned in `rust
 
 That runs the same checks as GitHub Actions: the tendermint Go-version pin, the vector check, `cargo fmt --check`, Clippy, build, test, `cargo audit`, `cargo deny`, and gitleaks. Rustc and Clippy warnings are treated as errors. A tag runs this workflow before the image job. The image job records the image digest on the GitHub Release for that tag.
 
-Dependabot opens pull requests for Cargo and GitHub Actions. It does not merge them. The policy is in [CONTRIBUTING.md](CONTRIBUTING.md). The SHA-256 pins for `cargo-audit` and `cargo-deny`, and the pinned `gitleaks` download, stay manual.
+Cargo and GitHub Actions updates are manual. The SHA-256 pins for `cargo-audit` and `cargo-deny`, and the pinned `gitleaks` download, are described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What the project covers
 

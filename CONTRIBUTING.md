@@ -36,14 +36,12 @@ Library crates return their own `Error` enum and keep the source error. The `eld
 
 ## Dependency updates
 
-Dependabot opens pull requests for Cargo crates and for GitHub Actions. It does not merge them. Review the diff. `./scripts/ci.sh` has to pass, including `cargo audit` and `cargo deny`.
+Update Cargo crates and GitHub Actions by hand. `./scripts/ci.sh` has to pass, including `cargo audit` and `cargo deny`. Read the lockfile diff. A change in cryptography, encoding, or the database crate needs the same care as any other change to the wire format.
 
-A RustSec alert is its own pull request. Other Cargo updates are one weekly pull request, and other Actions updates are another. Read the lockfile diff. A change in cryptography, encoding, or the database crate needs the same care as any other change to the wire format.
-
-These stay manual. Dependabot does not bump them:
+These versions are pinned. Change them by hand:
 
 - `cargo-audit` and `cargo-deny` in `.github/workflows/ci.yml`. The workflow checks each download against a SHA-256. Change the version and the hash together.
-- `gitleaks` in that same file. The version is pinned. Change it by hand.
+- `gitleaks` in that same file.
 - Rust 1.86.0. Change `rust-toolchain.toml` and `dtolnay/rust-toolchain@1.86.0` in the workflow together.
 
 ## Pull requests

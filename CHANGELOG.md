@@ -11,8 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `tests/vectors/` and `scripts/refresh-vectors.sh`, so CI fails when the hex fixtures and `proto/GO_REF` disagree.
 - Property tests for Merkle roots, Amino JSON, vote sign bytes, and part-set hashes.
 - Apache-2.0 license, notices, and GitHub community files.
-- Dependabot configuration for Cargo and GitHub Actions.
 - README badges, a compatibility matrix, the home layout, every CLI flag, and a short README for each crate.
+
+### Removed
+
+- Dependabot configuration for Cargo and GitHub Actions. Updates are manual.
 
 ### Changed
 
