@@ -15,11 +15,11 @@ keywords = ["tendermint", "ed25519", "merkle", "amino"]
 categories = ["cryptography"]
 
 [dependencies]
-base64 = "0.22"
-ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+base64 = "0.23"
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
-rand = "0.8"
-sha2 = "0.10"
+rand = "0.9"
+sha2 = "0.11"
 
 [dev-dependencies]
 hex = "0.4"

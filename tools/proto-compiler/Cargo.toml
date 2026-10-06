@@ -15,7 +15,7 @@ keywords = ["tendermint", "protobuf", "codegen"]
 categories = ["development-tools"]
 
 [dependencies]
-prost-build = "0.13"
+prost-build = "0.14"
 
 [lints]
 workspace = true

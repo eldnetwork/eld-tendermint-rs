@@ -19,7 +19,7 @@ eld-tendermint-config = { version = "0.0.1", path = "../config" }
 eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
-prost = "0.13"
+prost = "0.14"
 
 [dev-dependencies]
 eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }

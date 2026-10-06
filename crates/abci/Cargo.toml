@@ -16,7 +16,7 @@ categories = ["network-programming"]
 
 [dependencies]
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
-prost = "0.13"
+prost = "0.14"
 
 [dev-dependencies]
 hex = "0.4"

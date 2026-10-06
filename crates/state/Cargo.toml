@@ -19,7 +19,7 @@ eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 eld-tendermint-store = { version = "0.0.1", path = "../store" }
 eld-tendermint-types = { version = "0.0.1", path = "../types" }
-prost = "0.13"
+prost = "0.14"
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [lints]
