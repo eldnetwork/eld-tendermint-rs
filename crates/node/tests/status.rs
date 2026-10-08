@@ -129,7 +129,7 @@ fn broadcast_tx_sync_returns_code_and_hash() {
     let (_code, _headers, body) = post(&node.rpc_addr(), &broadcast("broadcast_tx_sync", tx));
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 0);
-    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
     assert_eq!(body["result"]["data"], "");
 }
 
@@ -147,7 +147,7 @@ fn broadcast_tx_sync_accepts_a_positional_tx() {
     let (_code, _headers, body) = post(&node.rpc_addr(), &body);
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 0);
-    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn broadcast_tx_sync_returns_reject_code() {
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 9);
     assert_eq!(body["result"]["log"], "rejected");
-    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
 }
 
 #[test]
@@ -217,7 +217,7 @@ skip_timeout_commit = true
     assert_eq!(body["result"]["check_tx"]["code"], 0);
     assert_eq!(body["result"]["deliver_tx"]["code"], 7);
     assert!(body["result"]["height"].as_i64().unwrap() >= 1);
-    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
 }
 
 #[test]
@@ -258,7 +258,7 @@ skip_timeout_commit = true
     let height = committed["result"]["height"].as_i64().unwrap();
     assert!(height >= 1, "{committed}");
     let hash = committed["result"]["hash"].as_str().unwrap().to_owned();
-    assert_eq!(hash, b64(&sum(tx)));
+    assert_eq!(hash, hex_upper(&sum(tx)));
     let found = wait_for_tx(&addr, &hash);
     assert_eq!(found["result"]["height"], height);
     assert_eq!(found["result"]["index"], 0);
@@ -295,7 +295,7 @@ skip_timeout_commit = true
     assert_eq!(missing["error"]["code"], -32603);
     assert_eq!(
         missing["error"]["data"],
-        "tx (AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=) not found"
+        "tx (0000000000000000000000000000000000000000000000000000000000000000) not found"
     );
 
     let (_code, _headers, tag) = post(
@@ -628,7 +628,7 @@ skip_timeout_commit = true
     assert_eq!(tx_ack["result"], serde_json::json!({}));
 
     let tx = b"ws-pay";
-    let hash = b64(&sum(tx));
+    let hash = hex_upper(&sum(tx));
     let addr_http = addr.clone();
     let body = broadcast("broadcast_tx_commit", tx);
     let http = thread::spawn(move || post_for(&addr_http, &body, Duration::from_secs(20)));
@@ -952,7 +952,7 @@ fn broadcast_tx_async_returns_before_the_next_block() {
     let (_code, _headers, body) = post(&addr, &broadcast("broadcast_tx_async", tx));
     assert!(body.get("error").is_none(), "{body}");
     assert_eq!(body["result"]["code"], 0);
-    assert_eq!(body["result"]["hash"], b64(&sum(tx)));
+    assert_eq!(body["result"]["hash"], hex_upper(&sum(tx)));
     assert_eq!(body["result"]["data"], "");
     let (_code, _headers, after) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
     assert_eq!(after["result"]["sync_info"]["latest_block_height"], "0");

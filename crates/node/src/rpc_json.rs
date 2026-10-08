@@ -2,9 +2,11 @@
 //!
 //! `status` follows Tendermint 0.34 JSON-RPC: protocol versions, heights, and
 //! voting power are decimal strings; block hashes, app hashes, and the
-//! validator address are uppercase hex. Other methods keep standard base64 for
-//! byte fields. Field names are the Go `json` tags. Public keys stay the Amino
-//! envelope from [`marshal_pub_key`](eld_tendermint_crypto::marshal_pub_key).
+//! validator address are uppercase hex. Transaction hashes in `broadcast_tx_*`,
+//! `tx`, `tx_search`, and Tx events use uppercase hex too (`bytes.HexBytes` in
+//! Go). Other byte fields stay standard base64. Field names are the Go `json`
+//! tags. Public keys stay the Amino envelope from
+//! [`marshal_pub_key`](eld_tendermint_crypto::marshal_pub_key).
 
 use base64::Engine;
 use serde::Serialize;

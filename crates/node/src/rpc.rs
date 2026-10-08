@@ -474,7 +474,8 @@ fn sync_result(response: &ResponseCheckTx, tx: &[u8]) -> Value {
         "data": b64(&response.data),
         "log": response.log,
         "codespace": response.codespace,
-        "hash": b64(&sum(tx)),
+        // Go `bytes.HexBytes` JSON for ResultBroadcastTx.Hash.
+        "hash": rpc_json::hex_upper(&sum(tx)),
     })
 }
 
@@ -487,7 +488,8 @@ fn commit_result(
     serde_json::json!({
         "check_tx": check_tx_json(check_tx),
         "deliver_tx": deliver_tx_json(deliver_tx),
-        "hash": b64(hash),
+        // Go `bytes.HexBytes` JSON for ResultBroadcastTxCommit.Hash.
+        "hash": rpc_json::hex_upper(hash),
         "height": height,
     })
 }
@@ -811,7 +813,9 @@ fn rpc_tx(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     };
     match index.get(&hash) {
         Ok(Some(tx)) => rpc_result(id.clone(), result_tx_json(&hash, &tx)),
-        Ok(None) => internal_message(id, &format!("tx ({}) not found", b64(&hash))),
+        Ok(None) => {
+            internal_message(id, &format!("tx ({}) not found", rpc_json::hex_upper(&hash)))
+        }
         Err(err) => internal_error(id.clone(), &err),
     }
 }
@@ -888,7 +892,8 @@ fn rpc_tx_search(id: &Value, request: &Value, status: &NodeStatus) -> Value {
 fn result_tx_json(hash: &[u8], tx: &TxResult) -> Value {
     let deliver = tx.result.clone().unwrap_or_default();
     serde_json::json!({
-        "hash": b64(hash),
+        // Go `bytes.HexBytes` JSON for ResultTx.Hash.
+        "hash": rpc_json::hex_upper(hash),
         "height": tx.height,
         "index": tx.index,
         "tx_result": deliver_tx_json(&deliver),

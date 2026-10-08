@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- JSON-RPC transaction `hash` fields (`broadcast_tx_*`, `tx`, `tx_search`, Tx events) use uppercase hex, matching Go `bytes.HexBytes`. They were standard base64 before.
+
 ### Added
 
 - JSON-RPC `abci_info` asks the app for Info on the query connection, so `eld-cli chain abci-info` can read the app version, height, and app hash.
