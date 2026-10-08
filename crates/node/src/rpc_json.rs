@@ -1,11 +1,11 @@
 //! RPC JSON.
 //!
 //! `status` follows Tendermint 0.34 JSON-RPC: protocol versions, heights, and
-//! voting power are decimal strings; block hashes, app hashes, and the
-//! validator address are uppercase hex. Transaction hashes in `broadcast_tx_*`,
-//! `tx`, `tx_search`, and Tx events use uppercase hex too (`bytes.HexBytes` in
-//! Go). Other byte fields stay standard base64. Field names are the Go `json`
-//! tags. Public keys stay the Amino envelope from
+//! voting power are decimal strings. Hashes and addresses that are Go
+//! `bytes.HexBytes` (block IDs, header hashes, proposer and validator
+//! addresses, transaction hashes in `broadcast_tx_*`, `tx`, `tx_search`, and Tx
+//! events) are uppercase hex. Other byte fields stay standard base64. Field
+//! names are the Go `json` tags. Public keys stay the Amino envelope from
 //! [`marshal_pub_key`](eld_tendermint_crypto::marshal_pub_key).
 
 use base64::Engine;
@@ -94,7 +94,7 @@ pub(crate) struct RpcValidator {
 impl RpcValidator {
     pub(crate) fn from_validator(validator: &Validator) -> Self {
         Self {
-            address: b64(&validator.address),
+            address: hex_upper(&validator.address),
             pub_key: validator.pub_key.as_ref().and_then(amino_pub_key),
             voting_power: validator.voting_power,
             proposer_priority: validator.proposer_priority,
@@ -117,10 +117,10 @@ pub(crate) struct RpcPartSetHeader {
 impl RpcBlockId {
     pub(crate) fn from_block_id(block_id: &BlockId) -> Self {
         Self {
-            hash: b64(&block_id.hash),
+            hash: hex_upper(&block_id.hash),
             parts: RpcPartSetHeader {
                 total: block_id.part_set_header.total,
-                hash: b64(&block_id.part_set_header.hash),
+                hash: hex_upper(&block_id.part_set_header.hash),
             },
         }
     }
@@ -162,15 +162,15 @@ impl RpcHeader {
             height: header.height.to_string(),
             time: header.time.to_rfc3339(),
             last_block_id: RpcBlockId::from_block_id(&header.last_block_id),
-            last_commit_hash: b64(&header.last_commit_hash),
-            data_hash: b64(&header.data_hash),
-            validators_hash: b64(&header.validators_hash),
-            next_validators_hash: b64(&header.next_validators_hash),
-            consensus_hash: b64(&header.consensus_hash),
-            app_hash: b64(&header.app_hash),
-            last_results_hash: b64(&header.last_results_hash),
-            evidence_hash: b64(&header.evidence_hash),
-            proposer_address: b64(&header.proposer_address),
+            last_commit_hash: hex_upper(&header.last_commit_hash),
+            data_hash: hex_upper(&header.data_hash),
+            validators_hash: hex_upper(&header.validators_hash),
+            next_validators_hash: hex_upper(&header.next_validators_hash),
+            consensus_hash: hex_upper(&header.consensus_hash),
+            app_hash: hex_upper(&header.app_hash),
+            last_results_hash: hex_upper(&header.last_results_hash),
+            evidence_hash: hex_upper(&header.evidence_hash),
+            proposer_address: hex_upper(&header.proposer_address),
         }
     }
 }
@@ -239,5 +239,17 @@ mod tests {
             "8B81CC2BA41D4C29D0A0F90123396993491C3EA6"
         );
         assert_eq!(value["validator_info"]["voting_power"], "1");
+    }
+
+    #[test]
+    fn block_id_hex_empty_and_zero_hash() {
+        let empty = to_json(&RpcBlockId::from_block_id(&BlockId::default()));
+        assert_eq!(empty["hash"], "");
+
+        let zeros = to_json(&RpcBlockId::from_block_id(&BlockId {
+            hash: vec![0; 32],
+            part_set_header: Default::default(),
+        }));
+        assert_eq!(zeros["hash"], "0".repeat(64));
     }
 }

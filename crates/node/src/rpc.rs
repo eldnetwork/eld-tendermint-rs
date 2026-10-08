@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
 use crate::error::{Error, fail};
-use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64};
+use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64, hex_upper};
 use crate::wait::TxWaiter;
 
 /// Fields `status` reads. Height comes from the RocksDB block store.
@@ -779,7 +779,7 @@ fn commit_json(commit: &Commit) -> Value {
 fn commit_sig_json(sig: &CommitSig) -> Value {
     serde_json::json!({
         "block_id_flag": sig.block_id_flag as i32,
-        "validator_address": b64(&sig.validator_address),
+        "validator_address": hex_upper(&sig.validator_address),
         "timestamp": sig.timestamp.to_rfc3339(),
         "signature": if sig.signature.is_empty() {
             Value::Null
@@ -813,9 +813,10 @@ fn rpc_tx(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     };
     match index.get(&hash) {
         Ok(Some(tx)) => rpc_result(id.clone(), result_tx_json(&hash, &tx)),
-        Ok(None) => {
-            internal_message(id, &format!("tx ({}) not found", rpc_json::hex_upper(&hash)))
-        }
+        Ok(None) => internal_message(
+            id,
+            &format!("tx ({}) not found", rpc_json::hex_upper(&hash)),
+        ),
         Err(err) => internal_error(id.clone(), &err),
     }
 }

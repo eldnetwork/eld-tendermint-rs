@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- JSON-RPC transaction `hash` fields (`broadcast_tx_*`, `tx`, `tx_search`, Tx events) use uppercase hex, matching Go `bytes.HexBytes`. They were standard base64 before.
+- JSON-RPC hashes and addresses that are Go `bytes.HexBytes` use uppercase hex: transaction `hash` (`broadcast_tx_*`, `tx`, `tx_search`, Tx events), block IDs, header hashes, validator and proposer addresses, and commit `validator_address`. They were standard base64 before.
 
 ### Added
 

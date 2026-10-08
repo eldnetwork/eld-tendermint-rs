@@ -469,9 +469,7 @@ skip_timeout_commit = false
     assert!(block.get("error").is_none(), "{block}");
     assert_eq!(block["result"]["block"]["header"]["height"], "1");
     let hash = block["result"]["block_id"]["hash"].as_str().unwrap();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(hash)
-        .expect("block hash");
+    let decoded = decode_hex(hash);
     assert_eq!(decoded.len(), 32);
     let (_code, _headers, status) = post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#);
     let latest = decode_hex(
@@ -813,11 +811,8 @@ fn validators_at_height_one_are_the_genesis_set() {
     assert_eq!(body["result"]["count"], 1);
     assert_eq!(body["result"]["total"], 1);
     let validator = &body["result"]["validators"][0];
-    let validator_bytes = base64::engine::general_purpose::STANDARD
-        .decode(validator["address"].as_str().expect("validator address"))
-        .expect("validator address bytes");
     assert_eq!(
-        hex_upper(&validator_bytes),
+        validator["address"],
         status["result"]["validator_info"]["address"]
     );
     assert_eq!(validator["voting_power"], 10);
@@ -867,9 +862,7 @@ skip_timeout_commit = true
     let metas = body["result"]["block_metas"].as_array().expect("metas");
     assert_eq!(metas.len(), 1);
     assert_eq!(metas[0]["header"]["height"], "1");
-    let meta_hash = base64::engine::general_purpose::STANDARD
-        .decode(metas[0]["block_id"]["hash"].as_str().unwrap())
-        .expect("meta hash");
+    let meta_hash = decode_hex(metas[0]["block_id"]["hash"].as_str().unwrap());
     assert_eq!(meta_hash.len(), 32);
 }
 
