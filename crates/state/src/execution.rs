@@ -8,7 +8,8 @@ use eld_tendermint_proto::abci::{
     ResponseCommit, ResponseDeliverTx, ResponseEndBlock, ValidatorUpdate, VoteInfo,
 };
 use eld_tendermint_types::{
-    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Validator, hash_consensus_params, median_time,
+    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Level, Validator, hash_consensus_params, log_line,
+    median_time,
 };
 use prost::Message;
 use prost::bytes::Bytes;
@@ -92,6 +93,20 @@ pub fn apply_block(
     let end = app.end_block(RequestEndBlock {
         height: block.header.height,
     })?;
+
+    if end.updated_frontier > 0 {
+        let height = block.header.height.to_string();
+        let frontier = end.updated_frontier.to_string();
+        log_line(
+            Level::Info,
+            "state",
+            "frontier advanced",
+            &[
+                ("height", height.as_str()),
+                ("updated_frontier", frontier.as_str()),
+            ],
+        );
+    }
 
     let updates = validator_updates(&end.validator_updates, &state.consensus_params)?;
     let mut last_height_validators_changed = state.last_height_validators_changed;
