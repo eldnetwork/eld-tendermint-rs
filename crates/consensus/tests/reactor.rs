@@ -903,6 +903,37 @@ fn wait_for(got: &Captured, ready: impl Fn(&[(u8, Vec<u8>)]) -> bool) -> Vec<(u8
     }
 }
 
+/// Read until `ready` holds and the capture length stays put for 20 ms.
+///
+/// `poll` has already queued its sends. A stable length means the peer's receive
+/// thread has copied them in, so a later message from that same poll is not
+/// mistaken for a second announcement.
+fn wait_until_settled(
+    got: &Captured,
+    ready: impl Fn(&[(u8, Vec<u8>)]) -> bool,
+) -> Vec<(u8, Vec<u8>)> {
+    let start = Instant::now();
+    let mut last_len = None;
+    let mut stable_since = None;
+    loop {
+        let messages = captured(got);
+        let len = messages.len();
+        if last_len == Some(len) {
+            if stable_since.is_none() {
+                stable_since = Some(Instant::now());
+            }
+        } else {
+            last_len = Some(len);
+            stable_since = None;
+        }
+        let stable = stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(20));
+        if (ready(&messages) && stable) || start.elapsed() >= Duration::from_millis(500) {
+            return messages;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// +2/3 prevotes are announced on every poll, not only the first.
 #[test]
 fn prevote_majority_is_sent_again_on_the_next_poll() {
@@ -1622,6 +1653,19 @@ fn has_vote_msgs(messages: &[(u8, Vec<u8>)]) -> Vec<consensus::HasVote> {
         .collect()
 }
 
+fn has_vote_key(msg: &consensus::HasVote) -> (i64, i32, i32, i32) {
+    (msg.height, msg.round, msg.r#type, msg.index)
+}
+
+fn prevote_was_announced(messages: &[(u8, Vec<u8>)], height: i64) -> bool {
+    has_vote_msgs(messages).iter().any(|msg| {
+        msg.height == height
+            && msg.round == 0
+            && msg.r#type == SignedMsgType::Prevote as i32
+            && msg.index == 0
+    })
+}
+
 fn vote_messages(messages: &[(u8, Vec<u8>)]) -> Vec<Vec<u8>> {
     messages
         .iter()
@@ -1648,25 +1692,29 @@ fn signed_vote_is_announced_once() {
     link(&reactor_switch, &peer_switch);
 
     reactor.poll(&reactor_switch);
-    let messages = wait_for(&got, |messages| !has_vote_msgs(messages).is_empty());
+    let messages = wait_until_settled(&got, |messages| prevote_was_announced(messages, height));
     let votes = has_vote_msgs(&messages);
     assert!(
-        votes.iter().any(|msg| {
-            msg.height == height
-                && msg.round == 0
-                && msg.r#type == SignedMsgType::Prevote as i32
-                && msg.index == 0
-        }),
+        prevote_was_announced(&messages, height),
         "missing prevote HasVote: {votes:?}"
     );
-    let count = votes.len();
+    let mut keys = Vec::new();
+    for vote in &votes {
+        let key = has_vote_key(vote);
+        assert!(
+            !keys.contains(&key),
+            "HasVote was sent again: {key:?} {votes:?}"
+        );
+        keys.push(key);
+    }
     reactor.poll(&reactor_switch);
-    thread::sleep(Duration::from_millis(50));
-    assert_eq!(
-        has_vote_msgs(&captured(&got)).len(),
-        count,
-        "HasVote was sent again"
-    );
+    let later = has_vote_msgs(&wait_until_settled(&got, |messages| {
+        prevote_was_announced(messages, height)
+    }));
+    for key in keys {
+        let count = later.iter().filter(|msg| has_vote_key(msg) == key).count();
+        assert_eq!(count, 1, "HasVote was sent again: {key:?} {later:?}");
+    }
 }
 
 /// A vote accepted from a peer is announced even when it is not relayed.
