@@ -67,6 +67,7 @@ impl ExecApp for Exec {
             validator_updates: Vec::new(),
             consensus_param_updates: None,
             events: Vec::new(),
+            updated_frontier: 0,
         })
     }
 

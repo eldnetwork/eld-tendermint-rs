@@ -62,6 +62,7 @@ impl App for FakeApp {
             validator_updates: update.into_iter().collect(),
             consensus_param_updates: None,
             events: Vec::new(),
+            updated_frontier: 0,
         })
     }
 

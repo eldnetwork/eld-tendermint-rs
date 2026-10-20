@@ -337,6 +337,9 @@ pub struct ResponseEndBlock {
     pub consensus_param_updates: ::core::option::Option<ConsensusParams>,
     #[prost(message, repeated, tag = "3")]
     pub events: ::prost::alloc::vec::Vec<Event>,
+    /// Eld extension. 0 means the frontier did not advance this block.
+    #[prost(uint64, tag = "4")]
+    pub updated_frontier: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseCommit {

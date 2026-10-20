@@ -238,6 +238,9 @@ message ResponseEndBlock {
   ConsensusParams          consensus_param_updates = 2;
   repeated Event           events                  = 3
       [(gogoproto.nullable) = false, (gogoproto.jsontag) = "events,omitempty"];
+
+  // Eld extension. 0 means the frontier did not advance this block.
+  uint64 updated_frontier = 4;
 }
 
 message ResponseCommit {
