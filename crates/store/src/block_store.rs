@@ -6,15 +6,17 @@
 
 use std::sync::Mutex;
 
-use eld_tendermint_types::{Block, BlockId, Commit, Header, Part, PartSet};
+use eld_tendermint_types::{
+    Block, BlockId, Commit, Header, Part, PartSet, SummaryBody, SummaryHeader,
+};
 use prost::Message;
 
 use crate::db::{Batch, Db};
 use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::keys::{
-    BLOCK_STORE_KEY, block_commit_key, block_hash_key, block_meta_key, block_part_key,
-    seen_commit_key,
+    BLOCK_STORE_KEY, SUMMARY_BODY_KEY, SUMMARY_HEADER_KEY, block_commit_key, block_hash_key,
+    block_meta_key, block_part_key, seen_commit_key,
 };
 
 /// `types.BlockMeta`. Stored as prost `tendermint.types.BlockMeta`.
@@ -315,6 +317,76 @@ impl<D: Db> BlockStore<D> {
     #[must_use]
     pub fn load_block_commit(&self, height: i64) -> Option<Commit> {
         decode_commit(&self.db, &block_commit_key(height))
+    }
+
+    /// Writes `SH:` and `SB:` as protobuf. A later save replaces both values.
+    ///
+    /// The block-store base and height are left as they are. [`Self::prune_blocks`]
+    /// is what moves the base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSummary`] when the header cannot be encoded.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the database write fails.
+    pub fn save_summary(&self, header: &SummaryHeader, body: &SummaryBody) -> Result<(), Error> {
+        let header_bytes = header
+            .to_proto()
+            .map_err(Error::InvalidSummary)?
+            .encode_to_vec();
+        let body_bytes = body.to_proto().encode_to_vec();
+        let mut batch = Batch::new();
+        batch.set(SUMMARY_HEADER_KEY, &header_bytes);
+        batch.set(SUMMARY_BODY_KEY, &body_bytes);
+        if let Err(err) = self.db.write_sync(&batch) {
+            panic!("block store db set {}: {err}", key_text(SUMMARY_HEADER_KEY));
+        }
+        Ok(())
+    }
+
+    /// `SH:`. `None` when the key is missing. Does not read `SB:`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `SH:` is present and is not a valid summary header. The panic
+    /// text includes that key.
+    #[must_use]
+    pub fn load_summary_header(&self) -> Option<SummaryHeader> {
+        let bytes = must_get(&self.db, SUMMARY_HEADER_KEY)?;
+        let proto = eld_tendermint_proto::types::SummaryHeader::decode(bytes.as_slice())
+            .unwrap_or_else(|err| {
+                corrupt(
+                    SUMMARY_HEADER_KEY,
+                    &format!("unmarshal to SummaryHeader failed: {err}"),
+                )
+            });
+        Some(SummaryHeader::try_from_proto(&proto).unwrap_or_else(|err| {
+            corrupt(
+                SUMMARY_HEADER_KEY,
+                &format!("error from proto summary header: {err}"),
+            )
+        }))
+    }
+
+    /// `SB:`. `None` when the key is missing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `SB:` is present and is not a `SummaryBody`. The panic text
+    /// includes that key.
+    #[must_use]
+    pub fn load_summary_body(&self) -> Option<SummaryBody> {
+        let bytes = must_get(&self.db, SUMMARY_BODY_KEY)?;
+        let proto = eld_tendermint_proto::types::SummaryBody::decode(bytes.as_slice())
+            .unwrap_or_else(|err| {
+                corrupt(
+                    SUMMARY_BODY_KEY,
+                    &format!("unmarshal to SummaryBody failed: {err}"),
+                )
+            });
+        Some(SummaryBody::from_proto(&proto))
     }
 
     /// `LoadSeenCommit`. The +2/3 precommits seen for this height.

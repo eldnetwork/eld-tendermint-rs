@@ -23,5 +23,8 @@ prost = "0.13"
 # bindgen-runtime uses the crate's pregenerated bindings.
 rocksdb = { version = "0.24", default-features = false, features = ["bindgen-runtime"] }
 
+[dev-dependencies]
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
+
 [lints]
 workspace = true

@@ -480,6 +480,7 @@ dependencies = [
 name = "eld-tendermint-store"
 version = "0.0.1"
 dependencies = [
+ "eld-tendermint-crypto",
  "eld-tendermint-proto",
  "eld-tendermint-types",
  "hex",

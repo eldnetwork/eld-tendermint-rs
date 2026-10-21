@@ -30,3 +30,9 @@ pub(crate) fn seen_commit_key(height: i64) -> Vec<u8> {
 pub(crate) fn block_hash_key(hash: &[u8]) -> Vec<u8> {
     format!("BH:{}", hex::encode(hash)).into_bytes()
 }
+
+/// `SH:`. The one summary header. Not a Go block-store key.
+pub(crate) const SUMMARY_HEADER_KEY: &[u8] = b"SH:";
+
+/// `SB:`. The one summary body. Not a Go block-store key.
+pub(crate) const SUMMARY_BODY_KEY: &[u8] = b"SB:";

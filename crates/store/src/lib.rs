@@ -1,6 +1,7 @@
 //! Tendermint 0.34 `store.BlockStore`.
 //!
 //! Keys match the Go block store: `H:`, `P:`, `C:`, `SC:`, `BH:`, and `blockStore`.
+//! The Eld summary uses `SH:` for the header and `SB:` for the body.
 //! The on-disk backend is RocksDB. A directory that already holds a Go goleveldb
 //! layout (`CURRENT`, `LOG`, and `*.ldb`, with no RocksDB `IDENTITY` file) is refused.
 //!
