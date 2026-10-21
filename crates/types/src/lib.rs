@@ -1,4 +1,4 @@
-//! Tendermint 0.34 core types: headers, votes, validators, genesis, and blocks.
+//! Tendermint 0.34 core types: headers, votes, validators, genesis, blocks, and summaries.
 //!
 //! Matches `types` in the Go tree for data, `ValidateBasic`, header and merkle hashes,
 //! length-prefixed canonical sign bytes, and proposer-priority rotation. Executing
@@ -20,6 +20,7 @@ mod log;
 mod params;
 mod part;
 mod proposal;
+mod summary;
 mod time;
 mod tx;
 mod validator;
@@ -43,6 +44,7 @@ pub use params::{
 };
 pub use part::{Part, PartSet};
 pub use proposal::Proposal;
+pub use summary::{SummaryBody, SummaryHeader, SummaryInput, genesis_anchor_hash};
 pub use time::Time;
 pub use tx::{Tx, Txs};
 pub use validator::{Validator, ValidatorSet};

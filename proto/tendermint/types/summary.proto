@@ -1,0 +1,35 @@
+syntax = "proto3";
+package tendermint.types;
+
+option go_package = "github.com/tendermint/tendermint/proto/tendermint/types";
+
+import "tendermint/types/params.proto";
+import "tendermint/types/types.proto";
+import "tendermint/types/validator.proto";
+
+// Eld chain summary. Not part of upstream Tendermint.
+//
+// summary_hash is the tmhash of this message encoded with summary_hash empty,
+// so the digest covers body_hash and every other field.
+message SummaryHeader {
+  uint64 end_height = 1;
+  bytes summary_hash = 2;
+  bytes prev_summary_hash = 3;
+  BlockID last_block_id = 4;
+  bytes last_results_hash = 5;
+  bytes app_hash = 6;
+  bytes body_hash = 7;
+  bytes validators_hash = 8;
+  bytes next_validators_hash = 9;
+  bytes consensus_hash = 10;
+  uint64 last_height_validators_changed = 11;
+  uint64 last_height_consensus_params_changed = 12;
+  ValidatorSet validators = 13;
+  ValidatorSet next_validators = 14;
+  ConsensusParams consensus_params = 15;
+}
+
+// Compressed application-state snapshot. body_hash is the tmhash of these bytes.
+message SummaryBody {
+  bytes state_snapshot = 1;
+}

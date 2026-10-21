@@ -471,3 +471,46 @@ pub struct CanonicalVote {
     #[prost(string, tag = "6")]
     pub chain_id: ::prost::alloc::string::String,
 }
+/// Eld chain summary. Not part of upstream Tendermint.
+///
+/// summary_hash is the tmhash of this message encoded with summary_hash empty,
+/// so the digest covers body_hash and every other field.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummaryHeader {
+    #[prost(uint64, tag = "1")]
+    pub end_height: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub summary_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub prev_summary_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub last_block_id: ::core::option::Option<BlockId>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub last_results_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub app_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub body_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub validators_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub next_validators_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "10")]
+    pub consensus_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "11")]
+    pub last_height_validators_changed: u64,
+    #[prost(uint64, tag = "12")]
+    pub last_height_consensus_params_changed: u64,
+    #[prost(message, optional, tag = "13")]
+    pub validators: ::core::option::Option<ValidatorSet>,
+    #[prost(message, optional, tag = "14")]
+    pub next_validators: ::core::option::Option<ValidatorSet>,
+    #[prost(message, optional, tag = "15")]
+    pub consensus_params: ::core::option::Option<ConsensusParams>,
+}
+/// Compressed application-state snapshot. body_hash is the tmhash of these bytes.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummaryBody {
+    #[prost(bytes = "vec", tag = "1")]
+    pub state_snapshot: ::prost::alloc::vec::Vec<u8>,
+}
