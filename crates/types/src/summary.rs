@@ -1,8 +1,9 @@
 //! Replaceable chain summary.
 //!
 //! [`SummaryHeader`] is the small record kept in memory. [`SummaryBody`] is the
-//! compressed application snapshot. `body_hash` is the tmhash of those snapshot
-//! bytes. `summary_hash` is the tmhash of the header protobuf with `summary_hash`
+//! compressed application snapshot. After zstd decompression those bytes are
+//! [`eld_tendermint_proto::types::AppStateSnapshot`]. `body_hash` is the tmhash
+//! of the compressed snapshot bytes. `summary_hash` is the tmhash of the header protobuf with `summary_hash`
 //! left empty, so the digest covers `body_hash` and every other field.
 //!
 //! The first summary's `prev_summary_hash` is [`genesis_anchor_hash`]. With one
