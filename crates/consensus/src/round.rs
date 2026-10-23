@@ -24,6 +24,7 @@ use prost::Message;
 
 use crate::ensured::Ensured;
 use crate::error::Error;
+use crate::summary::SummaryManager;
 use crate::votes::HeightVoteSet;
 use crate::wal::{self, Replay, Wal};
 
@@ -149,6 +150,7 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     evidence: Option<Arc<dyn ProposalEvidence>>,
     tx_index: Option<Arc<dyn IndexTxs>>,
     events: Option<Arc<dyn CommitEvents>>,
+    summary_manager: Arc<Mutex<SummaryManager>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -400,6 +402,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         block_store: Arc<BlockStore<D>>,
         extras: NodeExtras,
     ) -> Result<Self, Error> {
+        let summary_manager = Arc::new(Mutex::new(SummaryManager::new()));
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
@@ -434,6 +437,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             evidence: extras.evidence,
             tx_index: extras.tx_index,
             events: extras.events,
+            summary_manager,
             exec,
             votes,
             proposal: None,
@@ -1876,15 +1880,24 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Called by each caller of [`Self::try_finalize_commit`].
     ///
     /// Continues only when `frontier` is greater than `end_height` on the saved
-    /// summary header. No header counts as height 0. The query and the save come later.
+    /// summary header. No header counts as height 0. The manager asks the app.
     fn update_summary(&mut self) {
         let saved_frontier = match self.block_store.load_summary_header() {
             Some(header) => header.end_height,
             None => 0,
         };
-        if self.frontier > saved_frontier {
-            // Query the app and save the new summary.
+        if self.frontier <= saved_frontier {
+            return;
         }
+        // `catchup` sets `replaying` and feeds the saved consensus log back through
+        // the same calls. The app is already at its latest height then.
+        if self.replaying {
+            return;
+        }
+        self.summary_manager
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .update_summary(self.frontier);
     }
 
     fn block_ok(&self, block: &Block) -> bool {

@@ -12,6 +12,7 @@ mod error;
 mod group;
 mod reactor;
 mod round;
+mod summary;
 mod votes;
 mod wal;
 
@@ -21,4 +22,5 @@ pub use reactor::{
     DATA_CHANNEL, Reactor, STATE_CHANNEL, VOTE_CHANNEL, VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 pub use round::{Msg, Node, NodeExtras, Step};
+pub use summary::SummaryManager;
 pub use wal::{Wal, end_height_message, proposal_message, vote_message};
