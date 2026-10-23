@@ -1875,9 +1875,19 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
 
     /// Called by each caller of [`Self::try_finalize_commit`].
     ///
-    /// Reads `frontier`. The query and the save come later.
+    /// Continues only when `frontier` is greater than `end_height` on the saved
+    /// summary header. No header counts as height 0. The query and the save come later.
     fn update_summary(&mut self) {
-        let _frontier = self.frontier;
+        let saved_frontier = match self.block_store.load_summary_header() {
+            Some(header) => header.end_height,
+            None => 0,
+        };
+        let Ok(frontier) = u64::try_from(self.frontier) else {
+            return;
+        };
+        if frontier > saved_frontier {
+            // Query the app and save the new summary.
+        }
     }
 
     fn block_ok(&self, block: &Block) -> bool {
