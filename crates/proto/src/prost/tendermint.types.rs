@@ -477,8 +477,8 @@ pub struct CanonicalVote {
 /// so the digest covers body_hash and every other field.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SummaryHeader {
-    #[prost(uint64, tag = "1")]
-    pub end_height: u64,
+    #[prost(int64, tag = "1")]
+    pub end_height: i64,
     #[prost(bytes = "vec", tag = "2")]
     pub summary_hash: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
@@ -497,10 +497,10 @@ pub struct SummaryHeader {
     pub next_validators_hash: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "10")]
     pub consensus_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag = "11")]
-    pub last_height_validators_changed: u64,
-    #[prost(uint64, tag = "12")]
-    pub last_height_consensus_params_changed: u64,
+    #[prost(int64, tag = "11")]
+    pub last_height_validators_changed: i64,
+    #[prost(int64, tag = "12")]
+    pub last_height_consensus_params_changed: i64,
     #[prost(message, optional, tag = "13")]
     pub validators: ::core::option::Option<ValidatorSet>,
     #[prost(message, optional, tag = "14")]

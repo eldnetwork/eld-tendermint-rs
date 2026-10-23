@@ -383,7 +383,7 @@ fn rocksdb_round_trip_and_goleveldb_refusal() {
     assert!(!go_dir.path.join("IDENTITY").exists());
 }
 
-fn summary_pair(end_height: u64, app: &[u8], snapshot: &[u8]) -> (SummaryHeader, SummaryBody) {
+fn summary_pair(end_height: i64, app: &[u8], snapshot: &[u8]) -> (SummaryHeader, SummaryBody) {
     let validators = ValidatorSet::new(vec![Validator::new(
         PubKey::from_bytes(&[0x11; 32]).expect("pubkey"),
         10,

@@ -12,7 +12,7 @@ import "tendermint/types/validator.proto";
 // summary_hash is the tmhash of this message encoded with summary_hash empty,
 // so the digest covers body_hash and every other field.
 message SummaryHeader {
-  uint64 end_height = 1;
+  int64 end_height = 1;
   bytes summary_hash = 2;
   bytes prev_summary_hash = 3;
   BlockID last_block_id = 4;
@@ -22,8 +22,8 @@ message SummaryHeader {
   bytes validators_hash = 8;
   bytes next_validators_hash = 9;
   bytes consensus_hash = 10;
-  uint64 last_height_validators_changed = 11;
-  uint64 last_height_consensus_params_changed = 12;
+  int64 last_height_validators_changed = 11;
+  int64 last_height_consensus_params_changed = 12;
   ValidatorSet validators = 13;
   ValidatorSet next_validators = 14;
   ConsensusParams consensus_params = 15;

@@ -22,13 +22,13 @@ use crate::{
 /// The set hashes, params hash, body hash, and summary hash are computed there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryInput {
-    pub end_height: u64,
+    pub end_height: i64,
     pub prev_summary_hash: Hash,
     pub last_block_id: BlockId,
     pub last_results_hash: Hash,
     pub app_hash: Hash,
-    pub last_height_validators_changed: u64,
-    pub last_height_consensus_params_changed: u64,
+    pub last_height_validators_changed: i64,
+    pub last_height_consensus_params_changed: i64,
     pub validators: ValidatorSet,
     pub next_validators: ValidatorSet,
     pub consensus_params: ConsensusParams,
@@ -41,7 +41,7 @@ pub struct SummaryInput {
 /// hashes is rejected, as is a `summary_hash` that does not match the header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryHeader {
-    pub end_height: u64,
+    pub end_height: i64,
     pub summary_hash: Hash,
     pub prev_summary_hash: Hash,
     pub last_block_id: BlockId,
@@ -51,8 +51,8 @@ pub struct SummaryHeader {
     pub validators_hash: Hash,
     pub next_validators_hash: Hash,
     pub consensus_hash: Hash,
-    pub last_height_validators_changed: u64,
-    pub last_height_consensus_params_changed: u64,
+    pub last_height_validators_changed: i64,
+    pub last_height_consensus_params_changed: i64,
     pub validators: ValidatorSet,
     pub next_validators: ValidatorSet,
     pub consensus_params: ConsensusParams,

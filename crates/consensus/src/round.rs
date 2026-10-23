@@ -1882,10 +1882,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             Some(header) => header.end_height,
             None => 0,
         };
-        let Ok(frontier) = u64::try_from(self.frontier) else {
-            return;
-        };
-        if frontier > saved_frontier {
+        if self.frontier > saved_frontier {
             // Query the app and save the new summary.
         }
     }
