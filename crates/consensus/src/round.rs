@@ -167,6 +167,8 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     replaying: bool,
     /// Round of the +2/3 precommits while `step` is [`Step::Commit`].
     commit_round: Option<i32>,
+    /// frontier value received from abci app. 0 until a value has been received.
+    frontier: i64,
     /// Parts that arrived before the commit block's part-set header.
     pending_parts: Vec<Part>,
     /// `EventValidBlock` from a +2/3 prevote or from `enterCommit`, not yet broadcast.
@@ -449,6 +451,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             wal,
             replaying: false,
             commit_round: None,
+            frontier: 0,
             pending_parts: Vec::new(),
             outbound_valid_block: None,
             round_start: Time::now(),
@@ -1005,6 +1008,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.proposal_block.is_some() {
             if self.step == Step::Commit {
                 self.try_finalize_commit();
+                self.update_summary();
             }
             return;
         }
@@ -1017,6 +1021,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.after_prevote(self.round);
         if self.step == Step::Commit {
             self.try_finalize_commit();
+            self.update_summary();
         }
     }
 
@@ -1658,6 +1663,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let _ = self.install_commit_header(&block_id);
         self.queue_commit_valid_block();
         self.try_finalize_commit();
+        self.update_summary();
     }
 
     /// `ProposalBlockParts` for a block this node has seen +2/3 prevotes for, or is committing.
@@ -1773,6 +1779,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 return;
             }
         };
+        if applied.updated_frontier > 0 {
+            self.frontier = applied.updated_frontier;
+        }
         let seen = self
             .votes
             .precommits(commit_round)
@@ -1862,6 +1871,13 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 ("num_txs", num_txs.as_str()),
             ],
         );
+    }
+
+    /// Called by each caller of [`Self::try_finalize_commit`].
+    ///
+    /// Reads `frontier`. The query and the save come later.
+    fn update_summary(&mut self) {
+        let _frontier = self.frontier;
     }
 
     fn block_ok(&self, block: &Block) -> bool {
