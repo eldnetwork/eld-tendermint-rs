@@ -24,7 +24,7 @@ use prost::Message;
 
 use crate::ensured::Ensured;
 use crate::error::Error;
-use crate::summary::SummaryManager;
+use crate::summary::{SummaryManager, SummaryQuery};
 use crate::votes::HeightVoteSet;
 use crate::wal::{self, Replay, Wal};
 
@@ -190,7 +190,7 @@ pub(crate) struct OutboundValidBlock {
     pub is_commit: bool,
 }
 
-impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
+impl<E: ExecApp + SummaryQuery + Clone + 'static, C: MempoolApp> Node<E, C, MemDb> {
     /// `NewNode` with an in-memory block store.
     ///
     /// # Errors
@@ -278,7 +278,7 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
     }
 }
 
-impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
+impl<E: ExecApp + SummaryQuery + Clone + 'static, C: MempoolApp, D: Db> Node<E, C, D> {
     /// [`Self::start`] saving blocks into `block_store`.
     ///
     /// # Errors
@@ -401,8 +401,11 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         exec: E,
         block_store: Arc<BlockStore<D>>,
         extras: NodeExtras,
-    ) -> Result<Self, Error> {
-        let summary_manager = Arc::new(Mutex::new(SummaryManager::new()));
+    ) -> Result<Self, Error>
+    where
+        E: SummaryQuery + Clone + 'static,
+    {
+        let summary_manager = Arc::new(Mutex::new(SummaryManager::new(exec.clone())));
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());

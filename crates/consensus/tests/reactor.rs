@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
 use eld_tendermint_consensus::{
-    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, VOTE_CHANNEL,
+    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, SummaryQuery, VOTE_CHANNEL,
     VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 use eld_tendermint_crypto::PrivKey;
@@ -33,7 +33,10 @@ use prost::bytes::Bytes;
 
 const APP_HASH: [u8; 32] = [0xab; 32];
 
+#[derive(Clone)]
 struct Exec;
+
+impl SummaryQuery for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(

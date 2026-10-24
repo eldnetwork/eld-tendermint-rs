@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use eld_tendermint_abci::SocketClient;
+use eld_tendermint_consensus::SummaryQuery;
 use eld_tendermint_crypto::sum;
 use eld_tendermint_proto::abci::{
     RequestBeginBlock, RequestCheckTx, RequestDeliverTx, RequestEndBlock, RequestInfo,
@@ -83,6 +84,12 @@ impl AbciApp {
     /// Returns the socket error. The RPC layer turns that into an internal error.
     pub(crate) fn info(&self) -> Result<ResponseInfo, eld_tendermint_abci::Error> {
         lock(&self.shared.query).info(info_request())
+    }
+}
+
+impl SummaryQuery for AbciApp {
+    fn query(&self, request: RequestQuery) -> Result<ResponseQuery, String> {
+        AbciApp::query(self, request).map_err(|err| err.to_string())
     }
 }
 

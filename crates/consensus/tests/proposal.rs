@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
-use eld_tendermint_consensus::Node;
+use eld_tendermint_consensus::{Node, SummaryQuery};
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{RequestCheckTx, ResponseCheckTx};
@@ -36,7 +36,10 @@ impl MempoolApp for Check {
     }
 }
 
+#[derive(Clone)]
 struct Exec;
+
+impl SummaryQuery for Exec {}
 
 impl eld_tendermint_state::App for Exec {
     fn begin_block(

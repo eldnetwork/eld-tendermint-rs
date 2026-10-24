@@ -20,13 +20,16 @@ use eld_tendermint_types::{
 use prost::bytes::Bytes;
 
 use eld_tendermint_consensus::{
-    Error, Node, Wal, end_height_message, proposal_message, vote_message,
+    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message, vote_message,
 };
 
 const APP_HASH: [u8; 32] = [0xab; 32];
 const WHEN: Time = Time::from_unix_parts(1_600_000_000, 0);
 
+#[derive(Clone)]
 struct Exec;
+
+impl SummaryQuery for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(
