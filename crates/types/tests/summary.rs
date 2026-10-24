@@ -5,8 +5,8 @@ use prost::Message;
 
 use eld_tendermint_crypto::{PubKey, sum, unmarshal_pub_key};
 use eld_tendermint_types::{
-    BlockId, ConsensusParams, Error, GenesisDoc, Hash, PartSetHeader, SummaryBody, SummaryHeader,
-    SummaryInput, Validator, ValidatorSet, genesis_anchor_hash,
+    BlockId, ConsensusParams, Error, Hash, PartSetHeader, SummaryBody, SummaryHeader, SummaryInput,
+    Validator, ValidatorSet,
 };
 
 const PUB_JSON: &str = concat!(
@@ -14,20 +14,6 @@ const PUB_JSON: &str = concat!(
     "AT/+aaL1eB0477Mud9JMm8Sh8BIvOYlPGC9KkIUmFaE=",
     r#""}"#,
 );
-
-const GENESIS: &str = r#"{
-    "genesis_time": "2019-10-13T16:14:44Z",
-    "chain_id": "test-chain-QDKdJr",
-    "initial_height": "1000",
-    "consensus_params": null,
-    "validators": [{
-        "pub_key":{"type":"tendermint/PubKeyEd25519","value":"AT/+aaL1eB0477Mud9JMm8Sh8BIvOYlPGC9KkIUmFaE="},
-        "power":"10",
-        "name":""
-    }],
-    "app_hash":"",
-    "app_state":{"account_owner": "Bob"}
-}"#;
 
 const BODY: &[u8] = b"compressed-snapshot";
 
@@ -45,14 +31,13 @@ fn block_id() -> BlockId {
     }
 }
 
-fn header_for(body: &[u8], prev_summary_hash: Hash) -> SummaryHeader {
+fn header_for(body: &[u8]) -> SummaryHeader {
     let validators = ValidatorSet::new(vec![Validator::new(pub_key(), 10)]).unwrap();
     let mut next_validators = validators.copy();
     next_validators.increment_proposer_priority(1).unwrap();
     SummaryHeader::build(
         SummaryInput {
             end_height: 10,
-            prev_summary_hash,
             last_block_id: block_id(),
             last_results_hash: Hash::from_array(sum(b"results")),
             app_hash: Hash::from_array(sum(b"app")),
@@ -68,7 +53,7 @@ fn header_for(body: &[u8], prev_summary_hash: Hash) -> SummaryHeader {
 }
 
 fn sample_header() -> SummaryHeader {
-    header_for(BODY, Hash::from_array(sum(b"prev-summary")))
+    header_for(BODY)
 }
 
 #[test]
@@ -104,7 +89,7 @@ fn summary_hashes_are_stable() {
     );
     assert_eq!(
         hex::encode_upper(header.summary_hash.as_bytes()),
-        "2AC8B23360DFC3ED439281889CDBA3FA62CFBC1B23EC060A053C461C18CE866C"
+        "24ADB8A1F5355DF7A0CF13B47F080F87A894A097D586564D2771BE81DF4BF505"
     );
 }
 
@@ -113,7 +98,7 @@ fn flipped_body_byte_changes_body_and_summary_hash() {
     let header = sample_header();
     let mut flipped = BODY.to_vec();
     flipped[0] ^= 0xff;
-    let other = header_for(&flipped, header.prev_summary_hash);
+    let other = header_for(&flipped);
     assert_ne!(header.body_hash, other.body_hash);
     assert_ne!(header.summary_hash, other.summary_hash);
     assert_eq!(header.validators_hash, other.validators_hash);
@@ -149,18 +134,5 @@ fn load_rejects_hashes_that_do_not_recompute() {
     assert_eq!(
         SummaryHeader::try_from_proto(&proto).unwrap_err(),
         Error::SummaryHashMismatch
-    );
-}
-
-#[test]
-fn first_summary_parent_is_genesis_anchor() {
-    let doc = GenesisDoc::from_json(GENESIS.as_bytes()).unwrap();
-    let anchor = genesis_anchor_hash(&doc);
-    assert_eq!(anchor, Hash::from_array(sum(doc.to_json().as_bytes())));
-    let header = header_for(BODY, anchor);
-    assert_eq!(header.prev_summary_hash, anchor);
-    assert_eq!(
-        hex::encode_upper(anchor.as_bytes()),
-        "20950AA500EBC749D750A030AFD375D9E8B7CE063B598E8ADAFFABF2A04B9981"
     );
 }

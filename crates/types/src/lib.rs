@@ -44,7 +44,7 @@ pub use params::{
 };
 pub use part::{Part, PartSet};
 pub use proposal::Proposal;
-pub use summary::{SummaryBody, SummaryHeader, SummaryInput, genesis_anchor_hash};
+pub use summary::{SummaryBody, SummaryHeader, SummaryInput};
 pub use time::Time;
 pub use tx::{Tx, Txs};
 pub use validator::{Validator, ValidatorSet};

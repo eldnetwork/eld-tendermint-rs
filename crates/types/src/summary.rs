@@ -5,17 +5,12 @@
 //! [`eld_tendermint_proto::types::AppStateSnapshot`]. `body_hash` is the tmhash
 //! of the compressed snapshot bytes. `summary_hash` is the tmhash of the header protobuf with `summary_hash`
 //! left empty, so the digest covers `body_hash` and every other field.
-//!
-//! The first summary's `prev_summary_hash` is [`genesis_anchor_hash`]. With one
-//! summary, that parent hash is the link back to genesis.
 
 use prost::Message;
 
 use eld_tendermint_crypto::sum;
 
-use crate::{
-    BlockId, ConsensusParams, Error, GenesisDoc, Hash, ValidatorSet, hash_consensus_params,
-};
+use crate::{BlockId, ConsensusParams, Error, Hash, ValidatorSet, hash_consensus_params};
 
 /// Fields a caller supplies to [`SummaryHeader::build`].
 ///
@@ -23,7 +18,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryInput {
     pub end_height: i64,
-    pub prev_summary_hash: Hash,
     pub last_block_id: BlockId,
     pub last_results_hash: Hash,
     pub app_hash: Hash,
@@ -43,7 +37,6 @@ pub struct SummaryInput {
 pub struct SummaryHeader {
     pub end_height: i64,
     pub summary_hash: Hash,
-    pub prev_summary_hash: Hash,
     pub last_block_id: BlockId,
     pub last_results_hash: Hash,
     pub app_hash: Hash,
@@ -81,7 +74,6 @@ impl SummaryHeader {
         let header = Self {
             end_height: input.end_height,
             summary_hash: Hash::from_array([0; crate::HASH_SIZE]),
-            prev_summary_hash: input.prev_summary_hash,
             last_block_id: input.last_block_id,
             last_results_hash: input.last_results_hash,
             app_hash: input.app_hash,
@@ -113,7 +105,6 @@ impl SummaryHeader {
         Ok(eld_tendermint_proto::types::SummaryHeader {
             end_height: self.end_height,
             summary_hash: self.summary_hash.as_bytes().to_vec(),
-            prev_summary_hash: self.prev_summary_hash.as_bytes().to_vec(),
             last_block_id: Some(self.last_block_id.to_proto()),
             last_results_hash: self.last_results_hash.as_bytes().to_vec(),
             app_hash: self.app_hash.as_bytes().to_vec(),
@@ -152,7 +143,6 @@ impl SummaryHeader {
         let header = Self {
             end_height: proto.end_height,
             summary_hash: Hash::from_bytes(&proto.summary_hash)?,
-            prev_summary_hash: Hash::from_bytes(&proto.prev_summary_hash)?,
             last_block_id: BlockId::try_from_proto(last_block_id)?,
             last_results_hash: Hash::from_bytes(&proto.last_results_hash)?,
             app_hash: Hash::from_bytes(&proto.app_hash)?,
@@ -223,14 +213,6 @@ impl SummaryBody {
             state_snapshot: proto.state_snapshot.clone(),
         }
     }
-}
-
-/// tmhash of the canonical genesis JSON ([`GenesisDoc::to_json`]).
-///
-/// The first summary stores this as `prev_summary_hash`.
-#[must_use]
-pub fn genesis_anchor_hash(genesis: &GenesisDoc) -> Hash {
-    Hash::from_array(sum(genesis.to_json().as_bytes()))
 }
 
 fn hash_snapshot(bytes: &[u8]) -> Hash {

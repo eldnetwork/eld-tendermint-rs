@@ -392,7 +392,6 @@ fn summary_pair(end_height: i64, app: &[u8], snapshot: &[u8]) -> (SummaryHeader,
     let header = SummaryHeader::build(
         SummaryInput {
             end_height,
-            prev_summary_hash: Hash::from_array(sum(b"genesis")),
             last_block_id: BlockId {
                 hash: sum(b"block").to_vec(),
                 part_set_header: PartSetHeader {

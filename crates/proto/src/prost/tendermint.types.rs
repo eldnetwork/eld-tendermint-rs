@@ -481,31 +481,29 @@ pub struct SummaryHeader {
     pub end_height: i64,
     #[prost(bytes = "vec", tag = "2")]
     pub summary_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "3")]
-    pub prev_summary_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "3")]
     pub last_block_id: ::core::option::Option<BlockId>,
-    #[prost(bytes = "vec", tag = "5")]
+    #[prost(bytes = "vec", tag = "4")]
     pub last_results_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "6")]
+    #[prost(bytes = "vec", tag = "5")]
     pub app_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "7")]
+    #[prost(bytes = "vec", tag = "6")]
     pub body_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "8")]
+    #[prost(bytes = "vec", tag = "7")]
     pub validators_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "9")]
+    #[prost(bytes = "vec", tag = "8")]
     pub next_validators_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "10")]
+    #[prost(bytes = "vec", tag = "9")]
     pub consensus_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(int64, tag = "11")]
+    #[prost(int64, tag = "10")]
     pub last_height_validators_changed: i64,
-    #[prost(int64, tag = "12")]
+    #[prost(int64, tag = "11")]
     pub last_height_consensus_params_changed: i64,
-    #[prost(message, optional, tag = "13")]
+    #[prost(message, optional, tag = "12")]
     pub validators: ::core::option::Option<ValidatorSet>,
-    #[prost(message, optional, tag = "14")]
+    #[prost(message, optional, tag = "13")]
     pub next_validators: ::core::option::Option<ValidatorSet>,
-    #[prost(message, optional, tag = "15")]
+    #[prost(message, optional, tag = "14")]
     pub consensus_params: ::core::option::Option<ConsensusParams>,
 }
 /// Compressed application-state snapshot. body_hash is the tmhash of these bytes.
