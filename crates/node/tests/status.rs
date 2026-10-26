@@ -90,6 +90,15 @@ fn status_health_and_unknown_method() {
     assert_eq!(health["id"], "abc");
     assert_eq!(health["result"], serde_json::json!({}));
 
+    let (_code, _headers, summary) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"summary","params":{}}"#,
+    );
+    assert_eq!(summary["error"]["code"], -32603);
+    assert_eq!(summary["error"]["message"], "Internal error");
+    assert_eq!(summary["error"]["data"], "summary not found");
+    assert!(summary.get("result").is_none());
+
     let (_code, _headers, unknown) =
         post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"subscribe"}"#);
     assert_eq!(unknown["error"]["code"], -32601);

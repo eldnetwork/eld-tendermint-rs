@@ -10,7 +10,7 @@ Matches `node.Node` and `cmd/tendermint` in the Go tree for the `start` and `uns
 
 `eld-tendermint unsafe-reset-all [--home <dir>] [--keep-addr-book]` deletes `data/` (or the configured `db_dir`) and `config/addrbook.json`, and writes a height-0 `priv_validator_state.json`. `config.toml`, `genesis.json`, and the node and validator keys stay.
 
-`POST /` serves `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `abci_info`, `block`, `commit`, `tx`, and `tx_search`. Any other JSON-RPC method name returns `-32601`. `GET /websocket` serves `subscribe` and `unsubscribe` for the queries `tm.event='NewBlock'` and `tm.event='Tx'`.
+`POST /` serves `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `abci_info`, `block`, `commit`, `summary`, `tx`, and `tx_search`. `summary` returns the current summary header and does not include the snapshot body. Any other JSON-RPC method name returns `-32601`. `GET /websocket` serves `subscribe` and `unsubscribe` for the queries `tm.event='NewBlock'` and `tm.event='Tx'`.
 
 When `priv_validator_laddr` is set, `start` dials the address in `priv_validator_laddr` for signatures and does not read `priv_validator_key.json`. If that dial is refused, `start` exits before JSON-RPC listens. When ABCI `Commit` returns `retain_height`, block-store heights below `retain_height` are deleted.
 

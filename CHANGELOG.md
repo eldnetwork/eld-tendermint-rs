@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- JSON-RPC `summary` returns the current summary header. A node that has not stored a summary yet returns `summary not found`.
 - JSON-RPC `abci_info` asks the app for Info on the query connection, so `eld-cli chain abci-info` can read the app version, height, and app hash.
 - `tests/vectors/` and `scripts/refresh-vectors.sh`, so CI fails when the hex fixtures and `proto/GO_REF` disagree.
 - Property tests for Merkle roots, Amino JSON, vote sign bytes, and part-set hashes.

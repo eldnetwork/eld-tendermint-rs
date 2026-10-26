@@ -142,6 +142,7 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "abci_info" => abci_info(&id, status),
         "block" => rpc_block(&id, request, status),
         "commit" => rpc_commit(&id, request, status),
+        "summary" => rpc_summary(&id, status),
         "tx" => rpc_tx(&id, request, status),
         "tx_search" => rpc_tx_search(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
@@ -678,6 +679,18 @@ fn rpc_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             },
             "canonical": height != latest,
         }),
+    )
+}
+
+/// Current summary header. Parameters are ignored. Missing `SH:` is
+/// `summary not found`.
+fn rpc_summary(id: &Value, status: &NodeStatus) -> Value {
+    let Some(header) = status.block_store.load_summary_header() else {
+        return internal_message(id, "summary not found");
+    };
+    rpc_result(
+        id.clone(),
+        rpc_json::to_json(&rpc_json::RpcSummaryHeader::from_summary_header(&header)),
     )
 }
 

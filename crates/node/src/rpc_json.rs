@@ -13,7 +13,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use eld_tendermint_crypto::{PubKey, marshal_pub_key};
-use eld_tendermint_types::{BlockId, Header, Validator};
+use eld_tendermint_types::{
+    BlockId, ConsensusParams, Header, SummaryHeader, Validator, ValidatorSet,
+};
 
 /// Standard base64, padding kept. An empty slice is `""`.
 #[must_use]
@@ -175,12 +177,133 @@ impl RpcHeader {
     }
 }
 
+/// Summary header. Heights are decimal strings. Hashes are uppercase hex.
+#[derive(Serialize)]
+pub(crate) struct RpcSummaryHeader {
+    pub end_height: String,
+    pub summary_hash: String,
+    pub last_block_id: RpcBlockId,
+    pub last_results_hash: String,
+    pub app_hash: String,
+    pub body_hash: String,
+    pub validators_hash: String,
+    pub next_validators_hash: String,
+    pub consensus_hash: String,
+    pub last_height_validators_changed: String,
+    pub last_height_consensus_params_changed: String,
+    pub validators: RpcValidatorSet,
+    pub next_validators: RpcValidatorSet,
+    pub consensus_params: RpcConsensusParams,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcValidatorSet {
+    pub validators: Vec<RpcValidator>,
+    pub proposer: Option<RpcValidator>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcConsensusParams {
+    pub block: RpcBlockParams,
+    pub evidence: RpcEvidenceParams,
+    pub validator: RpcValidatorParams,
+    pub version: RpcVersionParams,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcBlockParams {
+    pub max_bytes: String,
+    pub max_gas: String,
+    pub time_iota_ms: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcEvidenceParams {
+    pub max_age_num_blocks: String,
+    pub max_age_duration: String,
+    pub max_bytes: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcValidatorParams {
+    pub pub_key_types: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RpcVersionParams {
+    pub app_version: String,
+}
+
+impl RpcSummaryHeader {
+    pub(crate) fn from_summary_header(header: &SummaryHeader) -> Self {
+        Self {
+            end_height: header.end_height.to_string(),
+            summary_hash: hex_upper(header.summary_hash.as_bytes()),
+            last_block_id: RpcBlockId::from_block_id(&header.last_block_id),
+            last_results_hash: hex_upper(header.last_results_hash.as_bytes()),
+            app_hash: hex_upper(header.app_hash.as_bytes()),
+            body_hash: hex_upper(header.body_hash.as_bytes()),
+            validators_hash: hex_upper(header.validators_hash.as_bytes()),
+            next_validators_hash: hex_upper(header.next_validators_hash.as_bytes()),
+            consensus_hash: hex_upper(header.consensus_hash.as_bytes()),
+            last_height_validators_changed: header.last_height_validators_changed.to_string(),
+            last_height_consensus_params_changed: header
+                .last_height_consensus_params_changed
+                .to_string(),
+            validators: RpcValidatorSet::from_set(&header.validators),
+            next_validators: RpcValidatorSet::from_set(&header.next_validators),
+            consensus_params: RpcConsensusParams::from_params(&header.consensus_params),
+        }
+    }
+}
+
+impl RpcValidatorSet {
+    fn from_set(set: &ValidatorSet) -> Self {
+        Self {
+            validators: set
+                .validators()
+                .iter()
+                .map(RpcValidator::from_validator)
+                .collect(),
+            proposer: set.proposer().map(RpcValidator::from_validator),
+        }
+    }
+}
+
+impl RpcConsensusParams {
+    fn from_params(params: &ConsensusParams) -> Self {
+        Self {
+            block: RpcBlockParams {
+                max_bytes: params.block.max_bytes.to_string(),
+                max_gas: params.block.max_gas.to_string(),
+                time_iota_ms: params.block.time_iota_ms.to_string(),
+            },
+            evidence: RpcEvidenceParams {
+                max_age_num_blocks: params.evidence.max_age_num_blocks.to_string(),
+                max_age_duration: params.evidence.max_age_duration.total_nanos().to_string(),
+                max_bytes: params.evidence.max_bytes.to_string(),
+            },
+            validator: RpcValidatorParams {
+                pub_key_types: params.validator.pub_key_types.clone(),
+            },
+            version: RpcVersionParams {
+                app_version: params.version.app_version.to_string(),
+            },
+        }
+    }
+}
+
 fn amino_pub_key(key: &PubKey) -> Option<Value> {
     serde_json::from_str(&marshal_pub_key(key)).ok()
 }
 
 #[cfg(test)]
 mod tests {
+    use eld_tendermint_crypto::{sum, unmarshal_pub_key};
+    use eld_tendermint_types::{
+        ConsensusParams, Hash, PartSetHeader, SummaryHeader, SummaryInput, Validator, ValidatorSet,
+    };
+
     use super::*;
 
     #[test]
@@ -251,5 +374,114 @@ mod tests {
             part_set_header: Default::default(),
         }));
         assert_eq!(zeros["hash"], "0".repeat(64));
+    }
+
+    #[test]
+    fn summary_header_json_uses_string_heights_and_uppercase_hex() {
+        let header = sample_summary_header();
+        let value = to_json(&RpcSummaryHeader::from_summary_header(&header));
+
+        assert!(value.get("body").is_none());
+        assert_eq!(value["end_height"], "10");
+        assert_eq!(value["last_height_validators_changed"], "1");
+        assert_eq!(value["last_height_consensus_params_changed"], "1");
+        assert_eq!(
+            value["summary_hash"],
+            "24ADB8A1F5355DF7A0CF13B47F080F87A894A097D586564D2771BE81DF4BF505"
+        );
+        assert_eq!(
+            value["body_hash"],
+            "A606345E926BC749571988564AA8D506FFB506D5B0E40A2BFD6B819594A74146"
+        );
+        assert_eq!(value["app_hash"], hex_upper(header.app_hash.as_bytes()));
+        assert_eq!(
+            value["last_results_hash"],
+            hex_upper(header.last_results_hash.as_bytes())
+        );
+        assert_eq!(
+            value["validators_hash"],
+            hex_upper(header.validators_hash.as_bytes())
+        );
+        assert_eq!(
+            value["next_validators_hash"],
+            hex_upper(header.next_validators_hash.as_bytes())
+        );
+        assert_eq!(
+            value["consensus_hash"],
+            hex_upper(header.consensus_hash.as_bytes())
+        );
+        assert_eq!(
+            value["last_block_id"]["hash"],
+            hex_upper(&header.last_block_id.hash)
+        );
+        assert_eq!(value["last_block_id"]["parts"]["total"], 1);
+
+        assert_eq!(
+            value["validators"]["validators"].as_array().map(Vec::len),
+            Some(1)
+        );
+        let validator = &value["validators"]["validators"][0];
+        assert_eq!(validator["voting_power"], 10);
+        let address = validator["address"].as_str().unwrap();
+        assert_eq!(address.to_ascii_uppercase(), address);
+        assert_eq!(value["validators"]["proposer"]["address"], address);
+        assert_eq!(
+            value["next_validators"]["proposer"]["address"],
+            value["next_validators"]["validators"][0]["address"]
+        );
+
+        assert_eq!(value["consensus_params"]["block"]["max_bytes"], "22020096");
+        assert_eq!(value["consensus_params"]["block"]["max_gas"], "-1");
+        assert_eq!(value["consensus_params"]["block"]["time_iota_ms"], "1000");
+        assert_eq!(
+            value["consensus_params"]["evidence"]["max_age_num_blocks"],
+            "100000"
+        );
+        assert_eq!(
+            value["consensus_params"]["evidence"]["max_age_duration"],
+            "172800000000000"
+        );
+        assert_eq!(
+            value["consensus_params"]["evidence"]["max_bytes"],
+            "1048576"
+        );
+        assert_eq!(
+            value["consensus_params"]["validator"]["pub_key_types"][0],
+            "ed25519"
+        );
+        assert_eq!(value["consensus_params"]["version"]["app_version"], "0");
+    }
+
+    fn sample_summary_header() -> SummaryHeader {
+        const PUB_JSON: &str = concat!(
+            r#"{"type":"tendermint/PubKeyEd25519","value":""#,
+            "AT/+aaL1eB0477Mud9JMm8Sh8BIvOYlPGC9KkIUmFaE=",
+            r#""}"#,
+        );
+        let pub_key = unmarshal_pub_key(PUB_JSON).unwrap();
+        let validators = ValidatorSet::new(vec![Validator::new(pub_key, 10)]).unwrap();
+        let mut next_validators = validators.copy();
+        next_validators.increment_proposer_priority(1).unwrap();
+        SummaryHeader::build(
+            SummaryInput {
+                end_height: 10,
+                last_block_id: BlockId {
+                    hash: sum(b"block").to_vec(),
+                    part_set_header: PartSetHeader {
+                        total: 1,
+                        hash: sum(b"parts").to_vec(),
+                    },
+                },
+                last_results_hash: Hash::from_array(sum(b"results")),
+                app_hash: Hash::from_array(sum(b"app")),
+                last_height_validators_changed: 1,
+                last_height_consensus_params_changed: 1,
+                validators,
+                next_validators,
+                consensus_params: ConsensusParams::default_params(),
+            },
+            b"compressed-snapshot",
+        )
+        .unwrap()
     }
 }
