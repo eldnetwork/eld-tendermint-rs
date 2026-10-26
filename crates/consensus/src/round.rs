@@ -1883,12 +1883,12 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     /// Called by each caller of [`Self::try_finalize_commit`].
     ///
     /// Continues only when `frontier` is greater than `end_height` on the saved
-    /// summary header. No header counts as height 0. The manager asks the app.
+    /// summary header. No header counts as height 0. The manager asks the app
+    /// and stores the summary. `last_block_id` is block 1, copied from the
+    /// stored summary or from block 1 in the block store.
     fn update_summary(&mut self) {
-        let saved_frontier = match self.block_store.load_summary_header() {
-            Some(header) => header.end_height,
-            None => 0,
-        };
+        let saved = self.block_store.load_summary_header();
+        let saved_frontier = saved.as_ref().map(|header| header.end_height).unwrap_or(0);
         if self.frontier <= saved_frontier {
             return;
         }
@@ -1897,10 +1897,30 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.replaying {
             return;
         }
+        let block_id = match saved {
+            Some(header) => header.last_block_id,
+            None => {
+                let Some(meta) = self.block_store.load_block_meta(1) else {
+                    log_line(
+                        Level::Error,
+                        "consensus",
+                        "block 1 is not in the block store",
+                        &[],
+                    );
+                    return;
+                };
+                meta.block_id
+            }
+        };
         self.summary_manager
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .update_summary(self.frontier);
+            .update_summary(
+                self.frontier,
+                &self.chain_state,
+                block_id,
+                &self.block_store,
+            );
     }
 
     fn block_ok(&self, block: &Block) -> bool {

@@ -66,7 +66,7 @@ impl SummaryHeader {
     ///
     /// Returns a validator-set or params error, [`Error::ZeroHeight`] when
     /// `end_height` is 0, or [`Error::BlockIdMustBeComplete`] when `last_block_id`
-    /// is not the full id of the block at `end_height`.
+    /// is not a complete block id.
     pub fn build(input: SummaryInput, body: &[u8]) -> Result<Self, Error> {
         let validators_hash = input.validators.hash()?;
         let next_validators_hash = input.next_validators.hash()?;
