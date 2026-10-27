@@ -16,6 +16,7 @@ use eld_tendermint_blockchain::{
 use eld_tendermint_config::{Config, load_home, resolve_home};
 use eld_tendermint_consensus::{
     Node, NodeExtras, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
+    spawn_prune,
 };
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
@@ -161,6 +162,13 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     let tx_for_reactors = tx_index
         .as_ref()
         .map(|index| Arc::clone(index) as Arc<dyn IndexTxs>);
+    if let Some(header) = block_store.load_summary_header() {
+        spawn_prune(
+            Arc::clone(&block_store),
+            tx_for_reactors.clone(),
+            header.end_height,
+        );
+    }
     let subscriptions = Arc::new(SubscriptionHub::new());
     let events: Option<Arc<dyn CommitEvents>> =
         Some(Arc::new(CommitPublisher::new(Arc::clone(&subscriptions))));
