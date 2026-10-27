@@ -1920,6 +1920,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 &self.chain_state,
                 block_id,
                 &self.block_store,
+                self.tx_index.clone(),
             );
     }
 

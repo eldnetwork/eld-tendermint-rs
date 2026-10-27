@@ -50,7 +50,9 @@ impl Batch {
 }
 
 /// Key-value store. `BlockStore` takes `D: Db`, including `Arc<MemDb>`.
-pub trait Db: Send + Sync {
+///
+/// The handle is `'static` so a prune thread can own it after the caller returns.
+pub trait Db: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`Error::Db`] when the backend read fails. `MemDb` does not fail.

@@ -50,7 +50,8 @@ impl SummaryManager {
         frontier: i64,
         state: &State,
         block_id: BlockId,
-        block_store: &BlockStore<D>,
+        block_store: &Arc<BlockStore<D>>,
+        tx_index: Option<Arc<dyn IndexTxs>>,
     ) {
         let token = match std::env::var(SNAPSHOT_QUERY_TOKEN_KEY) {
             Ok(token) if !token.is_empty() => token,
@@ -73,7 +74,7 @@ impl SummaryManager {
                 return;
             }
         };
-        self.write_summary(&token, frontier, state, block_id, block_store);
+        self.write_summary(&token, frontier, state, block_id, block_store, tx_index);
     }
 
     fn write_summary<D: Db>(
@@ -82,7 +83,8 @@ impl SummaryManager {
         frontier: i64,
         state: &State,
         block_id: BlockId,
-        block_store: &BlockStore<D>,
+        block_store: &Arc<BlockStore<D>>,
+        tx_index: Option<Arc<dyn IndexTxs>>,
     ) {
         if state.last_block_height != frontier {
             log_line(
@@ -184,6 +186,7 @@ impl SummaryManager {
             );
             return;
         }
+        spawn_prune(Arc::clone(block_store), tx_index, header.end_height);
         log_line(
             Level::Info,
             "consensus",
@@ -367,13 +370,20 @@ mod tests {
 
     #[test]
     fn update_summary_saves_block_one_id_and_replaces_the_snapshot() {
-        let store = BlockStore::new(MemDb::new());
+        let store = Arc::new(BlockStore::new(MemDb::new()));
         let block_id = block_one();
         SummaryManager::new(Reply {
             code: 0,
             value: encoded_body(b"snapshot-one"),
         })
-        .write_summary("token", 4, &committed_state(4), block_id.clone(), &store);
+        .write_summary(
+            "token",
+            4,
+            &committed_state(4),
+            block_id.clone(),
+            &store,
+            None,
+        );
         let header = store.load_summary_header().expect("header");
         let body = store.load_summary_body().expect("body");
         assert_eq!(header.end_height, 4);
@@ -385,7 +395,14 @@ mod tests {
             code: 0,
             value: encoded_body(b"snapshot-two"),
         })
-        .write_summary("token", 9, &committed_state(9), block_id.clone(), &store);
+        .write_summary(
+            "token",
+            9,
+            &committed_state(9),
+            block_id.clone(),
+            &store,
+            None,
+        );
         let header = store.load_summary_header().expect("replaced header");
         let body = store.load_summary_body().expect("replaced body");
         assert_eq!(header.end_height, 9);
@@ -395,13 +412,20 @@ mod tests {
 
     #[test]
     fn update_summary_does_not_save_a_rejected_snapshot() {
-        let store = BlockStore::new(MemDb::new());
+        let store = Arc::new(BlockStore::new(MemDb::new()));
         let block_id = block_one();
         SummaryManager::new(Reply {
             code: 4,
             value: encoded_body(b"nope"),
         })
-        .write_summary("token", 4, &committed_state(4), block_id.clone(), &store);
+        .write_summary(
+            "token",
+            4,
+            &committed_state(4),
+            block_id.clone(),
+            &store,
+            None,
+        );
         assert!(store.load_summary_header().is_none());
         assert!(store.load_summary_body().is_none());
 
@@ -409,14 +433,21 @@ mod tests {
             code: 0,
             value: Vec::new(),
         })
-        .write_summary("token", 4, &committed_state(4), block_id.clone(), &store);
+        .write_summary(
+            "token",
+            4,
+            &committed_state(4),
+            block_id.clone(),
+            &store,
+            None,
+        );
         assert!(store.load_summary_header().is_none());
 
         SummaryManager::new(Reply {
             code: 0,
             value: encoded_body(b"snapshot"),
         })
-        .write_summary("token", 4, &committed_state(3), block_id, &store);
+        .write_summary("token", 4, &committed_state(3), block_id, &store, None);
         assert!(store.load_summary_header().is_none());
         assert!(store.load_summary_body().is_none());
     }
