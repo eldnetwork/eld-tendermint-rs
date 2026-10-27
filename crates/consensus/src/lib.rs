@@ -22,5 +22,5 @@ pub use reactor::{
     DATA_CHANNEL, Reactor, STATE_CHANNEL, VOTE_CHANNEL, VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 pub use round::{Msg, Node, NodeExtras, Step};
-pub use summary::{SummaryManager, SummaryQuery};
+pub use summary::{SummaryManager, SummaryQuery, spawn_prune};
 pub use wal::{Wal, end_height_message, proposal_message, vote_message};

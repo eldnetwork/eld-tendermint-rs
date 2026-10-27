@@ -21,6 +21,13 @@ pub trait IndexTxs: Send + Sync {
     ///
     /// Returns a database or decode error. A failure must not panic the process.
     fn index_committed(&self, block: &Block, results: &[ResponseDeliverTx]) -> Result<(), Error>;
+
+    /// Delete indexed transactions for heights below `prune_to`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error. A missing key is not an error.
+    fn prune_txs(&self, prune_to: i64) -> Result<u64, Error>;
 }
 
 /// What the node calls after `save_block` and a successful index write.
@@ -203,6 +210,10 @@ impl<D: Db> TxIndex<D> {
 impl<D: Db + 'static> IndexTxs for TxIndex<D> {
     fn index_committed(&self, block: &Block, results: &[ResponseDeliverTx]) -> Result<(), Error> {
         TxIndex::index_committed(self, block, results)
+    }
+
+    fn prune_txs(&self, prune_to: i64) -> Result<u64, Error> {
+        TxIndex::prune_txs(self, prune_to)
     }
 }
 

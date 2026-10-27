@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use eld_tendermint_proto::abci::{RequestQuery, ResponseQuery};
-use eld_tendermint_state::State;
+use eld_tendermint_state::{IndexTxs, State};
 use eld_tendermint_store::{BlockStore, Db};
 use eld_tendermint_types::{
     BlockId, Hash, Level, SummaryBody, SummaryHeader, SummaryInput, log_line,
@@ -194,6 +194,76 @@ impl SummaryManager {
             ],
         );
     }
+}
+
+/// Deletes block-store and tx-index data below `end_height + 1` on a new thread.
+///
+/// A missing tx index skips tx deletion. Errors are logged. The thread is not joined.
+pub fn spawn_prune<D: Db + 'static>(
+    store: Arc<BlockStore<D>>,
+    tx_index: Option<Arc<dyn IndexTxs>>,
+    end_height: i64,
+) {
+    std::thread::spawn(move || {
+        let prune_to = end_height + 1;
+        let prune_to_text = prune_to.to_string();
+        let end_height_text = end_height.to_string();
+        match store.prune_blocks(prune_to) {
+            Ok(pruned) => {
+                let pruned = pruned.to_string();
+                log_line(
+                    Level::Info,
+                    "consensus",
+                    "pruned blocks",
+                    &[
+                        ("pruned", pruned.as_str()),
+                        ("prune_to", prune_to_text.as_str()),
+                    ],
+                );
+            }
+            Err(err) => {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "block prune failed",
+                    &[
+                        ("end_height", end_height_text.as_str()),
+                        ("err", err.as_str()),
+                    ],
+                );
+            }
+        }
+        let Some(tx_index) = tx_index else {
+            return;
+        };
+        match tx_index.prune_txs(prune_to) {
+            Ok(pruned) => {
+                let pruned = pruned.to_string();
+                log_line(
+                    Level::Info,
+                    "consensus",
+                    "pruned txs",
+                    &[
+                        ("pruned", pruned.as_str()),
+                        ("prune_to", prune_to_text.as_str()),
+                    ],
+                );
+            }
+            Err(err) => {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "tx prune failed",
+                    &[
+                        ("end_height", end_height_text.as_str()),
+                        ("err", err.as_str()),
+                    ],
+                );
+            }
+        }
+    });
 }
 
 fn summary_header(
