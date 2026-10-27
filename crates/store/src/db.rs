@@ -42,6 +42,11 @@ impl Batch {
     pub fn delete(&mut self, key: &[u8]) {
         self.ops.push(BatchOp::Delete(key.to_vec()));
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
 }
 
 /// Key-value store. `BlockStore` takes `D: Db`, including `Arc<MemDb>`.

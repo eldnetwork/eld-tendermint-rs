@@ -136,7 +136,11 @@ impl<D: Db> TxIndex<D> {
     }
 
     /// Delete all indexed txs for heights < `prune_to`.
-    /// Returns the number of transactions deleted.
+    ///
+    /// Each deleted transaction removes its hash key, its `tx.height` key, and
+    /// the event keys stored with that result. A missing or undecodable result
+    /// still removes the hash and height keys. Writes flush every 1000
+    /// transactions, and once more for whatever remains.
     ///
     /// # Errors
     ///
@@ -145,8 +149,54 @@ impl<D: Db> TxIndex<D> {
         if prune_to <= 0 {
             return Ok(0);
         }
-        // TODO: real deletion
-        Ok(0)
+
+        let mut deleted = 0u64;
+        let mut batch = Batch::new();
+
+        for height in 1..prune_to {
+            let prefix = format!("tx.height/{height}/").into_bytes();
+            let rows = self
+                .db
+                .iter_prefix(&prefix)
+                .map_err(|err| Error::Db(err.to_string()))?;
+
+            for (height_key, hash) in rows {
+                if !is_height_key(&height_key, height) {
+                    continue;
+                }
+
+                if let Some(raw) = self
+                    .db
+                    .get(hash.as_slice())
+                    .map_err(|err| Error::Db(err.to_string()))?
+                {
+                    if let Ok(stored) = TxResult::decode(raw.as_slice()) {
+                        if let Some(result) = &stored.result {
+                            for event_key in event_keys(result, stored.height, stored.index) {
+                                batch.delete(&event_key);
+                            }
+                        }
+                    }
+                }
+                batch.delete(hash.as_slice());
+                batch.delete(&height_key);
+
+                deleted += 1;
+                if deleted % 1000 == 0 {
+                    self.db
+                        .write_sync(&batch)
+                        .map_err(|err| Error::Db(err.to_string()))?;
+                    batch = Batch::new();
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            self.db
+                .write_sync(&batch)
+                .map_err(|err| Error::Db(err.to_string()))?;
+        }
+        Ok(deleted)
     }
 }
 
