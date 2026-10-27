@@ -466,9 +466,7 @@ mod tests {
         for (height, raw) in [(1, &b"tx_A"[..]), (2, &b"tx_B"[..]), (3, &b"tx_C"[..])] {
             let (block, parts) = block_with_tx(height, previous.clone(), raw);
             let seen = commit_at(height);
-            store
-                .save_block(&block, &parts, &seen)
-                .expect("save block");
+            store.save_block(&block, &parts, &seen).expect("save block");
             index
                 .index_committed(&block, &[indexed_deliver()])
                 .expect("index");
@@ -484,10 +482,7 @@ mod tests {
         assert!(store.load_block(2).is_none());
         assert!(store.load_block(3).is_some());
         assert_eq!(store.base(), 3);
-        assert_eq!(
-            store.load_summary_header().expect("header").end_height,
-            2
-        );
+        assert_eq!(store.load_summary_header().expect("header").end_height, 2);
 
         assert!(
             index
