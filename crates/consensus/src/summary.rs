@@ -301,9 +301,15 @@ fn summary_body(bytes: &[u8]) -> Result<SummaryBody, prost::DecodeError> {
 #[cfg(test)]
 mod tests {
     use eld_tendermint_crypto::{PubKey, sum};
-    use eld_tendermint_state::make_genesis_state;
+    use eld_tendermint_proto::abci::{Event, EventAttribute, ResponseDeliverTx};
+    use eld_tendermint_proto::types::BlockIdFlag;
+    use eld_tendermint_state::{TxIndex, make_genesis_state};
     use eld_tendermint_store::{BlockStore, MemDb};
-    use eld_tendermint_types::{ChainId, GenesisDoc, GenesisValidator, PartSetHeader, Time};
+    use eld_tendermint_types::{
+        ADDRESS_SIZE, Block, ChainId, Commit, CommitSig, ConsensusParams, EvidenceList, GenesisDoc,
+        GenesisValidator, Hash, PartSetHeader, Time, Tx, Txs, Validator, ValidatorSet,
+    };
+    use prost::bytes::Bytes;
 
     use super::*;
 
@@ -450,5 +456,149 @@ mod tests {
         .write_summary("token", 4, &committed_state(3), block_id, &store, None);
         assert!(store.load_summary_header().is_none());
         assert!(store.load_summary_body().is_none());
+    }
+
+    #[test]
+    fn prune_after_summary_drops_covered_heights_and_keeps_the_summary() {
+        let store = BlockStore::new(MemDb::new());
+        let index = TxIndex::new(MemDb::new());
+        let mut previous = Some(commit_at(0));
+        for (height, raw) in [(1, &b"tx_A"[..]), (2, &b"tx_B"[..]), (3, &b"tx_C"[..])] {
+            let (block, parts) = block_with_tx(height, previous.clone(), raw);
+            let seen = commit_at(height);
+            store
+                .save_block(&block, &parts, &seen)
+                .expect("save block");
+            index
+                .index_committed(&block, &[indexed_deliver()])
+                .expect("index");
+            previous = Some(seen);
+        }
+        let (header, body) = summary_at(2);
+        store.save_summary(&header, &body).expect("save summary");
+
+        assert_eq!(store.prune_blocks(3).expect("prune blocks"), 2);
+        assert!(index.prune_txs(3).expect("prune txs") >= 2);
+
+        assert!(store.load_block(1).is_none());
+        assert!(store.load_block(2).is_none());
+        assert!(store.load_block(3).is_some());
+        assert_eq!(store.base(), 3);
+        assert_eq!(
+            store.load_summary_header().expect("header").end_height,
+            2
+        );
+
+        assert!(
+            index
+                .get(Tx::new(b"tx_A".to_vec()).hash().as_bytes())
+                .expect("get")
+                .is_none()
+        );
+        assert!(
+            index
+                .get(Tx::new(b"tx_B".to_vec()).hash().as_bytes())
+                .expect("get")
+                .is_none()
+        );
+        assert!(
+            index
+                .get(Tx::new(b"tx_C".to_vec()).hash().as_bytes())
+                .expect("get")
+                .is_some()
+        );
+        assert!(index.by_height(1).expect("height 1").is_empty());
+        assert!(index.by_height(2).expect("height 2").is_empty());
+        assert_eq!(index.by_height(3).expect("height 3").len(), 1);
+    }
+
+    fn commit_at(height: i64) -> Commit {
+        let block_id = if height == 0 {
+            BlockId::default()
+        } else {
+            BlockId {
+                hash: vec![0xab; 32],
+                part_set_header: PartSetHeader {
+                    total: 1,
+                    hash: vec![0xcd; 32],
+                },
+            }
+        };
+        let signatures = if height == 0 {
+            Vec::new()
+        } else {
+            vec![CommitSig {
+                block_id_flag: BlockIdFlag::Commit,
+                validator_address: vec![0x11; ADDRESS_SIZE],
+                timestamp: Time::GO_ZERO,
+                signature: vec![1],
+            }]
+        };
+        Commit {
+            height,
+            round: 0,
+            block_id,
+            signatures,
+        }
+    }
+
+    fn block_with_tx(
+        height: i64,
+        last_commit: Option<Commit>,
+        raw: &[u8],
+    ) -> (Block, eld_tendermint_types::PartSet) {
+        let mut block = Block::make_block(
+            height,
+            Txs::new(vec![Tx::new(raw.to_vec())]),
+            last_commit,
+            EvidenceList::default(),
+        );
+        block.header.proposer_address = vec![0x22; ADDRESS_SIZE];
+        block.header.validators_hash = vec![0x33; 32];
+        let parts = block.make_part_set(8).expect("part set");
+        (block, parts)
+    }
+
+    fn indexed_deliver() -> ResponseDeliverTx {
+        ResponseDeliverTx {
+            events: vec![Event {
+                r#type: "transfer".to_owned(),
+                attributes: vec![EventAttribute {
+                    key: Bytes::from_static(b"sender"),
+                    value: Bytes::from_static(b"bob"),
+                    index: true,
+                }],
+            }],
+            ..ResponseDeliverTx::default()
+        }
+    }
+
+    fn summary_at(end_height: i64) -> (SummaryHeader, SummaryBody) {
+        let validators = ValidatorSet::new(vec![Validator::new(
+            PubKey::from_bytes(&[0x11; 32]).expect("pubkey"),
+            10,
+        )])
+        .expect("validators");
+        let header = SummaryHeader::build(
+            SummaryInput {
+                end_height,
+                last_block_id: block_one(),
+                last_results_hash: Hash::from_array(sum(b"results")),
+                app_hash: Hash::from_array(sum(b"app")),
+                last_height_validators_changed: 1,
+                last_height_consensus_params_changed: 1,
+                validators: validators.copy(),
+                next_validators: validators,
+                consensus_params: ConsensusParams::default_params(),
+            },
+            b"snapshot",
+        )
+        .expect("summary");
+        (
+            header,
+            SummaryBody {
+                state_snapshot: b"snapshot".to_vec(),
+            },
+        )
     }
 }
