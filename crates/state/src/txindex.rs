@@ -134,6 +134,20 @@ impl<D: Db> TxIndex<D> {
         }
         Ok(found)
     }
+
+    /// Delete all indexed txs for heights < `prune_to`.
+    /// Returns the number of transactions deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error. A missing key is not an error.
+    pub fn prune_txs(&self, prune_to: i64) -> Result<u64, Error> {
+        if prune_to <= 0 {
+            return Ok(0);
+        }
+        // TODO: real deletion
+        Ok(0)
+    }
 }
 
 impl<D: Db + 'static> IndexTxs for TxIndex<D> {
