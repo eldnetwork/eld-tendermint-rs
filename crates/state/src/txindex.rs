@@ -383,4 +383,41 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn prune_txs_removes_only_below_prune_to() {
+        let index = TxIndex::new(MemDb::new());
+        let tx_a = b"tx_A";
+        let tx_b = b"tx_B";
+        index
+            .index_committed(&block_with(1, tx_a), &[deliver(true)])
+            .expect("index height 1");
+        index
+            .index_committed(&block_with(2, tx_b), &[deliver(true)])
+            .expect("index height 2");
+
+        let deleted = index.prune_txs(2).expect("prune");
+        assert!(deleted >= 1);
+
+        let hash_a = Tx::new(tx_a.to_vec()).hash();
+        let hash_b = Tx::new(tx_b.to_vec()).hash();
+        assert!(index.get(hash_a.as_bytes()).expect("get").is_none());
+        assert!(index.get(hash_b.as_bytes()).expect("get").is_some());
+        assert!(index.db.get(b"tx.height/1/1/0").expect("read").is_none());
+        assert!(
+            index
+                .db
+                .get(b"transfer.sender/bob/1/0")
+                .expect("read")
+                .is_none()
+        );
+        assert!(index.db.get(b"tx.height/2/2/0").expect("read").is_some());
+        assert!(
+            index
+                .db
+                .get(b"transfer.sender/bob/2/0")
+                .expect("read")
+                .is_some()
+        );
+    }
 }
