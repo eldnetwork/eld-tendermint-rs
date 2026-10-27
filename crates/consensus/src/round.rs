@@ -150,7 +150,7 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     evidence: Option<Arc<dyn ProposalEvidence>>,
     tx_index: Option<Arc<dyn IndexTxs>>,
     events: Option<Arc<dyn CommitEvents>>,
-    summary_manager: Arc<Mutex<SummaryManager>>,
+    summary_manager: Arc<Mutex<SummaryManager<D>>>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -405,7 +405,11 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
     where
         E: SummaryQuery + Clone + 'static,
     {
-        let summary_manager = Arc::new(Mutex::new(SummaryManager::new(exec.clone())));
+        let summary_manager = Arc::new(Mutex::new(SummaryManager::new(
+            exec.clone(),
+            Arc::clone(&block_store),
+            extras.tx_index.clone(),
+        )));
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
@@ -1915,13 +1919,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.summary_manager
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .update_summary(
-                self.frontier,
-                &self.chain_state,
-                block_id,
-                &self.block_store,
-                self.tx_index.clone(),
-            );
+            .update_summary(self.frontier, &self.chain_state, block_id);
     }
 
     fn block_ok(&self, block: &Block) -> bool {

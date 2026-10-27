@@ -1,8 +1,8 @@
 //! Summary updates after a commit.
 //!
-//! [`crate::Node`] boot passes the execution app to [`SummaryManager::new`].
-//! [`SummaryManager::update_summary`] asks the app for the frontier snapshot and
-//! stores the summary header and body.
+//! [`crate::Node`] boot calls [`SummaryManager::new`] once, with the execution app,
+//! the block store, and the tx index. [`SummaryManager::update_summary`] asks the
+//! app for the frontier snapshot and stores the summary header and body.
 
 use std::sync::Arc;
 
@@ -30,29 +30,34 @@ pub trait SummaryQuery: Send + Sync {
 }
 
 /// Holds the summary update for one node.
-pub struct SummaryManager {
+///
+/// Built once at node start. Later updates use the store and tx index kept here.
+pub struct SummaryManager<D: Db> {
     app: Arc<dyn SummaryQuery>,
+    block_store: Arc<BlockStore<D>>,
+    tx_index: Option<Arc<dyn IndexTxs>>,
 }
 
-impl SummaryManager {
+impl<D: Db> SummaryManager<D> {
     /// Creates the manager. Does not send a request.
     #[must_use]
-    pub fn new(app: impl SummaryQuery + 'static) -> Self {
-        Self { app: Arc::new(app) }
+    pub fn new(
+        app: impl SummaryQuery + 'static,
+        block_store: Arc<BlockStore<D>>,
+        tx_index: Option<Arc<dyn IndexTxs>>,
+    ) -> Self {
+        Self {
+            app: Arc::new(app),
+            block_store,
+            tx_index,
+        }
     }
 
     /// Asks the app for the snapshot at `frontier` and stores the summary.
     ///
     /// `block_id` is block 1. The committed height has to be `frontier`. A query
     /// error, a non-zero code, or an empty snapshot is logged and not stored.
-    pub fn update_summary<D: Db>(
-        &self,
-        frontier: i64,
-        state: &State,
-        block_id: BlockId,
-        block_store: &Arc<BlockStore<D>>,
-        tx_index: Option<Arc<dyn IndexTxs>>,
-    ) {
+    pub fn update_summary(&self, frontier: i64, state: &State, block_id: BlockId) {
         let token = match std::env::var(SNAPSHOT_QUERY_TOKEN_KEY) {
             Ok(token) if !token.is_empty() => token,
             Ok(_) => {
@@ -74,18 +79,10 @@ impl SummaryManager {
                 return;
             }
         };
-        self.write_summary(&token, frontier, state, block_id, block_store, tx_index);
+        self.write_summary(&token, frontier, state, block_id);
     }
 
-    fn write_summary<D: Db>(
-        &self,
-        token: &str,
-        frontier: i64,
-        state: &State,
-        block_id: BlockId,
-        block_store: &Arc<BlockStore<D>>,
-        tx_index: Option<Arc<dyn IndexTxs>>,
-    ) {
+    fn write_summary(&self, token: &str, frontier: i64, state: &State, block_id: BlockId) {
         if state.last_block_height != frontier {
             log_line(
                 Level::Error,
@@ -174,7 +171,7 @@ impl SummaryManager {
                 return;
             }
         };
-        if let Err(err) = block_store.save_summary(&header, &body) {
+        if let Err(err) = self.block_store.save_summary(&header, &body) {
             log_line(
                 Level::Error,
                 "consensus",
@@ -186,7 +183,11 @@ impl SummaryManager {
             );
             return;
         }
-        spawn_prune(Arc::clone(block_store), tx_index, header.end_height);
+        spawn_prune(
+            Arc::clone(&self.block_store),
+            self.tx_index.clone(),
+            header.end_height,
+        );
         log_line(
             Level::Info,
             "consensus",
@@ -378,18 +379,15 @@ mod tests {
     fn update_summary_saves_block_one_id_and_replaces_the_snapshot() {
         let store = Arc::new(BlockStore::new(MemDb::new()));
         let block_id = block_one();
-        SummaryManager::new(Reply {
-            code: 0,
-            value: encoded_body(b"snapshot-one"),
-        })
-        .write_summary(
-            "token",
-            4,
-            &committed_state(4),
-            block_id.clone(),
-            &store,
+        SummaryManager::new(
+            Reply {
+                code: 0,
+                value: encoded_body(b"snapshot-one"),
+            },
+            Arc::clone(&store),
             None,
-        );
+        )
+        .write_summary("token", 4, &committed_state(4), block_id.clone());
         let header = store.load_summary_header().expect("header");
         let body = store.load_summary_body().expect("body");
         assert_eq!(header.end_height, 4);
@@ -397,18 +395,15 @@ mod tests {
         assert_eq!(body.state_snapshot, b"snapshot-one");
         assert_eq!(header.body_hash, body.hash());
 
-        SummaryManager::new(Reply {
-            code: 0,
-            value: encoded_body(b"snapshot-two"),
-        })
-        .write_summary(
-            "token",
-            9,
-            &committed_state(9),
-            block_id.clone(),
-            &store,
+        SummaryManager::new(
+            Reply {
+                code: 0,
+                value: encoded_body(b"snapshot-two"),
+            },
+            Arc::clone(&store),
             None,
-        );
+        )
+        .write_summary("token", 9, &committed_state(9), block_id.clone());
         let header = store.load_summary_header().expect("replaced header");
         let body = store.load_summary_body().expect("replaced body");
         assert_eq!(header.end_height, 9);
@@ -420,40 +415,38 @@ mod tests {
     fn update_summary_does_not_save_a_rejected_snapshot() {
         let store = Arc::new(BlockStore::new(MemDb::new()));
         let block_id = block_one();
-        SummaryManager::new(Reply {
-            code: 4,
-            value: encoded_body(b"nope"),
-        })
-        .write_summary(
-            "token",
-            4,
-            &committed_state(4),
-            block_id.clone(),
-            &store,
+        SummaryManager::new(
+            Reply {
+                code: 4,
+                value: encoded_body(b"nope"),
+            },
+            Arc::clone(&store),
             None,
-        );
+        )
+        .write_summary("token", 4, &committed_state(4), block_id.clone());
         assert!(store.load_summary_header().is_none());
         assert!(store.load_summary_body().is_none());
 
-        SummaryManager::new(Reply {
-            code: 0,
-            value: Vec::new(),
-        })
-        .write_summary(
-            "token",
-            4,
-            &committed_state(4),
-            block_id.clone(),
-            &store,
+        SummaryManager::new(
+            Reply {
+                code: 0,
+                value: Vec::new(),
+            },
+            Arc::clone(&store),
             None,
-        );
+        )
+        .write_summary("token", 4, &committed_state(4), block_id.clone());
         assert!(store.load_summary_header().is_none());
 
-        SummaryManager::new(Reply {
-            code: 0,
-            value: encoded_body(b"snapshot"),
-        })
-        .write_summary("token", 4, &committed_state(3), block_id, &store, None);
+        SummaryManager::new(
+            Reply {
+                code: 0,
+                value: encoded_body(b"snapshot"),
+            },
+            Arc::clone(&store),
+            None,
+        )
+        .write_summary("token", 4, &committed_state(3), block_id);
         assert!(store.load_summary_header().is_none());
         assert!(store.load_summary_body().is_none());
     }
