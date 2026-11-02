@@ -15,7 +15,7 @@ use eld_tendermint_proto::consensus::wal_message;
 use eld_tendermint_proto::consensus::{
     self, BlockPart, EndHeight, MsgInfo, TimeoutInfo, WalMessage,
 };
-use eld_tendermint_types::{Level, Part, Proposal, Time, Vote, log_line};
+use eld_tendermint_types::{Part, Proposal, Time, Vote};
 use prost::Message;
 
 use crate::error::{Error, WalCorrupt};
@@ -158,80 +158,6 @@ impl Wal {
         }
         Ok(None)
     }
-}
-
-/// Deletes rotated `wal.NNN` segments whose highest `EndHeight` is below `older_than`.
-///
-/// The head file is left in place. A segment that does not decode, or that has no
-/// `EndHeight`, is left in place and logged. `size_limit == 0` skips the size check.
-/// When the segments that replay still needs are larger than `size_limit`, they are
-/// kept and a warning is logged.
-///
-/// # Errors
-///
-/// Returns an I/O error when a segment cannot be listed, measured, or removed.
-pub fn prune_old_segments(head: &Path, older_than: i64, size_limit: u64) -> Result<u64, Error> {
-    let mut indexes = segment_indexes(head)?;
-    indexes.sort_unstable();
-    let mut removed = 0u64;
-    let mut kept_bytes = 0u64;
-    for index in indexes {
-        let path = segment_path(head, index);
-        let bytes = std::fs::metadata(&path).map_err(io_err)?.len();
-        match highest_end_height(&path) {
-            Ok(Some(height)) if height < older_than => {
-                std::fs::remove_file(&path).map_err(io_err)?;
-                removed += 1;
-            }
-            Ok(Some(_)) => {
-                kept_bytes = kept_bytes.saturating_add(bytes);
-            }
-            Ok(None) => {
-                log_kept_segment(&path, "no EndHeight");
-                kept_bytes = kept_bytes.saturating_add(bytes);
-            }
-            Err(err) => {
-                let err_text = err.to_string();
-                let path_text = path.display().to_string();
-                log_line(
-                    Level::Error,
-                    "consensus",
-                    "WAL segment was not decoded",
-                    &[("path", path_text.as_str()), ("err", err_text.as_str())],
-                );
-                kept_bytes = kept_bytes.saturating_add(bytes);
-            }
-        }
-    }
-    if size_limit > 0 && kept_bytes > size_limit {
-        let bytes_text = kept_bytes.to_string();
-        let limit_text = size_limit.to_string();
-        log_line(
-            Level::Warn,
-            "consensus",
-            "WAL segments are over the size limit",
-            &[
-                ("bytes", bytes_text.as_str()),
-                ("limit", limit_text.as_str()),
-            ],
-        );
-    }
-    Ok(removed)
-}
-
-fn log_kept_segment(path: &Path, reason: &str) {
-    let path_text = path.display().to_string();
-    log_line(
-        Level::Info,
-        "consensus",
-        "WAL segment kept",
-        &[("path", path_text.as_str()), ("reason", reason)],
-    );
-}
-
-fn highest_end_height(path: &Path) -> Result<Option<i64>, Error> {
-    let messages = read_messages_at(path)?;
-    Ok(messages.iter().filter_map(end_height_of).max())
 }
 
 /// `MsgInfo` wrapping a proposal. `peer_id` is empty.

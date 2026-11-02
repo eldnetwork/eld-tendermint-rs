@@ -13,10 +13,10 @@ use eld_tendermint_abci::SocketClient;
 use eld_tendermint_blockchain::{
     Reactor as BlockchainReactor, channel_descriptors as blockchain_channels,
 };
-use eld_tendermint_config::{Config, load_home, resolve_home};
+use eld_tendermint_config::{Config, StorageConfig, load_home, resolve_home};
 use eld_tendermint_consensus::{
-    Node, NodeExtras, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
-    spawn_prune,
+    Node, NodeExtras, Reactor as ConsensusReactor, catch_up_prune,
+    channel_descriptors as consensus_channels, spawn_prune,
 };
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
@@ -81,8 +81,9 @@ enum Command {
 
 struct NodeProcess {
     switch: Arc<Switch>,
-    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
     poll: Option<JoinHandle<()>>,
+    prune: Option<JoinHandle<()>>,
     status: Arc<NodeStatus>,
     rpc_addr: SocketAddr,
 }
@@ -90,7 +91,10 @@ struct NodeProcess {
 impl Drop for NodeProcess {
     fn drop(&mut self) {
         log_line(Level::Info, "main", "Stopping Node", &[]);
-        self.stop.store(false, Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.prune.take() {
+            let _ = handle.join();
+        }
         if let Some(handle) = self.poll.take() {
             let _ = handle.join();
         }
@@ -162,6 +166,7 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     let tx_for_reactors = tx_index
         .as_ref()
         .map(|index| Arc::clone(index) as Arc<dyn IndexTxs>);
+    let tx_for_prune = tx_for_reactors.clone();
     if let Some(header) = block_store.load_summary_header() {
         spawn_prune(
             Arc::clone(&block_store),
@@ -277,10 +282,10 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     }
     register_evidence(&switch, &evidence_reactor, evidence_desc)?;
 
-    let stop = Arc::new(AtomicBool::new(true));
+    let running = Arc::new(AtomicBool::new(true));
     let consensus_status = consensus.clone();
     let poll = spawn_poll(
-        Arc::clone(&stop),
+        Arc::clone(&running),
         Arc::clone(&switch),
         consensus,
         mempool_reactor,
@@ -288,12 +293,14 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         blockchain,
         evidence_reactor,
     );
+    let prune = spawn_catch_up(Arc::clone(&running), Arc::clone(&block_store), tx_for_prune);
 
     let status_switch = Arc::clone(&switch);
     let process = NodeProcess {
         switch,
-        stop,
+        running,
         poll: Some(poll),
+        prune: Some(prune),
         status: Arc::new(NodeStatus {
             id: node_id,
             network: genesis.chain_id.as_str().to_owned(),
@@ -441,8 +448,38 @@ fn stop_bad_peer(switch: &Switch, peer_id: &str) {
     switch.stop_peer(peer_id);
 }
 
+fn spawn_catch_up(
+    running: Arc<AtomicBool>,
+    store: Arc<BlockStore<RocksDb>>,
+    tx_index: Option<Arc<dyn IndexTxs>>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let interval = StorageConfig::CATCH_UP_PRUNE_INTERVAL;
+        let step = Duration::from_secs(1);
+        while running.load(Ordering::SeqCst) {
+            let mut waited = Duration::ZERO;
+            while waited < interval && running.load(Ordering::SeqCst) {
+                thread::sleep(step.min(interval.saturating_sub(waited)));
+                waited = waited.saturating_add(step);
+            }
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Err(err) = catch_up_prune(Arc::clone(&store), tx_index.clone()) {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "catch-up prune failed",
+                    &[("err", err.as_str())],
+                );
+            }
+        }
+    })
+}
+
 fn spawn_poll(
-    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
     switch: Arc<Switch>,
     consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: MempoolReactor<AbciApp>,
@@ -451,7 +488,7 @@ fn spawn_poll(
     evidence: EvidenceReactor<RocksDb>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        while stop.load(Ordering::SeqCst) {
+        while running.load(Ordering::SeqCst) {
             consensus.poll(&switch);
             mempool.poll(&switch);
             pex.poll(&switch);

@@ -20,8 +20,7 @@ use eld_tendermint_types::{
 use prost::bytes::Bytes;
 
 use eld_tendermint_consensus::{
-    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message, prune_old_segments,
-    vote_message,
+    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message, vote_message,
 };
 
 const APP_HASH: [u8; 32] = [0xab; 32];
@@ -155,78 +154,6 @@ fn start(home: &Home) -> Node<Exec, Check> {
         &home.wal,
     )
     .expect("node")
-}
-
-#[test]
-fn prune_old_segments_drops_a_segment_below_the_cutoff() {
-    let dir = wal_dir("prune-old");
-    let head = dir.join("wal");
-    write_segment(&segment_path(&head, 0), 3);
-    write_segment(&segment_path(&head, 1), 5);
-    write_segment(&head, 10);
-
-    let removed = prune_old_segments(&head, 5, 1).expect("prune");
-    assert_eq!(removed, 1);
-    assert!(!segment_path(&head, 0).exists());
-    assert!(segment_path(&head, 1).exists());
-    assert!(head.exists());
-    let head_records = Wal::open(&head)
-        .expect("head")
-        .read_messages()
-        .expect("read");
-    assert!(mentions_height(&head_records, 10));
-}
-
-#[test]
-fn prune_old_segments_keeps_a_segment_that_does_not_decode() {
-    let dir = wal_dir("prune-bad");
-    let head = dir.join("wal");
-    std::fs::write(segment_path(&head, 0), b"not a wal").expect("garbage");
-    write_segment(&segment_path(&head, 1), 1);
-    write_segment(&head, 4);
-
-    let removed = prune_old_segments(&head, 4, 0).expect("prune");
-    assert_eq!(removed, 1);
-    assert!(segment_path(&head, 0).exists());
-    assert!(!segment_path(&head, 1).exists());
-    assert!(head.exists());
-}
-
-#[test]
-fn prune_old_segments_never_removes_the_head() {
-    let dir = wal_dir("prune-head");
-    let head = dir.join("wal");
-    write_segment(&head, 1);
-
-    let removed = prune_old_segments(&head, 100, 1).expect("prune");
-    assert_eq!(removed, 0);
-    assert!(head.exists());
-    let records = Wal::open(&head)
-        .expect("head")
-        .read_messages()
-        .expect("read");
-    assert!(mentions_height(&records, 1));
-}
-
-fn wal_dir(name: &str) -> std::path::PathBuf {
-    static N: AtomicU64 = AtomicU64::new(0);
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|dur| dur.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "eld-wal-{name}-{}-{stamp}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir
-}
-
-fn write_segment(path: &std::path::Path, height: i64) {
-    let mut wal = Wal::open(path).expect("open segment");
-    wal.write_message(&end_height_message(WHEN, height))
-        .expect("write end height");
 }
 
 fn segment_path(head: &std::path::Path, index: u32) -> std::path::PathBuf {
