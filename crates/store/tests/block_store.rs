@@ -300,6 +300,51 @@ fn stored_state_without_base_loads_as_base_one() {
 }
 
 #[test]
+fn last_pruned_height_reloads_from_the_same_db() {
+    let (db, store) = mem_store();
+    store.save_last_pruned_height(50).expect("save");
+    assert_eq!(store.load_last_pruned_height(), Some(50));
+    assert_eq!(
+        db.get(b"lastPrunedHeight").expect("get").as_deref(),
+        Some(b"50".as_slice())
+    );
+
+    drop(store);
+    let store = BlockStore::new(db);
+    assert_eq!(store.load_last_pruned_height(), Some(50));
+}
+
+#[test]
+fn missing_last_pruned_height_is_none() {
+    let (_db, store) = mem_store();
+    assert!(store.load_last_pruned_height().is_none());
+}
+
+#[test]
+fn negative_last_pruned_height_is_rejected_and_writes_nothing() {
+    let (db, store) = mem_store();
+    let err = store
+        .save_last_pruned_height(-1)
+        .expect_err("negative height");
+    assert!(matches!(err, Error::NegativePrunedHeight), "{err}");
+    assert!(store.load_last_pruned_height().is_none());
+    assert!(db.get(b"lastPrunedHeight").expect("get").is_none());
+}
+
+#[test]
+fn corrupt_last_pruned_height_panics_with_the_key() {
+    let db = Arc::new(MemDb::new());
+    db.set(b"lastPrunedHeight", b"nope").expect("set garbage");
+    let store = BlockStore::new(db);
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        let _ = store.load_last_pruned_height();
+    }));
+    let payload = panicked.expect_err("corrupt last pruned height panics");
+    let text = panic_text(&payload);
+    assert!(text.contains("lastPrunedHeight"), "{text}");
+}
+
+#[test]
 fn corrupt_meta_panics_with_the_key() {
     let db = Arc::new(MemDb::new());
     db.set(b"H:1", b"Tendermint-Meta").expect("set garbage");

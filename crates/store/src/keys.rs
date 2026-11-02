@@ -36,3 +36,6 @@ pub(crate) const SUMMARY_HEADER_KEY: &[u8] = b"SH:";
 
 /// `SB:`. The one summary body. Not a Go block-store key.
 pub(crate) const SUMMARY_BODY_KEY: &[u8] = b"SB:";
+
+/// Highest height a finished prune has deleted. Decimal text. Not a Go block-store key.
+pub(crate) const LAST_PRUNED_HEIGHT_KEY: &[u8] = b"lastPrunedHeight";

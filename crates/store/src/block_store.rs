@@ -15,8 +15,8 @@ use crate::db::{Batch, Db};
 use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::keys::{
-    BLOCK_STORE_KEY, SUMMARY_BODY_KEY, SUMMARY_HEADER_KEY, block_commit_key, block_hash_key,
-    block_meta_key, block_part_key, seen_commit_key,
+    BLOCK_STORE_KEY, LAST_PRUNED_HEIGHT_KEY, SUMMARY_BODY_KEY, SUMMARY_HEADER_KEY,
+    block_commit_key, block_hash_key, block_meta_key, block_part_key, seen_commit_key,
 };
 
 /// `types.BlockMeta`. Stored as prost `tendermint.types.BlockMeta`.
@@ -389,6 +389,39 @@ impl<D: Db> BlockStore<D> {
         Some(SummaryBody::from_proto(&proto))
     }
 
+    /// Highest height a finished prune has deleted. `None` when `lastPrunedHeight` is missing.
+    ///
+    /// The value is the decimal text of that height. This key is local to this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `lastPrunedHeight` is present and is not a decimal height. The
+    /// panic text includes that key.
+    #[must_use]
+    pub fn load_last_pruned_height(&self) -> Option<i64> {
+        let bytes = must_get(&self.db, LAST_PRUNED_HEIGHT_KEY)?;
+        Some(decode_last_pruned_height(&bytes))
+    }
+
+    /// Writes `lastPrunedHeight` as the decimal text of `height`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NegativePrunedHeight`] when `height` is negative. Zero is
+    /// a stored height: it means every height below 1 was deleted.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the database write fails.
+    pub fn save_last_pruned_height(&self, height: i64) -> Result<(), Error> {
+        if height < 0 {
+            return Err(Error::NegativePrunedHeight);
+        }
+        let text = height.to_string();
+        must_set_sync(&self.db, LAST_PRUNED_HEIGHT_KEY, text.as_bytes());
+        Ok(())
+    }
+
     /// `LoadSeenCommit`. The +2/3 precommits seen for this height.
     ///
     /// # Panics
@@ -438,6 +471,21 @@ fn load_state<D: Db>(db: &D) -> (i64, i64) {
         base = 1;
     }
     (base, height)
+}
+
+fn decode_last_pruned_height(bytes: &[u8]) -> i64 {
+    let text = std::str::from_utf8(bytes).unwrap_or_else(|_| {
+        corrupt(
+            LAST_PRUNED_HEIGHT_KEY,
+            "last pruned height is not decimal text",
+        )
+    });
+    text.parse().unwrap_or_else(|_| {
+        corrupt(
+            LAST_PRUNED_HEIGHT_KEY,
+            "last pruned height is not decimal text",
+        )
+    })
 }
 
 fn decode_block_meta(key: &[u8], bytes: &[u8]) -> BlockMeta {
