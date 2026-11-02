@@ -1,4 +1,10 @@
 # Advisory ignores for crates this workspace cannot bump yet.
 # cargo audit --deny yanked --deny unsound reads this file.
+# cargo deny does not flag RUSTSEC-2026-0418, so it is listed only here.
+# libz-sys 1.1.29 comes from librocksdb-sys. Its build script writes
+# environment variables into the build directory, which is not shipped
+# with the node. Leave this crate at 1.1.29.
 [advisories]
-ignore = []
+ignore = [
+    "RUSTSEC-2026-0418",
+]
