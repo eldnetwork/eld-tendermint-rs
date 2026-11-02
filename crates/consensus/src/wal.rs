@@ -15,7 +15,7 @@ use eld_tendermint_proto::consensus::wal_message;
 use eld_tendermint_proto::consensus::{
     self, BlockPart, EndHeight, MsgInfo, TimeoutInfo, WalMessage,
 };
-use eld_tendermint_types::{Part, Proposal, Time, Vote};
+use eld_tendermint_types::{Level, Part, Proposal, Time, Vote, log_line};
 use prost::Message;
 
 use crate::error::{Error, WalCorrupt};
@@ -158,6 +158,43 @@ impl Wal {
         }
         Ok(None)
     }
+}
+
+/// Deletes rotated `wal.NNN` segments whose highest `EndHeight` is below `end_height`.
+///
+/// The head file stays. A segment that does not decode, or that has no `EndHeight`, stays.
+///
+/// # Errors
+///
+/// Returns an I/O error when a segment cannot be listed or removed.
+pub fn remove_wal_segments_before(head: &Path, end_height: i64) -> Result<(), Error> {
+    let mut indexes = segment_indexes(head)?;
+    indexes.sort_unstable();
+    for index in indexes {
+        let path = segment_path(head, index);
+        match highest_end_height(&path) {
+            Ok(Some(height)) if height < end_height => {
+                std::fs::remove_file(&path).map_err(io_err)?;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                let err_text = err.to_string();
+                let path_text = path.display().to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "WAL segment was not decoded",
+                    &[("path", path_text.as_str()), ("err", err_text.as_str())],
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn highest_end_height(path: &Path) -> Result<Option<i64>, Error> {
+    let messages = read_messages_at(path)?;
+    Ok(messages.iter().filter_map(end_height_of).max())
 }
 
 /// `MsgInfo` wrapping a proposal. `peer_id` is empty.

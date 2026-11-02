@@ -23,4 +23,6 @@ pub use reactor::{
 };
 pub use round::{Msg, Node, NodeExtras, Step};
 pub use summary::{SummaryManager, SummaryQuery, catch_up_prune, spawn_prune};
-pub use wal::{Wal, end_height_message, proposal_message, vote_message};
+pub use wal::{
+    Wal, end_height_message, proposal_message, remove_wal_segments_before, vote_message,
+};

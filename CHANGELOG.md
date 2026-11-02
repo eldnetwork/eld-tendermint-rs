@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- The node retries block and tx pruning for the current summary every 5 minutes.
+- The node retries block and tx pruning for the current summary every 5 minutes, and deletes rotated WAL segments older than that summary.
 - JSON-RPC `summary` returns the current summary header. A node that has not stored a summary yet returns `summary not found`.
 - JSON-RPC `abci_info` asks the app for Info on the query connection, so `eld-cli chain abci-info` can read the app version, height, and app hash.
 - `tests/vectors/` and `scripts/refresh-vectors.sh`, so CI fails when the hex fixtures and `proto/GO_REF` disagree.

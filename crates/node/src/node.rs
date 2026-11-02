@@ -16,7 +16,7 @@ use eld_tendermint_blockchain::{
 use eld_tendermint_config::{Config, StorageConfig, load_home, resolve_home};
 use eld_tendermint_consensus::{
     Node, NodeExtras, Reactor as ConsensusReactor, catch_up_prune,
-    channel_descriptors as consensus_channels, spawn_prune,
+    channel_descriptors as consensus_channels, remove_wal_segments_before, spawn_prune,
 };
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
@@ -223,6 +223,7 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     let rpc_app = app.clone();
     let mempool = Mempool::new(config.mempool.clone(), app.clone()).map_err(fail)?;
     let wal_path = config.consensus.wal_file();
+    let wal_to_prune = wal_path.clone();
     let node = Node::start_with_store_extras(
         config.consensus.clone(),
         pv,
@@ -293,7 +294,12 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         blockchain,
         evidence_reactor,
     );
-    let prune = spawn_catch_up(Arc::clone(&running), Arc::clone(&block_store), tx_for_prune);
+    let prune = spawn_catch_up(
+        Arc::clone(&running),
+        Arc::clone(&block_store),
+        tx_for_prune,
+        wal_to_prune,
+    );
 
     let status_switch = Arc::clone(&switch);
     let process = NodeProcess {
@@ -452,6 +458,7 @@ fn spawn_catch_up(
     running: Arc<AtomicBool>,
     store: Arc<BlockStore<RocksDb>>,
     tx_index: Option<Arc<dyn IndexTxs>>,
+    wal_path: PathBuf,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let interval = StorageConfig::CATCH_UP_PRUNE_INTERVAL;
@@ -473,6 +480,17 @@ fn spawn_catch_up(
                     "catch-up prune failed",
                     &[("err", err.as_str())],
                 );
+            }
+            if let Some(header) = store.load_summary_header() {
+                if let Err(err) = remove_wal_segments_before(&wal_path, header.end_height) {
+                    let err = err.to_string();
+                    log_line(
+                        Level::Error,
+                        "consensus",
+                        "WAL segment prune failed",
+                        &[("err", err.as_str())],
+                    );
+                }
             }
         }
     })

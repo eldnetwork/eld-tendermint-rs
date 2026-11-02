@@ -20,7 +20,8 @@ use eld_tendermint_types::{
 use prost::bytes::Bytes;
 
 use eld_tendermint_consensus::{
-    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message, vote_message,
+    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message,
+    remove_wal_segments_before, vote_message,
 };
 
 const APP_HASH: [u8; 32] = [0xab; 32];
@@ -154,6 +155,36 @@ fn start(home: &Home) -> Node<Exec, Check> {
         &home.wal,
     )
     .expect("node")
+}
+
+#[test]
+fn remove_wal_segments_before_drops_segments_older_than_the_summary() {
+    let dir = std::env::temp_dir().join(format!(
+        "eld-wal-prune-{}-{}",
+        std::process::id(),
+        N_WAL.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let head = dir.join("wal");
+    write_segment(&segment_path(&head, 0), 3);
+    std::fs::write(segment_path(&head, 1), b"not a wal").expect("garbage");
+    write_segment(&segment_path(&head, 2), 5);
+    write_segment(&head, 10);
+
+    remove_wal_segments_before(&head, 5).expect("prune");
+
+    assert!(!segment_path(&head, 0).exists());
+    assert!(segment_path(&head, 1).exists());
+    assert!(segment_path(&head, 2).exists());
+    assert!(head.exists());
+}
+
+static N_WAL: AtomicU64 = AtomicU64::new(0);
+
+fn write_segment(path: &std::path::Path, height: i64) {
+    let mut wal = Wal::open(path).expect("open segment");
+    wal.write_message(&end_height_message(WHEN, height))
+        .expect("write end height");
 }
 
 fn segment_path(head: &std::path::Path, index: u32) -> std::path::PathBuf {
