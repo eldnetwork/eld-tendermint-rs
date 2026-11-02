@@ -10,6 +10,12 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
+    /// How often the node retries pruning blocks the current summary already covers.
+    pub const PRUNE_INTERVAL: crate::Duration = crate::Duration::from_secs(5 * 60);
+
+    /// Largest total size of rotated WAL segments that replay still needs.
+    pub const WAL_SIZE_LIMIT: u64 = 1024 * 1024 * 1024;
+
     #[must_use]
     pub fn default_config() -> Self {
         Self {
