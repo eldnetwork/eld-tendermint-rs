@@ -58,11 +58,12 @@ flowchart TD
   fastsync --> p2p
   evidence --> p2p
   mempool --> p2p
+  content[Content reactor] --> p2p
   consensus --> rpc
   p2p --> rpc
 ```
 
-Peers share these channels: PEX `0x00`, consensus `0x20`–`0x23`, mempool `0x30`, evidence `0x38`, blockchain `0x40`. Fast sync is registered only when `fast_sync` is on and `fastsync.version` is `v0`. A missing `stateKey` calls ABCI `InitChain` once. A restart calls `Info` only.
+Peers share these channels: PEX `0x00`, consensus `0x20`–`0x23`, mempool `0x30`, evidence `0x38`, blockchain `0x40`, content `0x50`. Fast sync is registered only when `fast_sync` is on and `fastsync.version` is `v0`. A missing `stateKey` calls ABCI `InitChain` once. A restart calls `Info` only.
 
 ## Quickstart
 
@@ -237,9 +238,9 @@ Every package is `0.0.1` and unpublished. Each crate has a short README.
 | [`eld-tendermint-evidence`](crates/evidence/README.md) | Evidence pool. A duplicate vote is verified against the current or last validator set. A light-client attack is verified against the trusted and common validator sets. Both are stored in `evidence.db`, gossiped on channel `0x38`, and included in one proposal. |
 | [`eld-tendermint-mempool`](crates/mempool/README.md) | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. Gossip sends one tx per message on channel `0x30` and does not send that tx back to the peer that sent it. |
 | [`eld-tendermint-blockchain`](crates/blockchain/README.md) | v0 fast sync on channel `0x40`. A taller peer is asked for up to 20 blocks. Each block is applied at the next height after its commit matches the previous block. v1 and v2 are not started. |
-| [`eld-tendermint-content`](crates/content/README.md) | Content push, fetch, announce, and capacity-challenge messages for channel `0x50`. The reactor is not registered yet. |
+| [`eld-tendermint-content`](crates/content/README.md) | Content push, fetch, announce, and capacity-challenge messages on channel `0x50`. The node registers the reactor. A peer that sends bytes that are not one of those messages is stopped. |
 | [`eld-tendermint-consensus`](crates/consensus/README.md) | In-process rounds, with gossip on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. A node one or two blocks behind catches up on `0x21` and `0x22` with fast sync off. The WAL is CRC32C-framed. The head stays `cs.wal/wal` and rotates to `wal.NNN` at 10 MiB. A prevote written before rotation is replayed from the older segment without a second signature. |
-| [`eld-tendermint-node`](crates/node/README.md) | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and v0 fast sync when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves the `POST /` methods named in the JSON-RPC section. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
+| [`eld-tendermint-node`](crates/node/README.md) | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, the content reactor, and v0 fast sync when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves the `POST /` methods named in the JSON-RPC section. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
 
 [`tools/proto-compiler`](tools/proto-compiler/README.md) is the prost-build binary used by `scripts/gen-proto.sh`.
 

@@ -1,7 +1,11 @@
 //! Messages for content push, fetch, and capacity challenges.
 //!
-//! Channel [`CONTENT_CHANNEL`] is `0x50`. A later step registers the reactor that
-//! sends these messages. This crate defines the channel and how big one message may be.
+//! Channel [`CONTENT_CHANNEL`] is `0x50`. [`Reactor`] sends and receives those
+//! messages. The node registers it and polls it with the other reactors.
+
+mod reactor;
+
+pub use reactor::{Inbound, Reactor};
 
 use eld_tendermint_p2p::ChannelDescriptor;
 

@@ -1,6 +1,6 @@
 # eld-tendermint-node
 
-This crate is the `eld-tendermint` binary, the program you run. `eld-tendermint start` loads one node home and, in that same process, runs consensus, the mempool, the evidence pool, peer exchange, and v0 fast sync, dials the ABCI app, and serves JSON-RPC.
+This crate is the `eld-tendermint` binary, the program you run. `eld-tendermint start` loads one node home and, in that same process, runs consensus, the mempool, the evidence pool, peer exchange, the content reactor, and v0 fast sync, dials the ABCI app, and serves JSON-RPC.
 
 Matches `node.Node` and `cmd/tendermint` in the Go tree for the `start` and `unsafe-reset-all` commands. Other crates do not call into this binary.
 

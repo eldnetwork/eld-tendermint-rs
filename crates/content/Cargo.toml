@@ -16,10 +16,11 @@ categories = ["network-programming"]
 
 [dependencies]
 eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
-
-[dev-dependencies]
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
 prost = "0.13"
+
+[dev-dependencies]
+eld-tendermint-crypto = { version = "0.0.1", path = "../crypto" }
 
 [lints]
 workspace = true

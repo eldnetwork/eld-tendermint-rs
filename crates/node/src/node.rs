@@ -18,6 +18,7 @@ use eld_tendermint_consensus::{
     Node, NodeExtras, Reactor as ConsensusReactor, catch_up_prune,
     channel_descriptors as consensus_channels, remove_wal_segments_before, spawn_prune,
 };
+use eld_tendermint_content::{Reactor as ContentReactor, channel_descriptors as content_channels};
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
     Pool as EvidencePool, Reactor as EvidenceReactor, channel_descriptors as evidence_channels,
@@ -256,6 +257,8 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         Vec::new()
     };
     let evidence_desc = evidence_channels();
+    let content_desc = content_channels();
+    let content = ContentReactor::new();
     let channels = hex::encode(
         mempool_desc
             .iter()
@@ -263,6 +266,7 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
             .chain(pex_desc.iter())
             .chain(blockchain_desc.iter())
             .chain(evidence_desc.iter())
+            .chain(content_desc.iter())
             .map(|desc| desc.id)
             .collect::<Vec<_>>(),
     )
@@ -282,17 +286,21 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         register_blockchain(&switch, blockchain, blockchain_desc)?;
     }
     register_evidence(&switch, &evidence_reactor, evidence_desc)?;
+    register_content(&switch, &content, content_desc)?;
 
     let running = Arc::new(AtomicBool::new(true));
     let consensus_status = consensus.clone();
     let poll = spawn_poll(
         Arc::clone(&running),
         Arc::clone(&switch),
-        consensus,
-        mempool_reactor,
-        pex,
-        blockchain,
-        evidence_reactor,
+        PollReactors {
+            consensus,
+            mempool: mempool_reactor,
+            pex,
+            blockchain,
+            evidence: evidence_reactor,
+            content,
+        },
     );
     let prune = spawn_catch_up(
         Arc::clone(&running),
@@ -444,6 +452,26 @@ fn register_evidence(
     Ok(())
 }
 
+fn register_content(
+    switch: &Arc<Switch>,
+    content: &ContentReactor,
+    content_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
+) -> Result<(), Error> {
+    let content_cb = content.clone();
+    let content_switch = Arc::downgrade(switch);
+    switch
+        .add_reactor("content", content_desc, move |peer_id, ch_id, bytes| {
+            let Some(switch) = content_switch.upgrade() else {
+                return;
+            };
+            if !content_cb.handle(peer_id, ch_id, &bytes) {
+                stop_bad_peer(&switch, peer_id);
+            }
+        })
+        .map_err(fail)?;
+    Ok(())
+}
+
 fn stop_bad_peer(switch: &Switch, peer_id: &str) {
     log_line(
         Level::Info,
@@ -496,24 +524,30 @@ fn spawn_catch_up(
     })
 }
 
-fn spawn_poll(
-    running: Arc<AtomicBool>,
-    switch: Arc<Switch>,
+struct PollReactors {
     consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: MempoolReactor<AbciApp>,
     pex: PexReactor,
     blockchain: Option<BlockchainReactor<AbciApp, RocksDb>>,
     evidence: EvidenceReactor<RocksDb>,
+    content: ContentReactor,
+}
+
+fn spawn_poll(
+    running: Arc<AtomicBool>,
+    switch: Arc<Switch>,
+    reactors: PollReactors,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
-            consensus.poll(&switch);
-            mempool.poll(&switch);
-            pex.poll(&switch);
-            if let Some(blockchain) = &blockchain {
+            reactors.consensus.poll(&switch);
+            reactors.mempool.poll(&switch);
+            reactors.pex.poll(&switch);
+            if let Some(blockchain) = &reactors.blockchain {
                 blockchain.poll(&switch);
             }
-            evidence.poll(&switch);
+            reactors.evidence.poll(&switch);
+            reactors.content.poll(&switch);
             thread::sleep(Duration::from_millis(5));
         }
     })

@@ -349,6 +349,7 @@ dependencies = [
 name = "eld-tendermint-content"
 version = "0.0.1"
 dependencies = [
+ "eld-tendermint-crypto",
  "eld-tendermint-p2p",
  "eld-tendermint-proto",
  "prost",
@@ -406,6 +407,7 @@ dependencies = [
  "eld-tendermint-blockchain",
  "eld-tendermint-config",
  "eld-tendermint-consensus",
+ "eld-tendermint-content",
  "eld-tendermint-crypto",
  "eld-tendermint-evidence",
  "eld-tendermint-mempool",
