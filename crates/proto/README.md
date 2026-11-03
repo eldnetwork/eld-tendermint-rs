@@ -8,4 +8,4 @@ Regenerate the messages with `scripts/gen-proto.sh`. Do not hand-edit `src/prost
 
 ## Public API
 
-`src/lib.rs` exposes one module per proto package: `abci`, `blockchain`, `consensus`, `crypto`, `libs`, `mempool`, `p2p`, `privval`, `rpc`, `state`, `statesync`, `store`, `types`, and `version`. Callers encode and decode the Prost messages exported from `src/lib.rs`. Amino JSON names from the Go `jsontag` options are not generated on the Prost messages, because Prost ignores `jsontag` and `customname`.
+`src/lib.rs` exposes one module per proto package: `abci`, `blockchain`, `consensus`, `content`, `crypto`, `libs`, `mempool`, `p2p`, `privval`, `rpc`, `state`, `statesync`, `store`, `types`, and `version`. Callers encode and decode the Prost messages exported from `src/lib.rs`. Amino JSON names from the Go `jsontag` options are not generated on the Prost messages, because Prost ignores `jsontag` and `customname`.

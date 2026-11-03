@@ -1,0 +1,25 @@
+[package]
+name = "eld-tendermint-content"
+version = "0.0.1"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Content and capacity-challenge messages for Tendermint channel 0x50."
+readme = "README.md"
+documentation = "https://github.com/eldnetwork/eld-tendermint-rs/blob/main/crates/content/README.md"
+keywords = ["tendermint", "content", "p2p"]
+categories = ["network-programming"]
+
+[dependencies]
+eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
+
+[dev-dependencies]
+eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+prost = "0.13"
+
+[lints]
+workspace = true

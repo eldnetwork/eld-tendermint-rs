@@ -1,0 +1,106 @@
+syntax = "proto3";
+package tendermint.content;
+
+option go_package = "github.com/tendermint/tendermint/proto/tendermint/content";
+
+// One reassembled payload on channel 0x50.
+message Message {
+  oneof sum {
+    ContentPush               content_push                = 1;
+    ContentPushAck            content_push_ack            = 2;
+    ContentRequest            content_request             = 3;
+    ContentResponse           content_response            = 4;
+    CapacityChallenge         capacity_challenge          = 5;
+    CapacityChallengeResponse capacity_challenge_response = 6;
+    Announce                  announce                    = 7;
+  }
+}
+
+// Blob pushed to a capacity provider. `request_id` ties this to `ContentPushAck`.
+message ContentPush {
+  uint64 request_id = 1;
+  string content_id = 2;
+  bytes  blob       = 3;
+}
+
+// Receipt from a provider that accepted a push.
+// `provider` is the 20-byte chain address.
+message ContentPushAck {
+  uint64 request_id = 1;
+  string content_id = 2;
+  bytes  provider   = 3;
+}
+
+message ContentRequest {
+  uint64 request_id = 1;
+  string content_id = 2;
+}
+
+message ContentResponse {
+  uint64 request_id = 1;
+  string content_id = 2;
+  bytes  blob       = 3;
+}
+
+// A peer saying it has this content.
+message Announce {
+  string content_id = 1;
+}
+
+// Fields follow the app's capacity challenge: who asks, who must answer,
+// which chunks, and the root those proofs are checked against.
+// `challenger` and `provider` are 20-byte chain addresses.
+// `merkle_root` and `seed` are 32 bytes.
+message CapacityChallenge {
+  string          challenge_id      = 1;
+  bytes           challenger        = 2;
+  bytes           provider          = 3;
+  repeated uint64 chunk_indices     = 4;
+  int64           block_height      = 5;
+  bytes           merkle_root       = 6;
+  bytes           seed              = 7;
+  int64           expiration_block  = 8;
+  uint64          timestamp         = 9;
+}
+
+// Fields follow the app's challenge response, including the provider signature.
+// `provider_pubkey` is 32 bytes. `provider_signature` is 64 bytes.
+message CapacityChallengeResponse {
+  string             challenge_id       = 1;
+  bytes              provider           = 2;
+  bytes              challenger         = 3;
+  int64              block_height       = 4;
+  repeated ChunkProof proofs            = 5;
+  uint64             generated_at       = 6;
+  bytes              provider_pubkey    = 7;
+  bytes              provider_signature = 8;
+}
+
+// One chunk in a challenge response.
+// `chunk_hash` is 32 bytes. Each `merkle_proof` entry is 32 bytes.
+message ChunkProof {
+  uint64    chunk_index  = 1;
+  bytes     chunk_data   = 2;
+  bytes     chunk_hash   = 3;
+  repeated bytes merkle_proof = 4;
+  SlotState slot_state   = 5;
+}
+
+// How the slot was occupied when the proof was made.
+message SlotState {
+  oneof kind {
+    ProofSlot   proof   = 1;
+    OpenSlot    open    = 2;
+    ContentSlot content = 3;
+  }
+}
+
+message ProofSlot {}
+
+message OpenSlot {}
+
+// `committed_hash` is 32 bytes.
+message ContentSlot {
+  string deal_id        = 1;
+  bytes  committed_hash = 2;
+}

@@ -346,6 +346,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-content"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-p2p",
+ "eld-tendermint-proto",
+ "prost",
+]
+
+[[package]]
 name = "eld-tendermint-crypto"
 version = "0.0.1"
 dependencies = [

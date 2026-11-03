@@ -5,6 +5,7 @@ members = [
     "crates/blockchain",
     "crates/config",
     "crates/consensus",
+    "crates/content",
     "crates/crypto",
     "crates/evidence",
     "crates/mempool",
