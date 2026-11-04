@@ -7,11 +7,13 @@ use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
 
 use eld_tendermint_proto::abci::{
-    Request, RequestBeginBlock, RequestCheckTx, RequestCommit, RequestDeliverTx, RequestEcho,
-    RequestEndBlock, RequestFlush, RequestInfo, RequestInitChain, RequestQuery, Response,
-    ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseDeliverTx, ResponseEcho,
-    ResponseEndBlock, ResponseInfo, ResponseInitChain, ResponseQuery, request, response,
+    Request, RequestBeginBlock, RequestCheckTx, RequestCommit, RequestContent, RequestDeliverTx,
+    RequestEcho, RequestEndBlock, RequestFlush, RequestInfo, RequestInitChain, RequestQuery,
+    Response, ResponseBeginBlock, ResponseCheckTx, ResponseCommit, ResponseContent,
+    ResponseDeliverTx, ResponseEcho, ResponseEndBlock, ResponseInfo, ResponseInitChain,
+    ResponseQuery, request, response,
 };
+use eld_tendermint_proto::content::Message as ContentMessage;
 
 use crate::error::Error;
 use crate::protoio::{read_message, write_message};
@@ -134,6 +136,30 @@ impl SocketClient {
             response::Value::EndBlock(end_block) => Ok(end_block),
             _ => Err(Error::MismatchedResponse),
         })
+    }
+
+    /// Send one content-channel message and read the app's reply.
+    ///
+    /// Uses the same request-then-flush framing as the other calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, exception, or [`Error::MismatchedResponse`] error.
+    pub fn content_call(
+        &mut self,
+        peer_id: impl Into<String>,
+        message: ContentMessage,
+    ) -> Result<ResponseContent, Error> {
+        self.call(
+            request::Value::Content(RequestContent {
+                peer_id: peer_id.into(),
+                message: Some(message),
+            }),
+            |value| match value {
+                response::Value::Content(content) => Ok(content),
+                _ => Err(Error::MismatchedResponse),
+            },
+        )
     }
 
     /// `InitChainSync`.

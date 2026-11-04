@@ -3,7 +3,7 @@
 pub struct Request {
     #[prost(
         oneof = "request::Value",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
     )]
     pub value: ::core::option::Option<request::Value>,
 }
@@ -41,6 +41,8 @@ pub mod request {
         LoadSnapshotChunk(super::RequestLoadSnapshotChunk),
         #[prost(message, tag = "15")]
         ApplySnapshotChunk(super::RequestApplySnapshotChunk),
+        #[prost(message, tag = "16")]
+        Content(super::RequestContent),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -156,11 +158,21 @@ pub struct RequestApplySnapshotChunk {
     #[prost(string, tag = "3")]
     pub sender: ::prost::alloc::string::String,
 }
+/// ----------------------------------------
+/// One content-channel message for the ABCI app.
+/// `peer_id` is the p2p switch id of the peer that sent it.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RequestContent {
+    #[prost(string, tag = "1")]
+    pub peer_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub message: ::core::option::Option<super::content::Message>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Response {
     #[prost(
         oneof = "response::Value",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
     )]
     pub value: ::core::option::Option<response::Value>,
 }
@@ -200,6 +212,8 @@ pub mod response {
         LoadSnapshotChunk(super::ResponseLoadSnapshotChunk),
         #[prost(message, tag = "16")]
         ApplySnapshotChunk(super::ResponseApplySnapshotChunk),
+        #[prost(message, tag = "17")]
+        Content(super::ResponseContent),
     }
 }
 /// nondeterministic
@@ -207,6 +221,13 @@ pub mod response {
 pub struct ResponseException {
     #[prost(string, tag = "1")]
     pub error: ::prost::alloc::string::String,
+}
+/// Reply to `RequestContent`. Empty when the app has nothing to send back.
+/// A refusal is `ResponseException`, same as the other ABCI calls.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ResponseContent {
+    #[prost(message, optional, tag = "1")]
+    pub message: ::core::option::Option<super::content::Message>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseEcho {

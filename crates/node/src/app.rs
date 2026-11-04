@@ -10,6 +10,7 @@ use eld_tendermint_proto::abci::{
     RequestInitChain, RequestQuery, ResponseBeginBlock, ResponseCheckTx, ResponseCommit,
     ResponseDeliverTx, ResponseEndBlock, ResponseInfo, ResponseInitChain, ResponseQuery,
 };
+use eld_tendermint_proto::content::message::Sum as ContentSum;
 use eld_tendermint_state::{Error as StateError, TM_CORE_SEMVER};
 use eld_tendermint_types::BLOCK_PROTOCOL;
 
@@ -115,74 +116,96 @@ impl eld_tendermint_mempool::App for AbciApp {
     }
 }
 
-// Inbound content calls from the content reactor. This process has no blob
-// store, so each call is refused and no reply is sent. The peer stays connected.
 impl eld_tendermint_content::App for AbciApp {
     fn handle_content_push(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::ContentPush,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::ContentPush,
     ) -> Result<eld_tendermint_proto::content::ContentPushAck, eld_tendermint_content::Error> {
-        refuse_content()
+        match forward_content(self, peer_id, ContentSum::ContentPush(msg))? {
+            Some(ContentSum::ContentPushAck(ack)) => Ok(ack),
+            _ => Err(content_rejected("content reply was not a receipt")),
+        }
     }
 
     fn handle_content_request(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::ContentRequest,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::ContentRequest,
     ) -> Result<Option<eld_tendermint_proto::content::ContentResponse>, eld_tendermint_content::Error>
     {
-        refuse_content()
+        match forward_content(self, peer_id, ContentSum::ContentRequest(msg))? {
+            None => Ok(None),
+            Some(ContentSum::ContentResponse(response)) => Ok(Some(response)),
+            _ => Err(content_rejected("content reply was not a blob")),
+        }
     }
 
     fn handle_capacity_challenge(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::CapacityChallenge,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::CapacityChallenge,
     ) -> Result<
         eld_tendermint_proto::content::CapacityChallengeResponse,
         eld_tendermint_content::Error,
     > {
-        refuse_content()
+        match forward_content(self, peer_id, ContentSum::CapacityChallenge(msg))? {
+            Some(ContentSum::CapacityChallengeResponse(response)) => Ok(response),
+            _ => Err(content_rejected("content reply was not a proof")),
+        }
     }
 
     fn handle_content_push_ack(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::ContentPushAck,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::ContentPushAck,
     ) -> Result<(), eld_tendermint_content::Error> {
-        refuse_content()
+        forward_content(self, peer_id, ContentSum::ContentPushAck(msg)).map(|_| ())
     }
 
     fn handle_content_response(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::ContentResponse,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::ContentResponse,
     ) -> Result<(), eld_tendermint_content::Error> {
-        refuse_content()
+        forward_content(self, peer_id, ContentSum::ContentResponse(msg)).map(|_| ())
     }
 
     fn handle_capacity_challenge_response(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::CapacityChallengeResponse,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::CapacityChallengeResponse,
     ) -> Result<(), eld_tendermint_content::Error> {
-        refuse_content()
+        forward_content(self, peer_id, ContentSum::CapacityChallengeResponse(msg)).map(|_| ())
     }
 
     fn handle_announce(
         &self,
-        _peer_id: &str,
-        _msg: eld_tendermint_proto::content::Announce,
+        peer_id: &str,
+        msg: eld_tendermint_proto::content::Announce,
     ) -> Result<(), eld_tendermint_content::Error> {
-        refuse_content()
+        forward_content(self, peer_id, ContentSum::Announce(msg)).map(|_| ())
     }
 }
 
-fn refuse_content<T>() -> Result<T, eld_tendermint_content::Error> {
-    Err(eld_tendermint_content::Error::Rejected {
-        reason: "content is not stored in this process".to_owned(),
-    })
+fn forward_content(
+    app: &AbciApp,
+    peer_id: &str,
+    sum: ContentSum,
+) -> Result<Option<ContentSum>, eld_tendermint_content::Error> {
+    let response = lock(&app.shared.query)
+        .content_call(
+            peer_id,
+            eld_tendermint_proto::content::Message { sum: Some(sum) },
+        )
+        .map_err(|err| content_rejected(err.to_string()))?;
+    Ok(response.message.and_then(|message| message.sum))
+}
+
+fn content_rejected(reason: impl Into<String>) -> eld_tendermint_content::Error {
+    eld_tendermint_content::Error::Rejected {
+        reason: reason.into(),
+    }
 }
 
 impl eld_tendermint_state::App for AbciApp {
