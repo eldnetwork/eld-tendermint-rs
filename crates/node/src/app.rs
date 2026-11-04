@@ -14,6 +14,7 @@ use eld_tendermint_proto::content::message::Sum as ContentSum;
 use eld_tendermint_state::{Error as StateError, TM_CORE_SEMVER};
 use eld_tendermint_types::BLOCK_PROTOCOL;
 
+use crate::content_wait::{ContentReply, ContentWaiter};
 use crate::wait::{DeliveredTx, TxWaiter};
 
 struct Shared {
@@ -25,6 +26,7 @@ struct Shared {
     #[allow(dead_code)]
     snapshot: Mutex<SocketClient>,
     waiter: Arc<TxWaiter>,
+    content_waiter: Arc<ContentWaiter>,
     /// Height from the latest `BeginBlock` header. `DeliverTx` reports this height.
     height: Mutex<i64>,
 }
@@ -51,6 +53,7 @@ impl AbciApp {
                 consensus: Mutex::new(consensus),
                 content: Mutex::new(content),
                 waiter: Arc::new(TxWaiter::new()),
+                content_waiter: Arc::new(ContentWaiter::new()),
                 height: Mutex::new(0),
             }),
         }
@@ -58,6 +61,10 @@ impl AbciApp {
 
     pub(crate) fn waiter(&self) -> Arc<TxWaiter> {
         Arc::clone(&self.shared.waiter)
+    }
+
+    pub(crate) fn content_waiter(&self) -> Arc<ContentWaiter> {
+        Arc::clone(&self.shared.content_waiter)
     }
 
     pub(crate) fn init_chain(
@@ -163,7 +170,13 @@ impl eld_tendermint_content::App for AbciApp {
         peer_id: &str,
         msg: eld_tendermint_proto::content::ContentPushAck,
     ) -> Result<(), eld_tendermint_content::Error> {
-        forward_content(self, peer_id, ContentSum::ContentPushAck(msg)).map(|_| ())
+        let request_id = msg.request_id;
+        let provider = msg.provider.clone();
+        forward_content(self, peer_id, ContentSum::ContentPushAck(msg))?;
+        self.shared
+            .content_waiter
+            .notify(request_id, ContentReply::Ack { provider });
+        Ok(())
     }
 
     fn handle_content_response(
@@ -171,7 +184,13 @@ impl eld_tendermint_content::App for AbciApp {
         peer_id: &str,
         msg: eld_tendermint_proto::content::ContentResponse,
     ) -> Result<(), eld_tendermint_content::Error> {
-        forward_content(self, peer_id, ContentSum::ContentResponse(msg)).map(|_| ())
+        let request_id = msg.request_id;
+        let bytes = msg.blob.clone();
+        forward_content(self, peer_id, ContentSum::ContentResponse(msg))?;
+        self.shared
+            .content_waiter
+            .notify(request_id, ContentReply::Blob { bytes });
+        Ok(())
     }
 
     fn handle_capacity_challenge_response(

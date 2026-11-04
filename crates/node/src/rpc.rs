@@ -16,6 +16,7 @@ use eld_tendermint_proto::abci::{
     Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseInfo,
     ResponseQuery, TxResult,
 };
+use eld_tendermint_proto::content::{ContentPush, ContentRequest};
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_state::{StateStore, TxIndex};
 use eld_tendermint_store::{BlockStore, RocksDb};
@@ -23,6 +24,7 @@ use eld_tendermint_types::{Block, Commit, CommitSig, GenesisDoc, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
+use crate::content_wait::ContentReply;
 use crate::error::{Error, fail};
 use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64, hex_upper};
 use crate::wait::TxWaiter;
@@ -148,6 +150,8 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "summary" => rpc_summary(&id, status),
         "tx" => rpc_tx(&id, request, status),
         "tx_search" => rpc_tx_search(&id, request, status),
+        "content_push" => content_push(&id, request, status),
+        "content_request" => content_request(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
@@ -544,6 +548,111 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
         "value": b64(&attribute.value),
         "index": attribute.index,
     })
+}
+
+const CONTENT_WAIT: Duration = Duration::from_secs(5);
+
+/// Queue a `ContentPush` and wait for the provider receipt.
+fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(content_id) = params.get("content_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(request_id) = params.get("request_id").and_then(Value::as_u64) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(blob) = params
+        .get("blob")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)
+    else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let subscription = status.app.content_waiter().subscribe(request_id);
+    let queued = status.content_queue.push(
+        peer_id,
+        &ContentPush {
+            request_id,
+            content_id: content_id.to_owned(),
+            blob,
+        },
+    );
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content push was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_WAIT) {
+        Ok(ContentReply::Ack { provider }) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "provider": b64(&provider) }),
+        ),
+        Ok(ContentReply::Blob { .. }) => {
+            rpc_error(id.clone(), -32603, "content push returned a blob")
+        }
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content push timed out")
+        }
+    }
+}
+
+/// Queue a `ContentRequest` and wait for the blob.
+fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(content_id) = params.get("content_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(request_id) = params.get("request_id").and_then(Value::as_u64) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let subscription = status.app.content_waiter().subscribe(request_id);
+    let queued = status.content_queue.request(
+        peer_id,
+        &ContentRequest {
+            request_id,
+            content_id: content_id.to_owned(),
+        },
+    );
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content request was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_WAIT) {
+        Ok(ContentReply::Blob { bytes }) => {
+            rpc_result(id.clone(), serde_json::json!({ "blob": b64(&bytes) }))
+        }
+        Ok(ContentReply::Ack { .. }) => {
+            rpc_error(id.clone(), -32603, "content request returned a receipt")
+        }
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content request timed out")
+        }
+    }
+}
+
+fn object_params(request: &Value) -> Option<&Map<String, Value>> {
+    request.get("params").and_then(Value::as_object)
+}
+
+fn decode_b64(text: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
 
 /// `ABCIInfo`. No parameters. `InfoSync` on the query connection with `proxy.RequestInfo`.
