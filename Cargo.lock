@@ -352,6 +352,7 @@ dependencies = [
  "eld-tendermint-crypto",
  "eld-tendermint-p2p",
  "eld-tendermint-proto",
+ "eld-tendermint-types",
  "prost",
 ]
 

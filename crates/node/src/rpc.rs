@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use eld_tendermint_consensus::{Reactor as ConsensusReactor, Step};
+use eld_tendermint_content::ContentSendQueue;
 use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_p2p::Switch;
@@ -39,6 +40,8 @@ pub struct NodeStatus {
     pub voting_power: i64,
     pub block_store: Arc<BlockStore<RocksDb>>,
     pub mempool: Arc<Mutex<Mempool<AbciApp>>>,
+    /// Content messages waiting for the content reactor. The reactor polls this queue.
+    pub content_queue: Arc<ContentSendQueue>,
     pub waiter: Arc<TxWaiter>,
     pub commit_timeout: Duration,
     pub app: AbciApp,

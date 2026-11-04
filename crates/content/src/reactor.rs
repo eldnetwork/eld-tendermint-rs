@@ -1,166 +1,183 @@
-//! Send and receive content messages on channel [`CONTENT_CHANNEL`](crate::CONTENT_CHANNEL).
+//! Content push, fetch, and capacity challenges on the p2p switch.
 //!
-//! [`Reactor::queue`] holds a message until [`Reactor::poll`] puts it on the switch.
-//! [`Reactor::handle`] keeps a message a peer sent. Bytes that are not one of these
-//! messages make `handle` return `false`, and the node stops that peer.
+//! Channel `0x50` carries `tendermint.content.Message`. [`Reactor::handle`]
+//! decodes one message and calls [`App`](crate::App). A push, request, or
+//! challenge that the app accepts is answered on the next [`Reactor::poll`].
+//! The node starts its own push, fetch, or challenge through
+//! [`ContentSendQueue`](crate::ContentSendQueue), which this reactor polls. Bytes that do not decode, an empty message, or a
+//! blob over 1 MiB make `handle` return `false`. The node stops that peer.
+//! An app refusal is logged and leaves the peer connected. A reply that does
+//! not fit on the queue is logged and dropped.
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
-use eld_tendermint_p2p::Switch;
+use eld_tendermint_p2p::{ChannelDescriptor, Switch};
 use eld_tendermint_proto::content::{self, Message};
+use eld_tendermint_types::{Level, log_line};
 use prost::Message as ProstMessage;
 
-use crate::{CONTENT_CHANNEL, blob_fits, message_fits};
+use crate::app::App;
+use crate::send_queue::{self, ContentSendQueue};
+use crate::{Error, RECV_MESSAGE_CAPACITY, message_fits};
 
-/// Outbound and inbound queues. Matches the channel send queue of 100.
-const QUEUE_CAP: usize = 100;
+/// `ContentChannel`.
+pub const CONTENT_CHANNEL: u8 = 0x50;
 
-struct Queued {
-    peer_id: String,
-    bytes: Vec<u8>,
-}
-
-/// One message a peer sent on the content channel.
-pub struct Inbound {
-    pub peer_id: String,
-    pub message: Message,
-}
-
-struct Inner {
-    outbound: VecDeque<Queued>,
-    inbound: VecDeque<Inbound>,
+struct Shared<A: App> {
+    app: A,
+    send_queue: Arc<ContentSendQueue>,
 }
 
 /// Content channel on one node.
 ///
-/// Cloning shares the queues. The node polls one clone and the receive callback uses another.
-pub struct Reactor {
-    inner: Arc<Mutex<Inner>>,
+/// Cloning shares the app and the send queue. The node polls one clone and
+/// the receive callback uses another. [`Self::send_queue`] is the same queue
+/// the node holds.
+pub struct Reactor<A: App> {
+    shared: Arc<Shared<A>>,
 }
 
-impl Clone for Reactor {
+impl<A: App> Clone for Reactor<A> {
     fn clone(&self) -> Self {
         Self {
-            inner: Arc::clone(&self.inner),
+            shared: Arc::clone(&self.shared),
         }
     }
 }
 
-impl Reactor {
+impl<A: App> Reactor<A> {
+    /// `send_queue` is the queue the node writes. Poll sends from that same queue.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn from_shared(app: A, send_queue: Arc<ContentSendQueue>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Inner {
-                outbound: VecDeque::new(),
-                inbound: VecDeque::new(),
-            })),
+            shared: Arc::new(Shared { app, send_queue }),
         }
+    }
+
+    /// The queue [`Self::poll`] sends. Another clone of this `Arc` can enqueue
+    /// while this reactor is polling.
+    #[must_use]
+    pub fn send_queue(&self) -> Arc<ContentSendQueue> {
+        Arc::clone(&self.shared.send_queue)
     }
 
     /// Hold `message` for `peer_id` until [`Self::poll`].
     ///
     /// Returns `false` when the blob is over 1 MiB, the encoded message is over the
-    /// channel cap, the message has no body, or the outbound queue is already full.
+    /// channel cap, the message has no body, or the send queue is already full.
     /// Nothing is queued in those cases.
     #[must_use]
     pub fn queue(&self, peer_id: &str, message: &Message) -> bool {
-        if !acceptable(message) {
-            return false;
-        }
-        let bytes = message.encode_to_vec();
-        if !message_fits(&bytes) {
-            return false;
-        }
-        let mut inner = lock(&self.inner);
-        if inner.outbound.len() >= QUEUE_CAP {
-            return false;
-        }
-        inner.outbound.push_back(Queued {
-            peer_id: peer_id.to_owned(),
-            bytes,
-        });
-        true
+        self.shared.send_queue.queue(peer_id, message)
     }
 
     /// Send queued messages to peers that are still connected.
-    ///
-    /// A full channel queue leaves the message here for the next poll. A peer that
-    /// has gone is dropped from the queue.
     pub fn poll(&self, switch: &Switch) {
-        let live: HashSet<String> = switch.peers().into_iter().map(|peer| peer.id).collect();
-        let pending = {
-            let mut inner = lock(&self.inner);
-            std::mem::take(&mut inner.outbound)
-        };
-        let mut again = VecDeque::new();
-        for queued in pending {
-            if !live.contains(&queued.peer_id) {
-                continue;
-            }
-            if !switch.try_send(&queued.peer_id, CONTENT_CHANNEL, &queued.bytes) {
-                again.push_back(queued);
-            }
-        }
-        if again.is_empty() {
-            return;
-        }
-        let mut inner = lock(&self.inner);
-        again.append(&mut inner.outbound);
-        inner.outbound = again;
+        self.shared.send_queue.poll(switch);
     }
 
-    /// Decode one message and keep it for [`Self::drain_inbound`].
+    /// Decode one message and call [`App`](crate::App).
     ///
     /// Returns `false` when `bytes` is not a content message, the channel is not
-    /// [`CONTENT_CHANNEL`](crate::CONTENT_CHANNEL), or a blob is over 1 MiB. The
-    /// caller stops that peer. When the inbound queue is full, the oldest message
-    /// is dropped so this queue cannot grow without a limit.
+    /// [`CONTENT_CHANNEL`], or a blob is over 1 MiB. The caller stops that peer.
+    /// An [`Error`](crate::Error) from the app returns `true`. The peer stays
+    /// connected, the refusal is logged, and no reply is queued. A reply that
+    /// does not fit on the queue is logged and dropped. The peer stays connected.
     #[must_use]
     pub fn handle(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
-        if ch_id != CONTENT_CHANNEL || !message_fits(bytes) {
-            return false;
-        }
-        let Ok(message) = Message::decode(bytes) else {
+        let Some(sum) = decode_inbound(ch_id, bytes) else {
             return false;
         };
-        if !acceptable(&message) {
-            return false;
+        match reply_from(&self.shared.app, peer_id, sum) {
+            Ok(Some(reply)) => {
+                if !self.queue(peer_id, &reply) {
+                    log_line(
+                        Level::Error,
+                        "content",
+                        "reply dropped",
+                        &[
+                            ("peer", peer_id),
+                            ("err", "queue full or message too large"),
+                        ],
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "content",
+                    "app refused message",
+                    &[("peer", peer_id), ("err", err.as_str())],
+                );
+            }
         }
-        let mut inner = lock(&self.inner);
-        if inner.inbound.len() >= QUEUE_CAP {
-            inner.inbound.pop_front();
-        }
-        inner.inbound.push_back(Inbound {
-            peer_id: peer_id.to_owned(),
-            message,
-        });
         true
     }
+}
 
-    /// Messages received since the last drain, oldest first.
-    #[must_use]
-    pub fn drain_inbound(&self) -> Vec<Inbound> {
-        let mut inner = lock(&self.inner);
-        inner.inbound.drain(..).collect()
+/// Channel list to register on the switch before any peer is added.
+///
+/// Priority is 5, below consensus. The send queue holds 100 messages.
+/// A message longer than [`RECV_MESSAGE_CAPACITY`] must not be queued.
+#[must_use]
+pub fn channel_descriptors() -> Vec<ChannelDescriptor> {
+    vec![ChannelDescriptor {
+        id: CONTENT_CHANNEL,
+        priority: 5,
+        send_queue_capacity: 100,
+        recv_message_capacity: RECV_MESSAGE_CAPACITY,
+    }]
+}
+
+fn decode_inbound(ch_id: u8, bytes: &[u8]) -> Option<content::message::Sum> {
+    if ch_id != CONTENT_CHANNEL || !message_fits(bytes) {
+        return None;
+    }
+    let message = Message::decode(bytes).ok()?;
+    match message.sum {
+        Some(sum) if send_queue::acceptable(&sum) => Some(sum),
+        _ => None,
     }
 }
 
-impl Default for Reactor {
-    fn default() -> Self {
-        Self::new()
+fn reply_from<A: App>(
+    app: &A,
+    peer_id: &str,
+    sum: content::message::Sum,
+) -> Result<Option<Message>, Error> {
+    match sum {
+        content::message::Sum::ContentPush(push) => Ok(Some(wrap(
+            content::message::Sum::ContentPushAck(app.handle_content_push(peer_id, push)?),
+        ))),
+        content::message::Sum::ContentRequest(request) => Ok(app
+            .handle_content_request(peer_id, request)?
+            .map(|response| wrap(content::message::Sum::ContentResponse(response)))),
+        content::message::Sum::CapacityChallenge(challenge) => Ok(Some(wrap(
+            content::message::Sum::CapacityChallengeResponse(
+                app.handle_capacity_challenge(peer_id, challenge)?,
+            ),
+        ))),
+        content::message::Sum::ContentPushAck(ack) => {
+            app.handle_content_push_ack(peer_id, ack)?;
+            Ok(None)
+        }
+        content::message::Sum::ContentResponse(response) => {
+            app.handle_content_response(peer_id, response)?;
+            Ok(None)
+        }
+        content::message::Sum::CapacityChallengeResponse(response) => {
+            app.handle_capacity_challenge_response(peer_id, response)?;
+            Ok(None)
+        }
+        content::message::Sum::Announce(announce) => {
+            app.handle_announce(peer_id, announce)?;
+            Ok(None)
+        }
     }
 }
 
-fn acceptable(message: &Message) -> bool {
-    match &message.sum {
-        Some(content::message::Sum::ContentPush(push)) => blob_fits(push.blob.len()),
-        Some(content::message::Sum::ContentResponse(response)) => blob_fits(response.blob.len()),
-        Some(_) => true,
-        None => false,
-    }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
+fn wrap(sum: content::message::Sum) -> Message {
+    Message { sum: Some(sum) }
 }

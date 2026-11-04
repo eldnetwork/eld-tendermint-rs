@@ -17,6 +17,7 @@ categories = ["network-programming"]
 [dependencies]
 eld-tendermint-p2p = { version = "0.0.1", path = "../p2p" }
 eld-tendermint-proto = { version = "0.0.1", path = "../proto" }
+eld-tendermint-types = { version = "0.0.1", path = "../types" }
 prost = "0.13"
 
 [dev-dependencies]

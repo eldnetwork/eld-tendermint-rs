@@ -18,7 +18,9 @@ use eld_tendermint_consensus::{
     Node, NodeExtras, Reactor as ConsensusReactor, catch_up_prune,
     channel_descriptors as consensus_channels, remove_wal_segments_before, spawn_prune,
 };
-use eld_tendermint_content::{Reactor as ContentReactor, channel_descriptors as content_channels};
+use eld_tendermint_content::{
+    ContentSendQueue, Reactor as ContentReactor, channel_descriptors as content_channels,
+};
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
     Pool as EvidencePool, Reactor as EvidenceReactor, channel_descriptors as evidence_channels,
@@ -258,7 +260,7 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     };
     let evidence_desc = evidence_channels();
     let content_desc = content_channels();
-    let content = ContentReactor::new();
+    let content_queue = Arc::new(ContentSendQueue::new());
     let channels = hex::encode(
         mempool_desc
             .iter()
@@ -273,6 +275,34 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     .to_ascii_uppercase();
 
     let switch = Arc::new(Switch::new());
+    let running = Arc::new(AtomicBool::new(true));
+    let consensus_status = consensus.clone();
+    let status_switch = Arc::clone(&switch);
+    let content_app = rpc_app.clone();
+    let status = Arc::new(NodeStatus {
+        id: node_id,
+        network: genesis.chain_id.as_str().to_owned(),
+        listen_addr: config.p2p.laddr.clone(),
+        moniker: config.base.moniker.clone(),
+        rpc_address: config.rpc.laddr.clone(),
+        channels,
+        address: validator_address,
+        pub_key: pub_key_json,
+        voting_power,
+        block_store: Arc::clone(&block_store),
+        mempool: node_mempool,
+        content_queue,
+        waiter,
+        commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
+        app: rpc_app,
+        tx_index,
+        subscriptions,
+        genesis,
+        state_store,
+        switch: status_switch,
+        consensus: consensus_status,
+    });
+    let content = ContentReactor::from_shared(content_app, Arc::clone(&status.content_queue));
     register(
         &switch,
         &consensus,
@@ -288,8 +318,6 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     register_evidence(&switch, &evidence_reactor, evidence_desc)?;
     register_content(&switch, &content, content_desc)?;
 
-    let running = Arc::new(AtomicBool::new(true));
-    let consensus_status = consensus.clone();
     let poll = spawn_poll(
         Arc::clone(&running),
         Arc::clone(&switch),
@@ -309,34 +337,12 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         wal_to_prune,
     );
 
-    let status_switch = Arc::clone(&switch);
     let process = NodeProcess {
         switch,
         running,
         poll: Some(poll),
         prune: Some(prune),
-        status: Arc::new(NodeStatus {
-            id: node_id,
-            network: genesis.chain_id.as_str().to_owned(),
-            listen_addr: config.p2p.laddr.clone(),
-            moniker: config.base.moniker.clone(),
-            rpc_address: config.rpc.laddr.clone(),
-            channels,
-            address: validator_address,
-            pub_key: pub_key_json,
-            voting_power,
-            block_store,
-            mempool: node_mempool,
-            waiter,
-            commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
-            app: rpc_app,
-            tx_index,
-            subscriptions,
-            genesis,
-            state_store,
-            switch: status_switch,
-            consensus: consensus_status,
-        }),
+        status,
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };
     process
@@ -454,7 +460,7 @@ fn register_evidence(
 
 fn register_content(
     switch: &Arc<Switch>,
-    content: &ContentReactor,
+    content: &ContentReactor<AbciApp>,
     content_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
 ) -> Result<(), Error> {
     let content_cb = content.clone();
@@ -530,7 +536,7 @@ struct PollReactors {
     pex: PexReactor,
     blockchain: Option<BlockchainReactor<AbciApp, RocksDb>>,
     evidence: EvidenceReactor<RocksDb>,
-    content: ContentReactor,
+    content: ContentReactor<AbciApp>,
 }
 
 fn spawn_poll(

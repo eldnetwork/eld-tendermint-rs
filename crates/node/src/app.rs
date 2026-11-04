@@ -115,6 +115,76 @@ impl eld_tendermint_mempool::App for AbciApp {
     }
 }
 
+// Inbound content calls from the content reactor. This process has no blob
+// store, so each call is refused and no reply is sent. The peer stays connected.
+impl eld_tendermint_content::App for AbciApp {
+    fn handle_content_push(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::ContentPush,
+    ) -> Result<eld_tendermint_proto::content::ContentPushAck, eld_tendermint_content::Error> {
+        refuse_content()
+    }
+
+    fn handle_content_request(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::ContentRequest,
+    ) -> Result<Option<eld_tendermint_proto::content::ContentResponse>, eld_tendermint_content::Error>
+    {
+        refuse_content()
+    }
+
+    fn handle_capacity_challenge(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::CapacityChallenge,
+    ) -> Result<
+        eld_tendermint_proto::content::CapacityChallengeResponse,
+        eld_tendermint_content::Error,
+    > {
+        refuse_content()
+    }
+
+    fn handle_content_push_ack(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::ContentPushAck,
+    ) -> Result<(), eld_tendermint_content::Error> {
+        refuse_content()
+    }
+
+    fn handle_content_response(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::ContentResponse,
+    ) -> Result<(), eld_tendermint_content::Error> {
+        refuse_content()
+    }
+
+    fn handle_capacity_challenge_response(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::CapacityChallengeResponse,
+    ) -> Result<(), eld_tendermint_content::Error> {
+        refuse_content()
+    }
+
+    fn handle_announce(
+        &self,
+        _peer_id: &str,
+        _msg: eld_tendermint_proto::content::Announce,
+    ) -> Result<(), eld_tendermint_content::Error> {
+        refuse_content()
+    }
+}
+
+fn refuse_content<T>() -> Result<T, eld_tendermint_content::Error> {
+    Err(eld_tendermint_content::Error::Rejected {
+        reason: "content is not stored in this process".to_owned(),
+    })
+}
+
 impl eld_tendermint_state::App for AbciApp {
     fn begin_block(
         &mut self,
