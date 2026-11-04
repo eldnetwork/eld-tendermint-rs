@@ -1285,8 +1285,8 @@ fn info_and_init_chain_use_different_sockets() {
     let conns = conns.lock().unwrap();
     assert_eq!(
         conns.len(),
-        4,
-        "Go opens query, snapshot, mempool, and consensus"
+        5,
+        "query, snapshot, mempool, consensus, and content"
     );
     let mut saw_info = false;
     let mut saw_init = false;

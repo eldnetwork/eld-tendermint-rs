@@ -1,4 +1,4 @@
-//! Go's four ABCI sockets: query, snapshot, mempool, and consensus.
+//! ABCI sockets to the same app address: query, snapshot, mempool, consensus, and content.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -20,6 +20,7 @@ struct Shared {
     query: Mutex<SocketClient>,
     mempool: Mutex<SocketClient>,
     consensus: Mutex<SocketClient>,
+    content: Mutex<SocketClient>,
     /// Kept open. Go dials this client even when state sync is off.
     #[allow(dead_code)]
     snapshot: Mutex<SocketClient>,
@@ -28,7 +29,7 @@ struct Shared {
     height: Mutex<i64>,
 }
 
-/// Query, mempool, and consensus sockets. Consensus and the mempool each hold a clone.
+/// Query, mempool, consensus, and content sockets. Consensus and the mempool each hold a clone.
 #[derive(Clone)]
 pub struct AbciApp {
     shared: Arc<Shared>,
@@ -40,6 +41,7 @@ impl AbciApp {
         snapshot: SocketClient,
         mempool: SocketClient,
         consensus: SocketClient,
+        content: SocketClient,
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -47,6 +49,7 @@ impl AbciApp {
                 snapshot: Mutex::new(snapshot),
                 mempool: Mutex::new(mempool),
                 consensus: Mutex::new(consensus),
+                content: Mutex::new(content),
                 waiter: Arc::new(TxWaiter::new()),
                 height: Mutex::new(0),
             }),
@@ -193,7 +196,7 @@ fn forward_content(
     peer_id: &str,
     sum: ContentSum,
 ) -> Result<Option<ContentSum>, eld_tendermint_content::Error> {
-    let response = lock(&app.shared.query)
+    let response = lock(&app.shared.content)
         .content_call(
             peer_id,
             eld_tendermint_proto::content::Message { sum: Some(sum) },

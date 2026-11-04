@@ -599,11 +599,12 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
         .ok_or_else(|| Error::new(format!("proxy_app is not tcp: {proxy_app}")))?;
     // `multiAppConn.OnStart` order: query, snapshot, mempool, consensus.
     // Each dial is `socketClient.OnStart` with `mustConnect == false`.
-    // Content calls use the query connection, one request at a time with Info and Query.
+    // Content is its own dial to the same address. The first request on it is `RequestContent`.
     let mut query = dial_abci(proxy_app, addr, "query");
     let snapshot = dial_abci(proxy_app, addr, "snapshot");
     let mempool = dial_abci(proxy_app, addr, "mempool");
     let consensus = dial_abci(proxy_app, addr, "consensus");
+    let content = dial_abci(proxy_app, addr, "content");
     let info = match query.info(info_request()) {
         Ok(info) => info,
         Err(err) => return Err(abci_failed(err)),
@@ -629,7 +630,7 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
             ("appHash", app_hash.as_str()),
         ],
     );
-    Ok(AbciApp::new(query, snapshot, mempool, consensus))
+    Ok(AbciApp::new(query, snapshot, mempool, consensus, content))
 }
 
 fn dial_abci(proxy_app: &str, addr: &str, connection: &'static str) -> SocketClient {
