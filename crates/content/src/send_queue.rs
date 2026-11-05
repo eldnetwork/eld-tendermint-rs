@@ -149,6 +149,8 @@ pub(crate) fn acceptable(sum: &content::message::Sum) -> bool {
     match sum {
         content::message::Sum::ContentPush(push) => blob_fits(push.blob.len()),
         content::message::Sum::ContentResponse(response) => blob_fits(response.blob.len()),
+        content::message::Sum::CapacityProofSummaryQuery(_)
+        | content::message::Sum::CapacityProofSummary(_) => false,
         _ => true,
     }
 }

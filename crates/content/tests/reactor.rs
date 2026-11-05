@@ -166,6 +166,10 @@ impl App for Recording {
         self.record(peer_id, content::message::Sum::Announce(msg));
         Ok(())
     }
+
+    fn capacity_proof_summary(&self, _epoch: i64) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
+    }
 }
 
 fn opened(app: Recording) -> Reactor<Recording> {

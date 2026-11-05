@@ -13,7 +13,22 @@ message Message {
     CapacityChallenge         capacity_challenge          = 5;
     CapacityChallengeResponse capacity_challenge_response = 6;
     Announce                  announce                    = 7;
+    // Local read from the node to the app. Not a peer message.
+    CapacityProofSummaryQuery capacity_proof_summary_query = 8;
+    CapacityProofSummaryBytes capacity_proof_summary       = 9;
   }
+}
+
+// The node asks for the summary the local capacity validator signed for `epoch`.
+message CapacityProofSummaryQuery {
+  int64 epoch = 1;
+}
+
+// Empty `summary` means this epoch has no signed summary yet.
+// `summary` is the JSON encoding of the app's `CapacityProofSummary`.
+message CapacityProofSummaryBytes {
+  int64 epoch   = 1;
+  bytes summary = 2;
 }
 
 // Blob pushed to a capacity provider. `request_id` ties this to `ContentPushAck`.

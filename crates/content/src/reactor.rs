@@ -175,6 +175,8 @@ fn reply_from<A: App>(
             app.handle_announce(peer_id, announce)?;
             Ok(None)
         }
+        content::message::Sum::CapacityProofSummaryQuery(_)
+        | content::message::Sum::CapacityProofSummary(_) => Ok(None),
     }
 }
 

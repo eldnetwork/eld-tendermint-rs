@@ -2,7 +2,7 @@
 /// One reassembled payload on channel 0x50.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Message {
-    #[prost(oneof = "message::Sum", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "message::Sum", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub sum: ::core::option::Option<message::Sum>,
 }
 /// Nested message and enum types in `Message`.
@@ -23,7 +23,27 @@ pub mod message {
         CapacityChallengeResponse(super::CapacityChallengeResponse),
         #[prost(message, tag = "7")]
         Announce(super::Announce),
+        /// Local read from the node to the app. Not a peer message.
+        #[prost(message, tag = "8")]
+        CapacityProofSummaryQuery(super::CapacityProofSummaryQuery),
+        #[prost(message, tag = "9")]
+        CapacityProofSummary(super::CapacityProofSummaryBytes),
     }
+}
+/// The node asks for the summary the local capacity validator signed for `epoch`.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CapacityProofSummaryQuery {
+    #[prost(int64, tag = "1")]
+    pub epoch: i64,
+}
+/// Empty `summary` means this epoch has no signed summary yet.
+/// `summary` is the JSON encoding of the app's `CapacityProofSummary`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapacityProofSummaryBytes {
+    #[prost(int64, tag = "1")]
+    pub epoch: i64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub summary: ::prost::alloc::vec::Vec<u8>,
 }
 /// Blob pushed to a capacity provider. `request_id` ties this to `ContentPushAck`.
 #[derive(Clone, PartialEq, ::prost::Message)]

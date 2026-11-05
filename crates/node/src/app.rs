@@ -216,6 +216,25 @@ impl eld_tendermint_content::App for AbciApp {
     ) -> Result<(), eld_tendermint_content::Error> {
         forward_content(self, peer_id, ContentSum::Announce(msg)).map(|_| ())
     }
+
+    fn capacity_proof_summary(
+        &self,
+        epoch: i64,
+    ) -> Result<Option<Vec<u8>>, eld_tendermint_content::Error> {
+        match forward_content(
+            self,
+            "",
+            ContentSum::CapacityProofSummaryQuery(
+                eld_tendermint_proto::content::CapacityProofSummaryQuery { epoch },
+            ),
+        )? {
+            Some(ContentSum::CapacityProofSummary(body)) if !body.summary.is_empty() => {
+                Ok(Some(body.summary))
+            }
+            Some(ContentSum::CapacityProofSummary(_)) | None => Ok(None),
+            _ => Err(content_rejected("content reply was not a summary")),
+        }
+    }
 }
 
 fn forward_content(
