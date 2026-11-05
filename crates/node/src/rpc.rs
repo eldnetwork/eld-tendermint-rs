@@ -16,7 +16,7 @@ use eld_tendermint_proto::abci::{
     Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseInfo,
     ResponseQuery, TxResult,
 };
-use eld_tendermint_proto::content::{ContentPush, ContentRequest};
+use eld_tendermint_proto::content::{CapacityChallenge, ContentPush, ContentRequest};
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_state::{StateStore, TxIndex};
 use eld_tendermint_store::{BlockStore, RocksDb};
@@ -24,7 +24,7 @@ use eld_tendermint_types::{Block, Commit, CommitSig, GenesisDoc, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
-use crate::content_wait::ContentReply;
+use crate::content_wait::{ContentReply, ContentWaitKey};
 use crate::error::{Error, fail};
 use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64, hex_upper};
 use crate::wait::TxWaiter;
@@ -152,6 +152,7 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "tx_search" => rpc_tx_search(&id, request, status),
         "content_push" => content_push(&id, request, status),
         "content_request" => content_request(&id, request, status),
+        "content_challenge" => content_challenge(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
@@ -576,7 +577,10 @@ fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     if peer_id.is_empty() {
         return rpc_error(id.clone(), -32602, "Invalid params");
     }
-    let subscription = status.app.content_waiter().subscribe(request_id);
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Request(request_id));
     let queued = status.content_queue.push(
         peer_id,
         &ContentPush {
@@ -594,7 +598,7 @@ fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             id.clone(),
             serde_json::json!({ "provider": b64(&provider) }),
         ),
-        Ok(ContentReply::Blob { .. }) => {
+        Ok(ContentReply::Blob { .. } | ContentReply::Proof { .. }) => {
             rpc_error(id.clone(), -32603, "content push returned a blob")
         }
         Err(_) => {
@@ -621,7 +625,10 @@ fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     if peer_id.is_empty() {
         return rpc_error(id.clone(), -32602, "Invalid params");
     }
-    let subscription = status.app.content_waiter().subscribe(request_id);
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Request(request_id));
     let queued = status.content_queue.request(
         peer_id,
         &ContentRequest {
@@ -637,7 +644,7 @@ fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
         Ok(ContentReply::Blob { bytes }) => {
             rpc_result(id.clone(), serde_json::json!({ "blob": b64(&bytes) }))
         }
-        Ok(ContentReply::Ack { .. }) => {
+        Ok(ContentReply::Ack { .. } | ContentReply::Proof { .. }) => {
             rpc_error(id.clone(), -32603, "content request returned a receipt")
         }
         Err(_) => {
@@ -645,6 +652,87 @@ fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             rpc_error(id.clone(), -32603, "content request timed out")
         }
     }
+}
+
+/// Queue a `CapacityChallenge` and wait for the proof. Runs on the RPC thread, not consensus.
+fn content_challenge(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(challenge) = challenge_param(params) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() || challenge.challenge_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let challenge_id = challenge.challenge_id.clone();
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Challenge(challenge_id.clone()));
+    let queued = status.content_queue.challenge(peer_id, &challenge);
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content challenge was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_WAIT) {
+        Ok(ContentReply::Proof { challenge_id }) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "challenge_id": challenge_id }),
+        ),
+        Ok(ContentReply::Ack { .. } | ContentReply::Blob { .. }) => rpc_error(
+            id.clone(),
+            -32603,
+            "content challenge returned the wrong reply",
+        ),
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content challenge timed out")
+        }
+    }
+}
+
+fn challenge_param(params: &Map<String, Value>) -> Option<CapacityChallenge> {
+    let challenge_id = params.get("challenge_id").and_then(Value::as_str)?;
+    let challenger = params
+        .get("challenger")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let provider = params
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let chunk_indices = params
+        .get("chunk_indices")
+        .and_then(Value::as_array)?
+        .iter()
+        .map(Value::as_u64)
+        .collect::<Option<Vec<_>>>()?;
+    let block_height = params.get("block_height").and_then(Value::as_i64)?;
+    let merkle_root = params
+        .get("merkle_root")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let seed = params
+        .get("seed")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let expiration_block = params.get("expiration_block").and_then(Value::as_i64)?;
+    let timestamp = params.get("timestamp").and_then(Value::as_u64)?;
+    Some(CapacityChallenge {
+        challenge_id: challenge_id.to_owned(),
+        challenger,
+        provider,
+        chunk_indices,
+        block_height,
+        merkle_root,
+        seed,
+        expiration_block,
+        timestamp,
+    })
 }
 
 fn object_params(request: &Value) -> Option<&Map<String, Value>> {

@@ -14,7 +14,7 @@ use eld_tendermint_proto::content::message::Sum as ContentSum;
 use eld_tendermint_state::{Error as StateError, TM_CORE_SEMVER};
 use eld_tendermint_types::BLOCK_PROTOCOL;
 
-use crate::content_wait::{ContentReply, ContentWaiter};
+use crate::content_wait::{ContentReply, ContentWaitKey, ContentWaiter};
 use crate::wait::{DeliveredTx, TxWaiter};
 
 struct Shared {
@@ -173,9 +173,10 @@ impl eld_tendermint_content::App for AbciApp {
         let request_id = msg.request_id;
         let provider = msg.provider.clone();
         forward_content(self, peer_id, ContentSum::ContentPushAck(msg))?;
-        self.shared
-            .content_waiter
-            .notify(request_id, ContentReply::Ack { provider });
+        self.shared.content_waiter.notify(
+            ContentWaitKey::Request(request_id),
+            ContentReply::Ack { provider },
+        );
         Ok(())
     }
 
@@ -187,9 +188,10 @@ impl eld_tendermint_content::App for AbciApp {
         let request_id = msg.request_id;
         let bytes = msg.blob.clone();
         forward_content(self, peer_id, ContentSum::ContentResponse(msg))?;
-        self.shared
-            .content_waiter
-            .notify(request_id, ContentReply::Blob { bytes });
+        self.shared.content_waiter.notify(
+            ContentWaitKey::Request(request_id),
+            ContentReply::Blob { bytes },
+        );
         Ok(())
     }
 
@@ -198,7 +200,13 @@ impl eld_tendermint_content::App for AbciApp {
         peer_id: &str,
         msg: eld_tendermint_proto::content::CapacityChallengeResponse,
     ) -> Result<(), eld_tendermint_content::Error> {
-        forward_content(self, peer_id, ContentSum::CapacityChallengeResponse(msg)).map(|_| ())
+        let challenge_id = msg.challenge_id.clone();
+        forward_content(self, peer_id, ContentSum::CapacityChallengeResponse(msg))?;
+        self.shared.content_waiter.notify(
+            ContentWaitKey::Challenge(challenge_id.clone()),
+            ContentReply::Proof { challenge_id },
+        );
+        Ok(())
     }
 
     fn handle_announce(

@@ -4,11 +4,19 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Mutex, MutexGuard};
 
-/// A push receipt or a fetched blob.
+/// What an RPC call is waiting for. A challenge is not a request id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ContentWaitKey {
+    Request(u64),
+    Challenge(String),
+}
+
+/// A push receipt, a fetched blob, or a challenge proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ContentReply {
     Ack { provider: Vec<u8> },
     Blob { bytes: Vec<u8> },
+    Proof { challenge_id: String },
 }
 
 struct Waiter {
@@ -19,11 +27,11 @@ struct Waiter {
 /// Fans one content reply out to the RPC calls waiting on its request id.
 pub(crate) struct ContentWaiter {
     next_id: Mutex<u64>,
-    pending: Mutex<HashMap<u64, Vec<Waiter>>>,
+    pending: Mutex<HashMap<ContentWaitKey, Vec<Waiter>>>,
 }
 
 pub(crate) struct ContentSubscription {
-    request_id: u64,
+    key: ContentWaitKey,
     id: u64,
     rx: Receiver<ContentReply>,
 }
@@ -39,31 +47,31 @@ impl ContentWaiter {
 
     /// Register before the content message is queued.
     #[must_use]
-    pub(crate) fn subscribe(&self, request_id: u64) -> ContentSubscription {
+    pub(crate) fn subscribe(&self, key: ContentWaitKey) -> ContentSubscription {
         let (sender, rx) = channel();
         let mut ids = lock(&self.next_id);
         let id = *ids;
         *ids += 1;
         drop(ids);
         lock(&self.pending)
-            .entry(request_id)
+            .entry(key.clone())
             .or_default()
             .push(Waiter { id, sender });
-        ContentSubscription { request_id, id, rx }
+        ContentSubscription { key, id, rx }
     }
 
     pub(crate) fn cancel(&self, subscription: &ContentSubscription) {
         let mut pending = lock(&self.pending);
-        if let Some(waiters) = pending.get_mut(&subscription.request_id) {
+        if let Some(waiters) = pending.get_mut(&subscription.key) {
             waiters.retain(|waiter| waiter.id != subscription.id);
             if waiters.is_empty() {
-                pending.remove(&subscription.request_id);
+                pending.remove(&subscription.key);
             }
         }
     }
 
-    pub(crate) fn notify(&self, request_id: u64, reply: ContentReply) {
-        let Some(waiters) = lock(&self.pending).remove(&request_id) else {
+    pub(crate) fn notify(&self, key: ContentWaitKey, reply: ContentReply) {
+        let Some(waiters) = lock(&self.pending).remove(&key) else {
             return;
         };
         for waiter in waiters {
@@ -92,9 +100,9 @@ mod tests {
     #[test]
     fn an_ack_wakes_the_waiter_for_that_request() {
         let waiter = ContentWaiter::new();
-        let subscription = waiter.subscribe(7);
+        let subscription = waiter.subscribe(ContentWaitKey::Request(7));
         waiter.notify(
-            7,
+            ContentWaitKey::Request(7),
             ContentReply::Ack {
                 provider: vec![1, 2, 3],
             },
