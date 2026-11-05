@@ -17,11 +17,12 @@ use eld_tendermint_state::{
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, BitArray, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet,
-    PartSetHeader, Proposal, Time, ValidatorSet, Vote, VoteSet, log_line, max_data_bytes,
+    PartSetHeader, Proposal, Time, Tx, Txs, ValidatorSet, Vote, VoteSet, log_line, max_data_bytes,
     upper_hex,
 };
 use prost::Message;
 
+use crate::capacity_summary::CapacitySummary;
 use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::summary::{SummaryManager, SummaryQuery};
@@ -151,6 +152,8 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     tx_index: Option<Arc<dyn IndexTxs>>,
     events: Option<Arc<dyn CommitEvents>>,
     summary_manager: Arc<Mutex<SummaryManager<D>>>,
+    /// Signed summary appended after the mempool transactions. Not a mempool tx.
+    capacity_summary: Arc<dyn CapacitySummary>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -190,7 +193,9 @@ pub(crate) struct OutboundValidBlock {
     pub is_commit: bool,
 }
 
-impl<E: ExecApp + SummaryQuery + Clone + 'static, C: MempoolApp> Node<E, C, MemDb> {
+impl<E: ExecApp + SummaryQuery + CapacitySummary + Clone + 'static, C: MempoolApp>
+    Node<E, C, MemDb>
+{
     /// `NewNode` with an in-memory block store.
     ///
     /// # Errors
@@ -278,7 +283,9 @@ impl<E: ExecApp + SummaryQuery + Clone + 'static, C: MempoolApp> Node<E, C, MemD
     }
 }
 
-impl<E: ExecApp + SummaryQuery + Clone + 'static, C: MempoolApp, D: Db> Node<E, C, D> {
+impl<E: ExecApp + SummaryQuery + CapacitySummary + Clone + 'static, C: MempoolApp, D: Db>
+    Node<E, C, D>
+{
     /// [`Self::start`] saving blocks into `block_store`.
     ///
     /// # Errors
@@ -403,7 +410,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         extras: NodeExtras,
     ) -> Result<Self, Error>
     where
-        E: SummaryQuery + Clone + 'static,
+        E: SummaryQuery + CapacitySummary + Clone + 'static,
     {
         let summary_manager = Arc::new(Mutex::new(SummaryManager::new(
             exec.clone(),
@@ -445,6 +452,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             tx_index: extras.tx_index,
             events: extras.events,
             summary_manager,
+            capacity_summary: Arc::new(exec.clone()),
             exec,
             votes,
             proposal: None,
@@ -1411,6 +1419,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .unwrap_or_else(|err| err.into_inner())
             .reap_max_bytes_max_gas(max_data, max_gas);
         self.reap_count += 1;
+        let txs = append_capacity_summary(txs, max_data, height, self.capacity_summary.as_ref());
         let mut block = Block::make_block(height, txs, Some(commit), evidence);
         self.fill_header(&mut block);
         let parts = block.make_part_set(BLOCK_PART_SIZE_BYTES).ok()?;
@@ -2238,6 +2247,50 @@ pub(crate) fn seconds_since(start: Time, now: Time) -> i64 {
     now.unix_seconds()
         .saturating_sub(start.unix_seconds())
         .max(0)
+}
+
+/// Append the signed summary after the reaped transactions when its protobuf size still fits.
+///
+/// The summary is not taken from the mempool and does not change the block header.
+fn append_capacity_summary<E: CapacitySummary + ?Sized>(
+    txs: Txs,
+    max_data: i64,
+    height: i64,
+    exec: &E,
+) -> Txs {
+    let Some(summary) = exec
+        .capacity_proof_summary(height)
+        .filter(|bytes| !bytes.is_empty())
+    else {
+        return txs;
+    };
+    let mut used = 0i64;
+    for tx in txs.as_slice() {
+        used = used.saturating_add(tx_data_size(tx.as_bytes()));
+    }
+    let extra = tx_data_size(&summary);
+    if max_data > -1 && used.saturating_add(extra) > max_data {
+        let height = height.to_string();
+        let bytes = extra.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "capacity proof summary does not fit in the proposal",
+            &[("height", height.as_str()), ("bytes", bytes.as_str())],
+        );
+        return txs;
+    }
+    let mut list = txs.as_slice().to_vec();
+    list.push(Tx::new(summary));
+    Txs::new(list)
+}
+
+/// Byte size the mempool counts for one transaction.
+fn tx_data_size(tx: &[u8]) -> i64 {
+    let data = eld_tendermint_proto::types::Data {
+        txs: vec![tx.to_vec()],
+    };
+    i64::try_from(data.encoded_len()).unwrap_or(i64::MAX)
 }
 
 fn block_id_of(block: &Block, parts: Option<&PartSet>) -> Option<BlockId> {

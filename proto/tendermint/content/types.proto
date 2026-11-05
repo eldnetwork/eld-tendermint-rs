@@ -19,9 +19,10 @@ message Message {
   }
 }
 
-// The node asks for the summary the local capacity validator signed for `epoch`.
+// The node asks for the summary signed for the epoch of this proposal height.
+// The app turns `height` into the epoch. This is not a peer message.
 message CapacityProofSummaryQuery {
-  int64 epoch = 1;
+  int64 height = 1;
 }
 
 // Empty `summary` means this epoch has no signed summary yet.

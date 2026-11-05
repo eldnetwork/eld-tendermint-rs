@@ -19,7 +19,7 @@ use eld_tendermint_types::{
 };
 use prost::bytes::Bytes;
 
-use eld_tendermint_consensus::{Group, Msg, Node, Step, SummaryQuery};
+use eld_tendermint_consensus::{CapacitySummary, Group, Msg, Node, Step, SummaryQuery};
 
 const APP_HASH: [u8; 32] = [0xab; 32];
 
@@ -27,6 +27,8 @@ const APP_HASH: [u8; 32] = [0xab; 32];
 struct Exec;
 
 impl SummaryQuery for Exec {}
+
+impl CapacitySummary for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(

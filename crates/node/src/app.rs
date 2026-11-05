@@ -104,6 +104,24 @@ impl SummaryQuery for AbciApp {
     }
 }
 
+impl eld_tendermint_consensus::CapacitySummary for AbciApp {
+    fn capacity_proof_summary(&self, height: i64) -> Option<Vec<u8>> {
+        match eld_tendermint_content::App::capacity_proof_summary(self, height) {
+            Ok(summary) => summary,
+            Err(err) => {
+                let err = err.to_string();
+                eld_tendermint_types::log_line(
+                    eld_tendermint_types::Level::Error,
+                    "consensus",
+                    "capacity proof summary was not read",
+                    &[("err", err.as_str())],
+                );
+                None
+            }
+        }
+    }
+}
+
 /// `proxy.RequestInfo`: core `0.34.24`, block protocol 11, p2p protocol 8.
 pub(crate) fn info_request() -> RequestInfo {
     RequestInfo {
@@ -219,13 +237,13 @@ impl eld_tendermint_content::App for AbciApp {
 
     fn capacity_proof_summary(
         &self,
-        epoch: i64,
+        height: i64,
     ) -> Result<Option<Vec<u8>>, eld_tendermint_content::Error> {
         match forward_content(
             self,
             "",
             ContentSum::CapacityProofSummaryQuery(
-                eld_tendermint_proto::content::CapacityProofSummaryQuery { epoch },
+                eld_tendermint_proto::content::CapacityProofSummaryQuery { height },
             ),
         )? {
             Some(ContentSum::CapacityProofSummary(body)) if !body.summary.is_empty() => {

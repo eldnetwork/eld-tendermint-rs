@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
-use eld_tendermint_consensus::{Node, SummaryQuery};
+use eld_tendermint_consensus::{CapacitySummary, Node, SummaryQuery};
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::FilePV;
 use eld_tendermint_proto::abci::{RequestCheckTx, ResponseCheckTx};
@@ -40,6 +40,29 @@ impl MempoolApp for Check {
 struct Exec;
 
 impl SummaryQuery for Exec {}
+
+thread_local! {
+    static PROPOSAL_SUMMARY: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+struct ClearSummary;
+
+impl Drop for ClearSummary {
+    fn drop(&mut self) {
+        PROPOSAL_SUMMARY.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+fn set_summary(bytes: Option<Vec<u8>>) -> ClearSummary {
+    PROPOSAL_SUMMARY.with(|slot| *slot.borrow_mut() = bytes);
+    ClearSummary
+}
+
+impl CapacitySummary for Exec {
+    fn capacity_proof_summary(&self, _height: i64) -> Option<Vec<u8>> {
+        PROPOSAL_SUMMARY.with(|slot| slot.borrow().clone())
+    }
+}
 
 impl eld_tendermint_state::App for Exec {
     fn begin_block(
@@ -197,4 +220,76 @@ fn proposal_trims_txs_to_max_data_bytes() {
         "only one tx fits MaxDataBytes"
     );
     assert_eq!(node.mempool().lock().expect("mempool").size(), 3);
+}
+
+fn proposed_txs(max_bytes: i64, mempool_txs: &[Vec<u8>], summary: Option<Vec<u8>>) -> Vec<Vec<u8>> {
+    let _clear = set_summary(summary);
+    static N: AtomicU64 = AtomicU64::new(0);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "eld-proposal-summary-{}-{}-{}",
+        std::process::id(),
+        stamp,
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let pv = FilePV::load_or_gen_file_pv(
+        dir.join("priv_validator_key.json"),
+        dir.join("priv_validator_state.json"),
+    )
+    .expect("file pv");
+    let mut params = ConsensusParams::default_params();
+    params.block.max_bytes = max_bytes;
+    params.evidence.max_bytes = 0;
+    let mut genesis = GenesisDoc {
+        genesis_time: Time::from_unix_parts(1_600_000_000, 0),
+        chain_id: ChainId::new("test-chain"),
+        initial_height: 0,
+        consensus_params: Some(params),
+        validators: vec![GenesisValidator {
+            address: Vec::new(),
+            pub_key: pv.get_pub_key(),
+            power: 10,
+            name: String::new(),
+        }],
+        app_hash: vec![0x11; 32],
+        app_state: None,
+    };
+    let state = make_genesis_state(&mut genesis).expect("genesis");
+    let mut mempool = Mempool::new(MempoolConfig::test_config(), Check).expect("mempool");
+    for tx in mempool_txs {
+        mempool
+            .check_tx(&Tx::new(tx.clone()))
+            .expect("tx fits the mempool");
+    }
+    let node = Node::start(ConsensusConfig::test_config(), pv, state, mempool, Exec).expect("node");
+    node.proposal_block()
+        .expect("proposal block")
+        .data
+        .as_slice()
+        .iter()
+        .map(|tx| tx.as_bytes().to_vec())
+        .collect()
+}
+
+#[test]
+fn proposal_appends_the_summary_after_mempool_txs() {
+    let max_bytes = max_commit_bytes(1) + 11 + 626 + 300;
+    let txs = proposed_txs(
+        max_bytes,
+        &[b"mempool-tx".to_vec()],
+        Some(b"summary".to_vec()),
+    );
+    assert_eq!(txs, vec![b"mempool-tx".to_vec(), b"summary".to_vec()]);
+}
+
+#[test]
+fn proposal_leaves_out_a_summary_that_does_not_fit() {
+    let max_bytes = max_commit_bytes(1) + 11 + 626 + 300;
+    let mempool_tx = vec![0x11; 200];
+    let txs = proposed_txs(max_bytes, &[mempool_tx.clone()], Some(vec![0x22; 200]));
+    assert_eq!(txs, vec![mempool_tx]);
 }

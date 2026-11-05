@@ -30,11 +30,12 @@ pub mod message {
         CapacityProofSummary(super::CapacityProofSummaryBytes),
     }
 }
-/// The node asks for the summary the local capacity validator signed for `epoch`.
+/// The node asks for the summary signed for the epoch of this proposal height.
+/// The app turns `height` into the epoch. This is not a peer message.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct CapacityProofSummaryQuery {
     #[prost(int64, tag = "1")]
-    pub epoch: i64,
+    pub height: i64,
 }
 /// Empty `summary` means this epoch has no signed summary yet.
 /// `summary` is the JSON encoding of the app's `CapacityProofSummary`.

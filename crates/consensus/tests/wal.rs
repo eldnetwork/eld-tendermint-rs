@@ -20,7 +20,7 @@ use eld_tendermint_types::{
 use prost::bytes::Bytes;
 
 use eld_tendermint_consensus::{
-    Error, Node, SummaryQuery, Wal, end_height_message, proposal_message,
+    CapacitySummary, Error, Node, SummaryQuery, Wal, end_height_message, proposal_message,
     remove_wal_segments_before, vote_message,
 };
 
@@ -31,6 +31,8 @@ const WHEN: Time = Time::from_unix_parts(1_600_000_000, 0);
 struct Exec;
 
 impl SummaryQuery for Exec {}
+
+impl CapacitySummary for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(

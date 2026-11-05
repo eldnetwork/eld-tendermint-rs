@@ -82,14 +82,14 @@ pub trait App: Send + Sync {
     /// Returns [`Error::Rejected`] when the announcement is ignored.
     fn handle_announce(&self, peer_id: &str, msg: Announce) -> Result<(), Error>;
 
-    /// The summary the local capacity validator signed for `epoch`.
+    /// The summary the local capacity validator signed for the epoch of `height`.
     ///
-    /// `Ok(None)` means this epoch has no signed summary yet. The bytes are the
+    /// `Ok(None)` means that epoch has no signed summary yet. The bytes are the
     /// JSON encoding of the app's `CapacityProofSummary`. This is a local read.
     /// It is not a peer message.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Rejected`] when the app does not answer.
-    fn capacity_proof_summary(&self, epoch: i64) -> Result<Option<Vec<u8>>, Error>;
+    fn capacity_proof_summary(&self, height: i64) -> Result<Option<Vec<u8>>, Error>;
 }

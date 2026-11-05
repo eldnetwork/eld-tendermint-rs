@@ -167,7 +167,7 @@ impl App for Recording {
         Ok(())
     }
 
-    fn capacity_proof_summary(&self, _epoch: i64) -> Result<Option<Vec<u8>>, Error> {
+    fn capacity_proof_summary(&self, _height: i64) -> Result<Option<Vec<u8>>, Error> {
         Ok(None)
     }
 }

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
 use eld_tendermint_consensus::{
-    DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, SummaryQuery, VOTE_CHANNEL,
-    VOTE_SET_BITS_CHANNEL, channel_descriptors,
+    CapacitySummary, DATA_CHANNEL, Group, Msg, Node, Reactor, STATE_CHANNEL, Step, SummaryQuery,
+    VOTE_CHANNEL, VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 use eld_tendermint_crypto::PrivKey;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
@@ -37,6 +37,8 @@ const APP_HASH: [u8; 32] = [0xab; 32];
 struct Exec;
 
 impl SummaryQuery for Exec {}
+
+impl CapacitySummary for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(
