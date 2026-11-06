@@ -24,6 +24,7 @@ use eld_tendermint_types::{Block, Commit, CommitSig, GenesisDoc, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
+use crate::capacity_validator_key::CapacityValidatorKey;
 use crate::content_wait::{ContentReply, ContentWaitKey};
 use crate::error::{Error, fail};
 use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64, hex_upper};
@@ -55,6 +56,10 @@ pub struct NodeStatus {
     pub state_store: Arc<StateStore<RocksDb>>,
     pub switch: Arc<Switch>,
     pub consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
+    /// Eld account key for this node's capacity validator. Absent when the file is not there.
+    /// Read when a summary transaction is signed.
+    #[allow(dead_code)]
+    pub capacity_validator_key: Option<CapacityValidatorKey>,
 }
 
 /// Accept JSON-RPC calls until the listener closes.

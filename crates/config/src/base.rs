@@ -38,6 +38,9 @@ pub struct BaseConfig {
     pub priv_validator_laddr: String,
     #[serde(default = "default_node_key_file")]
     pub node_key_file: String,
+    /// Eld capacity-validator account key. Not the consensus or peer key.
+    #[serde(default = "default_capacity_validator_key_file")]
+    pub capacity_validator_key_file: String,
     #[serde(default = "default_abci")]
     pub abci: String,
     #[serde(default)]
@@ -61,6 +64,7 @@ impl BaseConfig {
             priv_validator_state_file: default_priv_validator_state_file(),
             priv_validator_laddr: String::new(),
             node_key_file: default_node_key_file(),
+            capacity_validator_key_file: default_capacity_validator_key_file(),
             abci: default_abci(),
             filter_peers: false,
         }
@@ -94,6 +98,11 @@ impl BaseConfig {
     #[must_use]
     pub fn node_key_file(&self) -> PathBuf {
         rootify(&self.node_key_file, &self.root_dir)
+    }
+
+    #[must_use]
+    pub fn capacity_validator_key_file(&self) -> PathBuf {
+        rootify(&self.capacity_validator_key_file, &self.root_dir)
     }
 
     #[must_use]
@@ -148,6 +157,10 @@ pub(crate) fn default_priv_validator_state_file() -> String {
 
 pub(crate) fn default_node_key_file() -> String {
     format!("{CONFIG_DIR}/node_key.json")
+}
+
+pub(crate) fn default_capacity_validator_key_file() -> String {
+    format!("{CONFIG_DIR}/capacity_validator_key.json")
 }
 
 pub(crate) fn default_abci() -> String {

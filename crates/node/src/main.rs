@@ -2,6 +2,7 @@
 //! `eld-tendermint unsafe-reset-all` wipes chain data for the next start.
 
 mod app;
+mod capacity_validator_key;
 mod content_wait;
 mod error;
 mod node;
