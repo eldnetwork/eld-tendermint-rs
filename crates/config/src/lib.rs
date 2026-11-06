@@ -171,12 +171,6 @@ impl Config {
         self.base.node_key_file()
     }
 
-    /// Eld capacity-validator account key. Absent on a node that does not sign summaries.
-    #[must_use]
-    pub fn capacity_validator_key_file(&self) -> PathBuf {
-        self.base.capacity_validator_key_file()
-    }
-
     #[must_use]
     pub fn db_dir(&self) -> PathBuf {
         self.base.db_dir()

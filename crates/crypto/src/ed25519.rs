@@ -136,14 +136,6 @@ impl PrivKey {
         Ok(signing.sign(message).to_bytes())
     }
 
-    /// Builds the Go layout from a 32-byte Ed25519 seed.
-    ///
-    /// The public-key suffix is the verifying key of that seed.
-    #[must_use]
-    pub fn from_seed(seed: &[u8; PUB_KEY_SIZE]) -> Self {
-        Self::from_signing_key(SigningKey::from_bytes(seed))
-    }
-
     fn from_signing_key(signing: SigningKey) -> Self {
         let mut bytes = [0u8; PRIV_KEY_SIZE];
         bytes[..PUB_KEY_SIZE].copy_from_slice(&signing.to_bytes());

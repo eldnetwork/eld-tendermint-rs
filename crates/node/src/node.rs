@@ -37,7 +37,6 @@ use eld_tendermint_store::{BlockStore, RocksDb};
 use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line, upper_hex};
 
 use crate::app::{AbciApp, info_request};
-use crate::capacity_validator_key::CapacityValidatorKey;
 use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
 use crate::ws::{CommitPublisher, SubscriptionHub};
@@ -122,7 +121,6 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         ],
     );
     let mut genesis = config.load_genesis().map_err(fail)?;
-    let capacity_validator_key = load_capacity_validator_key(&config)?;
     let node_key = NodeKey::load(config.node_key_file()).map_err(fail)?;
     let node_id = node_key.id().map_err(fail)?;
     let key_file = config.node_key_file().display().to_string();
@@ -303,7 +301,6 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         state_store,
         switch: status_switch,
         consensus: consensus_status,
-        capacity_validator_key,
     });
     let content = ContentReactor::from_shared(content_app, Arc::clone(&status.content_queue));
     register(
@@ -588,30 +585,6 @@ fn open_state_store(config: &Config) -> Result<StateStore<RocksDb>, Error> {
 
 /// `dialRetryIntervalSeconds`. `mustConnect` is false, so a failed dial retries.
 const DIAL_RETRY_INTERVAL: Duration = Duration::from_secs(3);
-
-fn load_capacity_validator_key(config: &Config) -> Result<Option<CapacityValidatorKey>, Error> {
-    let path = config.capacity_validator_key_file();
-    if !path.is_file() {
-        let path = path.display().to_string();
-        log_line(
-            Level::Info,
-            "node",
-            "capacity validator key is not configured",
-            &[("file", path.as_str())],
-        );
-        return Ok(None);
-    }
-    let key = CapacityValidatorKey::load(&path).map_err(fail)?;
-    let address = key.address_hex();
-    let path = path.display().to_string();
-    log_line(
-        Level::Info,
-        "node",
-        "capacity validator key loaded",
-        &[("address", address.as_str()), ("file", path.as_str())],
-    );
-    Ok(Some(key))
-}
 
 fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
     log_line(
