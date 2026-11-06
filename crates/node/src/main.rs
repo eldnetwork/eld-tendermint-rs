@@ -3,6 +3,7 @@
 
 mod app;
 mod capacity_validator_key;
+mod challenge_response;
 mod content_wait;
 mod error;
 mod node;

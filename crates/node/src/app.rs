@@ -218,6 +218,7 @@ impl eld_tendermint_content::App for AbciApp {
         peer_id: &str,
         msg: eld_tendermint_proto::content::CapacityChallengeResponse,
     ) -> Result<(), eld_tendermint_content::Error> {
+        crate::challenge_response::verify_provider_signature(&msg).map_err(content_rejected)?;
         let challenge_id = msg.challenge_id.clone();
         forward_content(self, peer_id, ContentSum::CapacityChallengeResponse(msg))?;
         self.shared.content_waiter.notify(
