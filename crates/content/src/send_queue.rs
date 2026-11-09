@@ -23,6 +23,14 @@ const QUEUE_CAP: usize = 100;
 struct Queued {
     peer_id: String,
     bytes: Vec<u8>,
+    sent: Option<Sent>,
+}
+
+/// One operator line written after the bytes leave this node.
+struct Sent {
+    message: &'static str,
+    field: &'static str,
+    value: String,
 }
 
 /// Content messages this node will send on channel `0x50`.
@@ -51,7 +59,7 @@ impl ContentSendQueue {
         let Some(bytes) = encode(message) else {
             return false;
         };
-        self.enqueue(peer_id, bytes)
+        self.enqueue(peer_id, bytes, sent_log(message))
     }
 
     /// Start a push to `peer_id`.
@@ -94,7 +102,7 @@ impl ContentSendQueue {
     /// Send queued messages to peers that are still connected.
     ///
     /// A full channel queue leaves the message here for the next poll. A peer that
-    /// has gone is dropped from the queue.
+    /// has gone is dropped from the queue. A message that leaves this node is logged.
     pub(crate) fn poll(&self, switch: &Switch) {
         let live: HashSet<String> = switch.peers().into_iter().map(|peer| peer.id).collect();
         let pending = {
@@ -108,6 +116,18 @@ impl ContentSendQueue {
             }
             if !switch.try_send(&queued.peer_id, CONTENT_CHANNEL, &queued.bytes) {
                 again.push_back(queued);
+                continue;
+            }
+            if let Some(sent) = &queued.sent {
+                log_line(
+                    Level::Info,
+                    "content",
+                    sent.message,
+                    &[
+                        ("peer", queued.peer_id.as_str()),
+                        (sent.field, sent.value.as_str()),
+                    ],
+                );
             }
         }
         if again.is_empty() {
@@ -118,7 +138,7 @@ impl ContentSendQueue {
         *inner = again;
     }
 
-    fn enqueue(&self, peer_id: &str, bytes: Vec<u8>) -> bool {
+    fn enqueue(&self, peer_id: &str, bytes: Vec<u8>, sent: Option<Sent>) -> bool {
         let mut inner = lock(&self.inner);
         if inner.len() >= QUEUE_CAP {
             drop(inner);
@@ -133,9 +153,49 @@ impl ContentSendQueue {
         inner.push_back(Queued {
             peer_id: peer_id.to_owned(),
             bytes,
+            sent,
         });
         true
     }
+}
+
+fn sent_log(message: &Message) -> Option<Sent> {
+    let sent = match message.sum.as_ref()? {
+        content::message::Sum::ContentPush(msg) => Sent {
+            message: "content push sent",
+            field: "content_id",
+            value: msg.content_id.clone(),
+        },
+        content::message::Sum::ContentPushAck(msg) => Sent {
+            message: "content receipt sent",
+            field: "content_id",
+            value: msg.content_id.clone(),
+        },
+        content::message::Sum::ContentRequest(msg) => Sent {
+            message: "content request sent",
+            field: "content_id",
+            value: msg.content_id.clone(),
+        },
+        content::message::Sum::ContentResponse(msg) => Sent {
+            message: "content response sent",
+            field: "content_id",
+            value: msg.content_id.clone(),
+        },
+        content::message::Sum::CapacityChallenge(msg) => Sent {
+            message: "capacity challenge sent",
+            field: "challenge_id",
+            value: msg.challenge_id.clone(),
+        },
+        content::message::Sum::CapacityChallengeResponse(msg) => Sent {
+            message: "capacity challenge response sent",
+            field: "challenge_id",
+            value: msg.challenge_id.clone(),
+        },
+        content::message::Sum::Announce(_)
+        | content::message::Sum::CapacityProofSummaryQuery(_)
+        | content::message::Sum::CapacityProofSummary(_) => return None,
+    };
+    Some(sent)
 }
 
 impl Default for ContentSendQueue {

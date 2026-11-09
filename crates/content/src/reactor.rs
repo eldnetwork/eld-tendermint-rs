@@ -81,28 +81,42 @@ impl<A: App> Reactor<A> {
     /// Returns `false` when `bytes` is not a content message, the channel is not
     /// [`CONTENT_CHANNEL`], or a blob is over 1 MiB. The caller stops that peer.
     /// An [`Error`](crate::Error) from the app returns `true`. The peer stays
-    /// connected, the refusal is logged, and no reply is queued. A reply that
+    /// connected, the refusal is logged, and no reply is queued. An accepted
+    /// push, fetch, receipt, or challenge is logged. A reply that
     /// does not fit on the queue is logged and dropped. The peer stays connected.
     #[must_use]
     pub fn handle(&self, peer_id: &str, ch_id: u8, bytes: &[u8]) -> bool {
         let Some(sum) = decode_inbound(ch_id, bytes) else {
             return false;
         };
+        let noted = inbound_note(&sum);
         match reply_from(&self.shared.app, peer_id, sum) {
-            Ok(Some(reply)) => {
-                if !self.queue(peer_id, &reply) {
+            Ok(reply) => {
+                if let Some(note) = noted.filter(|note| match note.when {
+                    InboundWhen::Accepted => true,
+                    InboundWhen::Answered => reply.is_some(),
+                }) {
                     log_line(
-                        Level::Error,
+                        Level::Info,
                         "content",
-                        "reply dropped",
-                        &[
-                            ("peer", peer_id),
-                            ("err", "queue full or message too large"),
-                        ],
+                        note.message,
+                        &[("peer", peer_id), (note.field, note.value.as_str())],
                     );
                 }
+                if let Some(reply) = reply {
+                    if !self.queue(peer_id, &reply) {
+                        log_line(
+                            Level::Error,
+                            "content",
+                            "reply dropped",
+                            &[
+                                ("peer", peer_id),
+                                ("err", "queue full or message too large"),
+                            ],
+                        );
+                    }
+                }
             }
-            Ok(None) => {}
             Err(err) => {
                 let err = err.to_string();
                 log_line(
@@ -114,6 +128,78 @@ impl<A: App> Reactor<A> {
             }
         }
         true
+    }
+}
+
+struct InboundNote {
+    message: &'static str,
+    field: &'static str,
+    value: String,
+    when: InboundWhen,
+}
+
+/// A fetch this node cannot answer stays quiet. Every other accepted message is logged.
+enum InboundWhen {
+    Accepted,
+    Answered,
+}
+
+fn inbound_note(sum: &content::message::Sum) -> Option<InboundNote> {
+    let note = match sum {
+        content::message::Sum::ContentPush(msg) => note(
+            "content push received",
+            "content_id",
+            msg.content_id.clone(),
+            InboundWhen::Accepted,
+        ),
+        content::message::Sum::ContentRequest(msg) => note(
+            "content request received",
+            "content_id",
+            msg.content_id.clone(),
+            InboundWhen::Answered,
+        ),
+        content::message::Sum::ContentPushAck(msg) => note(
+            "content receipt received",
+            "content_id",
+            msg.content_id.clone(),
+            InboundWhen::Accepted,
+        ),
+        content::message::Sum::ContentResponse(msg) => note(
+            "content response received",
+            "content_id",
+            msg.content_id.clone(),
+            InboundWhen::Accepted,
+        ),
+        content::message::Sum::CapacityChallenge(msg) => note(
+            "capacity challenge received",
+            "challenge_id",
+            msg.challenge_id.clone(),
+            InboundWhen::Accepted,
+        ),
+        content::message::Sum::CapacityChallengeResponse(msg) => note(
+            "capacity challenge response received",
+            "challenge_id",
+            msg.challenge_id.clone(),
+            InboundWhen::Accepted,
+        ),
+        content::message::Sum::Announce(_)
+        | content::message::Sum::CapacityProofSummaryQuery(_)
+        | content::message::Sum::CapacityProofSummary(_) => return None,
+    };
+    Some(note)
+}
+
+fn note(
+    message: &'static str,
+    field: &'static str,
+    value: String,
+    when: InboundWhen,
+) -> InboundNote {
+    InboundNote {
+        message,
+        field,
+        value,
+        when,
     }
 }
 

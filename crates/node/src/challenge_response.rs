@@ -151,8 +151,20 @@ mod tests {
     use eld_tendermint_crypto::{PrivKey, address_hash};
     use eld_tendermint_proto::content::{self, CapacityChallengeResponse};
 
+    /// Go layout: 32-byte seed, then the verifying key of that seed.
+    fn key_with_seed(seed: [u8; 32], pubkey_hex: &str) -> PrivKey {
+        let pubkey = hex::decode(pubkey_hex).expect("public key hex");
+        let mut bytes = [0u8; 64];
+        bytes[..32].copy_from_slice(&seed);
+        bytes[32..].copy_from_slice(&pubkey);
+        PrivKey::from_bytes(&bytes).expect("private key")
+    }
+
     fn signed_response() -> CapacityChallengeResponse {
-        let key = PrivKey::from_seed(&[5u8; 32]);
+        let key = key_with_seed(
+            [5u8; 32],
+            "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+        );
         let public_key = key.public_key().expect("public key");
         let provider = address_hash(public_key.as_bytes());
         let challenger = [0x44u8; 20];
@@ -213,11 +225,7 @@ mod tests {
     #[test]
     fn rejects_a_public_key_for_a_different_provider() {
         let mut response = signed_response();
-        response.provider_pubkey = PrivKey::from_seed(&[8u8; 32])
-            .public_key()
-            .expect("other key")
-            .as_bytes()
-            .to_vec();
+        response.provider_pubkey = vec![9u8; 32];
         let err = verify_provider_signature(&response).expect_err("wrong key");
         assert!(err.contains("does not match"), "{err}");
     }
