@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use eld_tendermint_consensus::{Reactor as ConsensusReactor, Step};
-use eld_tendermint_content::ContentSendQueue;
+use eld_tendermint_content::{
+    CONTENT_CHALLENGE_WAIT, CONTENT_PUSH_WAIT, CONTENT_REQUEST_WAIT, ContentSendQueue,
+};
 use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_p2p::Switch;
@@ -551,8 +553,6 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
     })
 }
 
-const CONTENT_WAIT: Duration = Duration::from_secs(5);
-
 /// Queue a `ContentPush` and wait for the provider receipt.
 fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
     let Some(params) = object_params(request) else {
@@ -593,7 +593,7 @@ fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
         status.app.content_waiter().cancel(&subscription);
         return rpc_error(id.clone(), -32603, "content push was not queued");
     }
-    match subscription.recv_timeout(CONTENT_WAIT) {
+    match subscription.recv_timeout(CONTENT_PUSH_WAIT) {
         Ok(ContentReply::Ack { provider }) => rpc_result(
             id.clone(),
             serde_json::json!({ "provider": b64(&provider) }),
@@ -640,7 +640,7 @@ fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
         status.app.content_waiter().cancel(&subscription);
         return rpc_error(id.clone(), -32603, "content request was not queued");
     }
-    match subscription.recv_timeout(CONTENT_WAIT) {
+    match subscription.recv_timeout(CONTENT_REQUEST_WAIT) {
         Ok(ContentReply::Blob { bytes }) => {
             rpc_result(id.clone(), serde_json::json!({ "blob": b64(&bytes) }))
         }
@@ -678,7 +678,7 @@ fn content_challenge(id: &Value, request: &Value, status: &NodeStatus) -> Value 
         status.app.content_waiter().cancel(&subscription);
         return rpc_error(id.clone(), -32603, "content challenge was not queued");
     }
-    match subscription.recv_timeout(CONTENT_WAIT) {
+    match subscription.recv_timeout(CONTENT_CHALLENGE_WAIT) {
         Ok(ContentReply::Proof { challenge_id }) => rpc_result(
             id.clone(),
             serde_json::json!({ "challenge_id": challenge_id }),
