@@ -1,8 +1,8 @@
 //! Check that a capacity challenge response was signed by the challenged node.
 //!
 //! The signed bytes match `eld_common::capacity_proof::capacity_challenge_response_signing_bytes`:
-//! JSON of the challenge id, the `0x` addresses, the chunk proofs, the time, and the
-//! provider public key. This does not check that the chunk proofs are true.
+//! JSON of the challenge id, the `0x` addresses, the chunk proofs, the time, the
+//! provider public key, and the provider node id (40 lowercase hex digits). This does not check that the chunk proofs are true.
 
 use eld_tendermint_crypto::{PubKey, address_hash};
 use eld_tendermint_proto::content::{self, CapacityChallengeResponse};
@@ -23,6 +23,7 @@ pub fn verify_provider_signature(response: &CapacityChallengeResponse) -> Result
         return Err("provider address does not match the provider public key".to_owned());
     }
     let proofs = proofs_from_proto(&response.proofs)?;
+    let node_id = node_id_hex(&response.node_id)?;
     let provider_pubkey = hex::encode(pubkey);
     let signing_bytes = signing_bytes(
         &response.challenge_id,
@@ -32,6 +33,7 @@ pub fn verify_provider_signature(response: &CapacityChallengeResponse) -> Result
         &proofs,
         response.generated_at,
         &provider_pubkey,
+        &node_id,
     )?;
     PubKey::from_bytes(&pubkey)
         .and_then(|key| key.verify(&signing_bytes, &signature))
@@ -58,6 +60,13 @@ fn fixed_64(bytes: &[u8], field: &str) -> Result<[u8; 64], String> {
 
 fn prefixed_hex(address: &[u8; 20]) -> String {
     format!("0x{}", hex::encode(address))
+}
+
+fn node_id_hex(node_id: &[u8]) -> Result<String, String> {
+    let bytes: [u8; 20] = node_id
+        .try_into()
+        .map_err(|_| "node id must be 20 bytes".to_owned())?;
+    Ok(hex::encode(bytes))
 }
 
 fn proofs_from_proto(proofs: &[content::ChunkProof]) -> Result<Vec<SignedChunkProof>, String> {
@@ -103,6 +112,7 @@ struct SigningPayload<'a> {
     proofs: &'a [SignedChunkProof],
     generated_at: u64,
     provider_pubkey: &'a str,
+    node_id: &'a str,
 }
 
 #[derive(Serialize)]
@@ -132,6 +142,7 @@ fn signing_bytes(
     proofs: &[SignedChunkProof],
     generated_at: u64,
     provider_pubkey: &str,
+    node_id: &str,
 ) -> Result<Vec<u8>, String> {
     let payload = SigningPayload {
         challenge_id,
@@ -141,6 +152,7 @@ fn signing_bytes(
         proofs,
         generated_at,
         provider_pubkey,
+        node_id,
     };
     serde_json::to_vec(&payload).map_err(|err| format!("signing payload was not encoded: {err}"))
 }
@@ -197,12 +209,13 @@ mod tests {
             &proofs,
             unsigned.generated_at,
             &hex::encode(public_key.as_bytes()),
+            &super::node_id_hex(&unsigned.node_id).expect("node id"),
         )
         .expect("bytes");
         let signature = key.sign(&message).expect("sign");
         assert_eq!(
             String::from_utf8(message).expect("json"),
-            r#"{"challenge_id":"challenge-1","provider_id":"0x7599776c3085e3f9da0d13071eb0b4ab50fd2bf6","challenger":"0x4444444444444444444444444444444444444444","block_height":42,"proofs":[{"chunk_index":0,"chunk_data":[1,2,3],"chunk_hash":[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],"merkle_proof":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]],"slot_state":"Proof"}],"generated_at":1710000000,"provider_pubkey":"6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"}"#
+            r#"{"challenge_id":"challenge-1","provider_id":"0x7599776c3085e3f9da0d13071eb0b4ab50fd2bf6","challenger":"0x4444444444444444444444444444444444444444","block_height":42,"proofs":[{"chunk_index":0,"chunk_data":[1,2,3],"chunk_hash":[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],"merkle_proof":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]],"slot_state":"Proof"}],"generated_at":1710000000,"provider_pubkey":"6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1","node_id":"3333333333333333333333333333333333333333"}"#
         );
         CapacityChallengeResponse {
             provider_signature: signature.to_vec(),
