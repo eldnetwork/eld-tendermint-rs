@@ -67,6 +67,7 @@ message Announce {
 // which chunks, and the root those proofs are checked against.
 // `challenger` and `provider` are 20-byte chain addresses.
 // `merkle_root` and `seed` are 32 bytes.
+// `node_id` is the 20-byte Tendermint peer id of the capacity provider.
 message CapacityChallenge {
   string          challenge_id      = 1;
   bytes           challenger        = 2;
@@ -77,10 +78,12 @@ message CapacityChallenge {
   bytes           seed              = 7;
   int64           expiration_block  = 8;
   uint64          timestamp         = 9;
+  bytes           node_id           = 10;
 }
 
 // Fields follow the app's challenge response, including the provider signature.
 // `provider_pubkey` is 32 bytes. `provider_signature` is 64 bytes.
+// `node_id` is the 20-byte Tendermint peer id of the capacity provider.
 message CapacityChallengeResponse {
   string             challenge_id       = 1;
   bytes              provider           = 2;
@@ -90,6 +93,7 @@ message CapacityChallengeResponse {
   uint64             generated_at       = 6;
   bytes              provider_pubkey    = 7;
   bytes              provider_signature = 8;
+  bytes              node_id            = 9;
 }
 
 // One chunk in a challenge response.

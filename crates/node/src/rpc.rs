@@ -722,6 +722,10 @@ fn challenge_param(params: &Map<String, Value>) -> Option<CapacityChallenge> {
         .and_then(decode_b64)?;
     let expiration_block = params.get("expiration_block").and_then(Value::as_i64)?;
     let timestamp = params.get("timestamp").and_then(Value::as_u64)?;
+    let node_id = params
+        .get("node_id")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
     Some(CapacityChallenge {
         challenge_id: challenge_id.to_owned(),
         challenger,
@@ -732,6 +736,7 @@ fn challenge_param(params: &Map<String, Value>) -> Option<CapacityChallenge> {
         seed,
         expiration_block,
         timestamp,
+        node_id,
     })
 }
 

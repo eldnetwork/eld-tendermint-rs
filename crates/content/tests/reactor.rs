@@ -132,6 +132,7 @@ impl App for Recording {
             generated_at: 0,
             provider_pubkey: Vec::new(),
             provider_signature: Vec::new(),
+            node_id: msg.node_id.clone(),
         };
         self.record(peer_id, content::message::Sum::CapacityChallenge(msg));
         match self.mode {
@@ -254,6 +255,7 @@ fn challenge() -> Message {
                 seed: vec![2; 32],
                 expiration_block: 142,
                 timestamp: 1_700_000_000,
+                node_id: vec![0x33; 20],
             },
         )),
     }
@@ -358,6 +360,7 @@ fn the_node_queue_can_start_a_push_fetch_and_challenge() {
             seed: vec![2; 32],
             expiration_block: 142,
             timestamp: 1_700_000_000,
+            node_id: vec![0x33; 20],
         },
     ));
 
@@ -625,6 +628,7 @@ fn each_inbound_message_is_delivered_to_the_app() {
                     generated_at: 0,
                     provider_pubkey: Vec::new(),
                     provider_signature: Vec::new(),
+                    node_id: vec![0x33; 20],
                 },
             )),
         },

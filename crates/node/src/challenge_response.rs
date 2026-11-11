@@ -186,6 +186,7 @@ mod tests {
             generated_at: 1_710_000_000,
             provider_pubkey: public_key.as_bytes().to_vec(),
             provider_signature: Vec::new(),
+            node_id: vec![0x33; 20],
         };
         let proofs = super::proofs_from_proto(&unsigned.proofs).expect("proofs");
         let message = super::signing_bytes(

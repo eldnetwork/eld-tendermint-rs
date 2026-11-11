@@ -75,6 +75,7 @@ fn challenge_response_keeps_the_proof_fields() {
                 seed: vec![2; 32],
                 expiration_block: 142,
                 timestamp: 1_700_000_000,
+                node_id: vec![0x33; 20],
             },
         )),
     };
@@ -102,6 +103,7 @@ fn challenge_response_keeps_the_proof_fields() {
                 generated_at: 1_700_000_001,
                 provider_pubkey: vec![8; 32],
                 provider_signature: vec![9; 64],
+                node_id: vec![0x33; 20],
             },
         )),
     };

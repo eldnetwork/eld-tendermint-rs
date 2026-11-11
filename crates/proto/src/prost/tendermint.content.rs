@@ -93,6 +93,7 @@ pub struct Announce {
 /// which chunks, and the root those proofs are checked against.
 /// `challenger` and `provider` are 20-byte chain addresses.
 /// `merkle_root` and `seed` are 32 bytes.
+/// `node_id` is the 20-byte Tendermint peer id of the capacity provider.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapacityChallenge {
     #[prost(string, tag = "1")]
@@ -113,9 +114,12 @@ pub struct CapacityChallenge {
     pub expiration_block: i64,
     #[prost(uint64, tag = "9")]
     pub timestamp: u64,
+    #[prost(bytes = "vec", tag = "10")]
+    pub node_id: ::prost::alloc::vec::Vec<u8>,
 }
 /// Fields follow the app's challenge response, including the provider signature.
 /// `provider_pubkey` is 32 bytes. `provider_signature` is 64 bytes.
+/// `node_id` is the 20-byte Tendermint peer id of the capacity provider.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapacityChallengeResponse {
     #[prost(string, tag = "1")]
@@ -134,6 +138,8 @@ pub struct CapacityChallengeResponse {
     pub provider_pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "8")]
     pub provider_signature: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub node_id: ::prost::alloc::vec::Vec<u8>,
 }
 /// One chunk in a challenge response.
 /// `chunk_hash` is 32 bytes. Each `merkle_proof` entry is 32 bytes.
