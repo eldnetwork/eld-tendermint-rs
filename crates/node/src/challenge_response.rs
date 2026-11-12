@@ -25,16 +25,18 @@ pub fn verify_provider_signature(response: &CapacityChallengeResponse) -> Result
     let proofs = proofs_from_proto(&response.proofs)?;
     let node_id = node_id_hex(&response.node_id)?;
     let provider_pubkey = hex::encode(pubkey);
-    let signing_bytes = signing_bytes(
-        &response.challenge_id,
-        &prefixed_hex(&provider),
-        &prefixed_hex(&challenger),
-        response.block_height,
-        &proofs,
-        response.generated_at,
-        &provider_pubkey,
-        &node_id,
-    )?;
+    let provider_id = prefixed_hex(&provider);
+    let challenger_id = prefixed_hex(&challenger);
+    let signing_bytes = signing_bytes(&SigningBytesContext {
+        challenge_id: &response.challenge_id,
+        provider_id: &provider_id,
+        challenger: &challenger_id,
+        block_height: response.block_height,
+        proofs: &proofs,
+        generated_at: response.generated_at,
+        provider_pubkey: &provider_pubkey,
+        node_id: &node_id,
+    })?;
     PubKey::from_bytes(&pubkey)
         .and_then(|key| key.verify(&signing_bytes, &signature))
         .map_err(|_| "provider signature was not valid".to_owned())
@@ -104,7 +106,7 @@ fn slot_from_proto(state: &content::SlotState) -> Result<SignedSlotState, String
 }
 
 #[derive(Serialize)]
-struct SigningPayload<'a> {
+struct SigningBytesContext<'a> {
     challenge_id: &'a str,
     provider_id: &'a str,
     challenger: &'a str,
@@ -134,27 +136,8 @@ enum SignedSlotState {
     },
 }
 
-fn signing_bytes(
-    challenge_id: &str,
-    provider_id: &str,
-    challenger: &str,
-    block_height: i64,
-    proofs: &[SignedChunkProof],
-    generated_at: u64,
-    provider_pubkey: &str,
-    node_id: &str,
-) -> Result<Vec<u8>, String> {
-    let payload = SigningPayload {
-        challenge_id,
-        provider_id,
-        challenger,
-        block_height,
-        proofs,
-        generated_at,
-        provider_pubkey,
-        node_id,
-    };
-    serde_json::to_vec(&payload).map_err(|err| format!("signing payload was not encoded: {err}"))
+fn signing_bytes(context: &SigningBytesContext<'_>) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(context).map_err(|err| format!("signing payload was not encoded: {err}"))
 }
 
 #[cfg(test)]
@@ -201,16 +184,20 @@ mod tests {
             node_id: vec![0x33; 20],
         };
         let proofs = super::proofs_from_proto(&unsigned.proofs).expect("proofs");
-        let message = super::signing_bytes(
-            &unsigned.challenge_id,
-            &super::prefixed_hex(&provider),
-            &super::prefixed_hex(&challenger),
-            unsigned.block_height,
-            &proofs,
-            unsigned.generated_at,
-            &hex::encode(public_key.as_bytes()),
-            &super::node_id_hex(&unsigned.node_id).expect("node id"),
-        )
+        let provider_id = super::prefixed_hex(&provider);
+        let challenger_id = super::prefixed_hex(&challenger);
+        let provider_pubkey = hex::encode(public_key.as_bytes());
+        let node_id = super::node_id_hex(&unsigned.node_id).expect("node id");
+        let message = super::signing_bytes(&super::SigningBytesContext {
+            challenge_id: &unsigned.challenge_id,
+            provider_id: &provider_id,
+            challenger: &challenger_id,
+            block_height: unsigned.block_height,
+            proofs: &proofs,
+            generated_at: unsigned.generated_at,
+            provider_pubkey: &provider_pubkey,
+            node_id: &node_id,
+        })
         .expect("bytes");
         let signature = key.sign(&message).expect("sign");
         assert_eq!(
