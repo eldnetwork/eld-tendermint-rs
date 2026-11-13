@@ -1,4 +1,4 @@
-//! Load one home, start the reactors, then serve RPC.
+//! Load one home, start the reactors, then serve REST and JSON-RPC.
 
 use std::env;
 use std::io::{self, Write};
@@ -38,10 +38,10 @@ use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line, upper_hex};
 
 use crate::app::{AbciApp, info_request};
 use crate::error::{Error, fail};
-use crate::rpc::{self, NodeStatus};
+use crate::rpc::NodeStatus;
 use crate::ws::{CommitPublisher, SubscriptionHub};
 
-/// `eld-tendermint start [--home <dir>] [--proxy-app <addr>]` blocks on the RPC accept loop.
+/// `eld-tendermint start [--home <dir>] [--proxy-app <addr>]` blocks on the connection accept loop. That loop serves REST and JSON-RPC.
 /// `eld-tendermint unsafe-reset-all` returns after wiping chain data.
 ///
 /// # Errors
@@ -62,7 +62,7 @@ pub fn run() -> Result<(), Error> {
                 "RPC listener",
                 &[("addr", rpc_addr.as_str())],
             );
-            rpc::serve(listener, Arc::clone(&process.status))
+            crate::connection::serve(listener, Arc::clone(&process.status))
         }
         Command::UnsafeResetAll {
             home,

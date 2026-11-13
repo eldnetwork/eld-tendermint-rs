@@ -85,6 +85,20 @@ fn status_health_and_unknown_method() {
         .expect("pubkey bytes");
     assert_eq!(decoded, pv.get_pub_key().as_bytes().as_slice());
 
+    let (rest_code, rest_headers, rest) = get(&addr, "/status");
+    assert_eq!(rest_code, 200);
+    assert!(
+        rest_headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert_eq!(rest["jsonrpc"], "2.0");
+    assert_eq!(rest["id"], -1);
+    assert_eq!(rest["result"], status["result"]);
+    let (query_code, _, query_status) = get(&addr, "/status?x=1");
+    assert_eq!(query_code, 200);
+    assert_eq!(query_status["result"], status["result"]);
+
     let (_code, _headers, health) =
         post(&addr, r#"{"jsonrpc":"2.0","id":"abc","method":"health"}"#);
     assert_eq!(health["id"], "abc");
@@ -1570,6 +1584,22 @@ fn bin_path() -> PathBuf {
     path.push("debug");
     path.push("eld-tendermint");
     path
+}
+
+fn get(addr: &str, path: &str) -> (u16, String, Value) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let json = serde_json::from_str(body).unwrap();
+    (status, head.to_owned(), json)
 }
 
 fn post(addr: &str, body: &str) -> (u16, String, Value) {

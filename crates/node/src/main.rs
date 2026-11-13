@@ -1,12 +1,14 @@
-//! `eld-tendermint start` loads one home and serves JSON-RPC.
+//! `eld-tendermint start` loads one home and serves REST and JSON-RPC.
 //! `eld-tendermint unsafe-reset-all` wipes chain data for the next start.
 
 mod app;
 mod challenge_response;
+mod connection;
 mod content_wait;
 mod error;
 mod node;
 mod reset;
+mod rest;
 mod rpc;
 mod rpc_json;
 mod wait;

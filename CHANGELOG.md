@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `GET /status` returns the same JSON as the `status` RPC method, with `id` `-1`, so a load balancer can check the RPC port over HTTP.
+
 ## [v0.34.24-eld-tm-rs.11] - 2026-11-02
 
 ### Fixed
