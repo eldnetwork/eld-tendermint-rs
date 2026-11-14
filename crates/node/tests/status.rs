@@ -46,6 +46,7 @@ fn status_health_and_unknown_method() {
             .to_ascii_lowercase()
             .contains("content-type: application/json")
     );
+    assert_cors(&status_headers);
     assert_eq!(status["id"], 7);
     assert_eq!(status["result"]["node_info"]["network"], CHAIN_ID);
     assert_eq!(status["result"]["sync_info"]["latest_block_height"], "0");
@@ -92,6 +93,7 @@ fn status_health_and_unknown_method() {
             .to_ascii_lowercase()
             .contains("content-type: application/json")
     );
+    assert_cors(&rest_headers);
     assert_eq!(rest["jsonrpc"], "2.0");
     assert_eq!(rest["id"], -1);
     assert_eq!(rest["result"], status["result"]);
@@ -121,6 +123,30 @@ fn status_health_and_unknown_method() {
 
     let (_code, _headers, bad) = post(&addr, "not-json");
     assert_eq!(bad["error"]["code"], -32700);
+
+    let (opt_code, opt_headers, opt_body) = exchange(
+        &addr,
+        &format!("OPTIONS / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    );
+    assert_eq!(opt_code, 200);
+    assert_eq!(opt_body, "");
+    assert_cors(&opt_headers);
+
+    let (miss_code, miss_headers, _) = exchange(
+        &addr,
+        &format!(
+            "POST /status HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+    );
+    assert_eq!(miss_code, 404);
+    assert_cors(&miss_headers);
+}
+
+fn assert_cors(headers: &str) {
+    let headers = headers.to_ascii_lowercase();
+    assert!(headers.contains("access-control-allow-origin: https://explorer.eld.network"));
+    assert!(headers.contains("access-control-allow-methods: get, post, options"));
+    assert!(headers.contains("access-control-allow-headers: content-type"));
 }
 
 #[test]
@@ -1584,6 +1610,20 @@ fn bin_path() -> PathBuf {
     path.push("debug");
     path.push("eld-tendermint");
     path
+}
+
+fn exchange(addr: &str, request: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_owned(), body.to_owned())
 }
 
 fn get(addr: &str, path: &str) -> (u16, String, Value) {

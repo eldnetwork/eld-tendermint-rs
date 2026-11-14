@@ -6,7 +6,7 @@ Matches `node.Node` and `cmd/tendermint` in the Go tree for the `start` and `uns
 
 ## Public API
 
-`eld-tendermint start [--home <dir>] [--proxy-app <addr>]` keeps running and accepts REST and JSON-RPC on one listener until the process stops. The HTTP method chooses the API: `GET` is REST, `POST` is JSON-RPC.
+`eld-tendermint start [--home <dir>] [--proxy-app <addr>]` keeps running and accepts REST and JSON-RPC on one listener until the process stops. The HTTP method chooses the API: `GET` is REST, `POST` is JSON-RPC. `OPTIONS` returns 200 with an empty body before either of those. Every REST and JSON-RPC response allows `https://explorer.eld.network` to call with `GET`, `POST`, and `OPTIONS`, and to send `Content-Type`.
 
 `eld-tendermint unsafe-reset-all [--home <dir>] [--keep-addr-book]` deletes `data/` (or the configured `db_dir`) and `config/addrbook.json`, and writes a height-0 `priv_validator_state.json`. `config.toml`, `genesis.json`, and the node and validator keys stay.
 

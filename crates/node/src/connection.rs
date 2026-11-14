@@ -1,6 +1,7 @@
 //! One listener for the REST API and the JSON-RPC API.
 //!
-//! `GET` goes to `rest`. `POST` goes to `rpc`. `GET /websocket` upgrades the socket.
+//! `OPTIONS` returns 200 with the CORS headers before either API. `GET` goes to
+//! `rest`. `POST` goes to `rpc`. `GET /websocket` upgrades the socket.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,6 +13,10 @@ use serde_json::Value;
 
 use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
+
+const CORS_ALLOW_ORIGIN: &str = "https://explorer.eld.network";
+const CORS_ALLOW_METHODS: &str = "GET, POST, OPTIONS";
+const CORS_ALLOW_HEADERS: &str = "Content-Type";
 
 /// Accept connections until the listener closes. Each one is REST or JSON-RPC.
 ///
@@ -40,6 +45,7 @@ fn handle(mut stream: TcpStream, status: &NodeStatus) -> Result<(), Error> {
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
     match method {
+        "OPTIONS" => write_raw(&mut stream, 200, "OK", b""),
         "GET" => {
             if path == "/websocket" {
                 if upgrade_websocket(&mut stream, &headers)? {
@@ -138,7 +144,13 @@ fn read_request(stream: &mut impl Read) -> Result<(String, Vec<String>, Vec<u8>)
 
 fn write_raw(stream: &mut impl Write, status: u16, reason: &str, body: &[u8]) -> Result<(), Error> {
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Access-Control-Allow-Origin: {CORS_ALLOW_ORIGIN}\r\n\
+         Access-Control-Allow-Methods: {CORS_ALLOW_METHODS}\r\n\
+         Access-Control-Allow-Headers: {CORS_ALLOW_HEADERS}\r\n\
+         Connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).map_err(fail)?;
