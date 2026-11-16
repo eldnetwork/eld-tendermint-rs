@@ -11,12 +11,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use eld_tendermint_node::{CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_ALLOW_ORIGIN};
+
 use crate::error::{Error, fail};
 use crate::rpc::{self, NodeStatus};
-
-const CORS_ALLOW_ORIGIN: &str = "https://explorer.eld.network";
-const CORS_ALLOW_METHODS: &str = "GET, POST, OPTIONS";
-const CORS_ALLOW_HEADERS: &str = "Content-Type";
 
 /// Accept connections until the listener closes. Each one is REST or JSON-RPC.
 ///

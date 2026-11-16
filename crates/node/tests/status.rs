@@ -144,9 +144,12 @@ fn status_health_and_unknown_method() {
 
 fn assert_cors(headers: &str) {
     let headers = headers.to_ascii_lowercase();
-    assert!(headers.contains("access-control-allow-origin: https://explorer.eld.network"));
-    assert!(headers.contains("access-control-allow-methods: get, post, options"));
-    assert!(headers.contains("access-control-allow-headers: content-type"));
+    let origin = eld_tendermint_node::CORS_ALLOW_ORIGIN.to_ascii_lowercase();
+    let methods = eld_tendermint_node::CORS_ALLOW_METHODS.to_ascii_lowercase();
+    let allow_headers = eld_tendermint_node::CORS_ALLOW_HEADERS.to_ascii_lowercase();
+    assert!(headers.contains(&format!("access-control-allow-origin: {origin}")));
+    assert!(headers.contains(&format!("access-control-allow-methods: {methods}")));
+    assert!(headers.contains(&format!("access-control-allow-headers: {allow_headers}")));
 }
 
 #[test]
