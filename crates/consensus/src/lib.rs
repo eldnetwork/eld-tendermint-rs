@@ -7,18 +7,24 @@
 //! A peer still inside the block store, and behind this node's consensus height,
 //! catches up on the consensus reactor. Fast sync and state sync are not in this crate.
 
+mod capacity_summary;
 mod ensured;
 mod error;
 mod group;
 mod reactor;
 mod round;
+mod summary;
 mod votes;
 mod wal;
 
+pub use capacity_summary::CapacitySummary;
 pub use error::{Error, WalCorrupt};
 pub use group::Group;
 pub use reactor::{
     DATA_CHANNEL, Reactor, STATE_CHANNEL, VOTE_CHANNEL, VOTE_SET_BITS_CHANNEL, channel_descriptors,
 };
 pub use round::{Msg, Node, NodeExtras, Step};
-pub use wal::{Wal, end_height_message, proposal_message, vote_message};
+pub use summary::{SummaryManager, SummaryQuery, catch_up_prune, spawn_prune};
+pub use wal::{
+    Wal, end_height_message, proposal_message, remove_wal_segments_before, vote_message,
+};

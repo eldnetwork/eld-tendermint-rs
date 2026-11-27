@@ -1,13 +1,13 @@
-//! `POST /` JSON-RPC, and `GET /websocket` for `subscribe` and `unsubscribe`.
+//! JSON-RPC methods for `POST /`. `connection` calls [`handle`]. `rest` calls [`dispatch`].
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use base64::Engine;
 use eld_tendermint_consensus::{Reactor as ConsensusReactor, Step};
+use eld_tendermint_content::{
+    CONTENT_CHALLENGE_WAIT, CONTENT_PUSH_WAIT, CONTENT_REQUEST_WAIT, ContentSendQueue,
+};
 use eld_tendermint_crypto::sum;
 use eld_tendermint_mempool::Mempool;
 use eld_tendermint_p2p::Switch;
@@ -15,6 +15,7 @@ use eld_tendermint_proto::abci::{
     Event, EventAttribute, RequestQuery, ResponseCheckTx, ResponseDeliverTx, ResponseInfo,
     ResponseQuery, TxResult,
 };
+use eld_tendermint_proto::content::{CapacityChallenge, ContentPush, ContentRequest};
 use eld_tendermint_proto::crypto::{ProofOp, ProofOps};
 use eld_tendermint_state::{StateStore, TxIndex};
 use eld_tendermint_store::{BlockStore, RocksDb};
@@ -22,7 +23,7 @@ use eld_tendermint_types::{Block, Commit, CommitSig, GenesisDoc, Time, Tx};
 use serde_json::{Map, Value};
 
 use crate::app::AbciApp;
-use crate::error::{Error, fail};
+use crate::content_wait::{ContentReply, ContentWaitKey};
 use crate::rpc_json::{self, RpcBlockId, RpcHeader, RpcValidator, StatusResponse, b64, hex_upper};
 use crate::wait::TxWaiter;
 
@@ -39,6 +40,8 @@ pub struct NodeStatus {
     pub voting_power: i64,
     pub block_store: Arc<BlockStore<RocksDb>>,
     pub mempool: Arc<Mutex<Mempool<AbciApp>>>,
+    /// Content messages waiting for the content reactor. The reactor polls this queue.
+    pub content_queue: Arc<ContentSendQueue>,
     pub waiter: Arc<TxWaiter>,
     pub commit_timeout: Duration,
     pub app: AbciApp,
@@ -52,80 +55,16 @@ pub struct NodeStatus {
     pub consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
 }
 
-/// Accept JSON-RPC calls until the listener closes.
-///
-/// # Errors
-///
-/// Returns an error when a response cannot be encoded. A bad client does not
-/// stop the loop.
-pub fn serve(listener: TcpListener, status: Arc<NodeStatus>) -> Result<(), Error> {
-    for incoming in listener.incoming() {
-        let Ok(stream) = incoming else {
-            continue;
-        };
-        let status = Arc::clone(&status);
-        thread::spawn(move || {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-            let _ = handle(stream, &status);
-        });
-    }
-    Ok(())
-}
-
-fn handle(mut stream: TcpStream, status: &NodeStatus) -> Result<(), Error> {
-    let (request_line, headers, body) = read_request(&mut stream)?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-    if method == "GET" && path == "/websocket" {
-        if upgrade_websocket(&mut stream, &headers)? {
-            let _ = stream.set_read_timeout(None);
-            let _ = stream.set_write_timeout(None);
-            let _ = stream.set_nonblocking(true);
-            crate::ws::run(stream, &status.subscriptions);
-        }
-        return Ok(());
-    }
-    if method != "POST" || path != "/" {
-        write_raw(&mut stream, 404, "Not Found", b"")?;
-        return Ok(());
-    }
-    let response = match serde_json::from_slice::<Value>(&body) {
+/// JSON-RPC response for a `POST /` body. Invalid JSON is a parse error.
+pub(crate) fn handle(body: &[u8], status: &NodeStatus) -> Value {
+    match serde_json::from_slice::<Value>(body) {
         Ok(request) => dispatch(&request, status),
         Err(_) => rpc_error(Value::Null, -32700, "Parse error. Invalid JSON"),
-    };
-    let bytes = serde_json::to_vec(&response).map_err(fail)?;
-    write_raw(&mut stream, 200, "OK", &bytes)
+    }
 }
 
-/// `true` when the stream is a WebSocket. A missing key is HTTP 400 and `false`.
-fn upgrade_websocket(stream: &mut TcpStream, headers: &[String]) -> Result<bool, Error> {
-    let Some(key) = header_value(headers, "sec-websocket-key") else {
-        write_raw(stream, 400, "Bad Request", b"")?;
-        return Ok(false);
-    };
-    let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
-    let raw = format!(
-        "HTTP/1.1 101 Switching Protocols\r\n\
-         Upgrade: websocket\r\n\
-         Connection: Upgrade\r\n\
-         Sec-WebSocket-Accept: {accept}\r\n\
-         \r\n"
-    );
-    stream.write_all(raw.as_bytes()).map_err(fail)?;
-    stream.flush().map_err(fail)?;
-    Ok(true)
-}
-
-fn header_value<'a>(headers: &'a [String], name: &str) -> Option<&'a str> {
-    headers.iter().find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.eq_ignore_ascii_case(name).then_some(value.trim())
-    })
-}
-
-fn dispatch(request: &Value, status: &NodeStatus) -> Value {
+/// Run one JSON-RPC request. REST uses this with `id` `-1`.
+pub(crate) fn dispatch(request: &Value, status: &NodeStatus) -> Value {
     let id = echo_id(request);
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     match method {
@@ -142,8 +81,12 @@ fn dispatch(request: &Value, status: &NodeStatus) -> Value {
         "abci_info" => abci_info(&id, status),
         "block" => rpc_block(&id, request, status),
         "commit" => rpc_commit(&id, request, status),
+        "summary" => rpc_summary(&id, status),
         "tx" => rpc_tx(&id, request, status),
         "tx_search" => rpc_tx_search(&id, request, status),
+        "content_push" => content_push(&id, request, status),
+        "content_request" => content_request(&id, request, status),
+        "content_challenge" => content_challenge(&id, request, status),
         _ => rpc_error(id.clone(), -32601, "Method not found"),
     }
 }
@@ -542,6 +485,201 @@ fn attribute_json(attribute: &EventAttribute) -> Value {
     })
 }
 
+/// Queue a `ContentPush` and wait for the provider receipt.
+fn content_push(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(content_id) = params.get("content_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(request_id) = params.get("request_id").and_then(Value::as_u64) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(blob) = params
+        .get("blob")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)
+    else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Request(request_id));
+    let queued = status.content_queue.push(
+        peer_id,
+        &ContentPush {
+            request_id,
+            content_id: content_id.to_owned(),
+            blob,
+        },
+    );
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content push was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_PUSH_WAIT) {
+        Ok(ContentReply::Ack { provider }) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "provider": b64(&provider) }),
+        ),
+        Ok(ContentReply::Blob { .. } | ContentReply::Proof { .. }) => {
+            rpc_error(id.clone(), -32603, "content push returned a blob")
+        }
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content push timed out")
+        }
+    }
+}
+
+/// Queue a `ContentRequest` and wait for the blob.
+fn content_request(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(content_id) = params.get("content_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(request_id) = params.get("request_id").and_then(Value::as_u64) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Request(request_id));
+    let queued = status.content_queue.request(
+        peer_id,
+        &ContentRequest {
+            request_id,
+            content_id: content_id.to_owned(),
+        },
+    );
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content request was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_REQUEST_WAIT) {
+        Ok(ContentReply::Blob { bytes }) => {
+            rpc_result(id.clone(), serde_json::json!({ "blob": b64(&bytes) }))
+        }
+        Ok(ContentReply::Ack { .. } | ContentReply::Proof { .. }) => {
+            rpc_error(id.clone(), -32603, "content request returned a receipt")
+        }
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content request timed out")
+        }
+    }
+}
+
+/// Queue a `CapacityChallenge` and wait for the proof. Runs on the RPC thread, not consensus.
+fn content_challenge(id: &Value, request: &Value, status: &NodeStatus) -> Value {
+    let Some(params) = object_params(request) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(peer_id) = params.get("peer_id").and_then(Value::as_str) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    let Some(challenge) = challenge_param(params) else {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    };
+    if peer_id.is_empty() || challenge.challenge_id.is_empty() {
+        return rpc_error(id.clone(), -32602, "Invalid params");
+    }
+    let challenge_id = challenge.challenge_id.clone();
+    let subscription = status
+        .app
+        .content_waiter()
+        .subscribe(ContentWaitKey::Challenge(challenge_id.clone()));
+    let queued = status.content_queue.challenge(peer_id, &challenge);
+    if !queued {
+        status.app.content_waiter().cancel(&subscription);
+        return rpc_error(id.clone(), -32603, "content challenge was not queued");
+    }
+    match subscription.recv_timeout(CONTENT_CHALLENGE_WAIT) {
+        Ok(ContentReply::Proof { challenge_id }) => rpc_result(
+            id.clone(),
+            serde_json::json!({ "challenge_id": challenge_id }),
+        ),
+        Ok(ContentReply::Ack { .. } | ContentReply::Blob { .. }) => rpc_error(
+            id.clone(),
+            -32603,
+            "content challenge returned the wrong reply",
+        ),
+        Err(_) => {
+            status.app.content_waiter().cancel(&subscription);
+            rpc_error(id.clone(), -32603, "content challenge timed out")
+        }
+    }
+}
+
+fn challenge_param(params: &Map<String, Value>) -> Option<CapacityChallenge> {
+    let challenge_id = params.get("challenge_id").and_then(Value::as_str)?;
+    let challenger = params
+        .get("challenger")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let provider = params
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let chunk_indices = params
+        .get("chunk_indices")
+        .and_then(Value::as_array)?
+        .iter()
+        .map(Value::as_u64)
+        .collect::<Option<Vec<_>>>()?;
+    let block_height = params.get("block_height").and_then(Value::as_i64)?;
+    let merkle_root = params
+        .get("merkle_root")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let seed = params
+        .get("seed")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    let expiration_block = params.get("expiration_block").and_then(Value::as_i64)?;
+    let timestamp = params.get("timestamp").and_then(Value::as_u64)?;
+    let node_id = params
+        .get("node_id")
+        .and_then(Value::as_str)
+        .and_then(decode_b64)?;
+    Some(CapacityChallenge {
+        challenge_id: challenge_id.to_owned(),
+        challenger,
+        provider,
+        chunk_indices,
+        block_height,
+        merkle_root,
+        seed,
+        expiration_block,
+        timestamp,
+        node_id,
+    })
+}
+
+fn object_params(request: &Value) -> Option<&Map<String, Value>> {
+    request.get("params").and_then(Value::as_object)
+}
+
+fn decode_b64(text: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
+}
+
 /// `ABCIInfo`. No parameters. `InfoSync` on the query connection with `proxy.RequestInfo`.
 ///
 /// Integer fields are decimal strings and `last_block_app_hash` is standard base64, which is
@@ -678,6 +816,18 @@ fn rpc_commit(id: &Value, request: &Value, status: &NodeStatus) -> Value {
             },
             "canonical": height != latest,
         }),
+    )
+}
+
+/// Current summary header. Parameters are ignored. Missing `SH:` is
+/// `summary not found`.
+fn rpc_summary(id: &Value, status: &NodeStatus) -> Value {
+    let Some(header) = status.block_store.load_summary_header() else {
+        return internal_message(id, "summary not found");
+    };
+    rpc_result(
+        id.clone(),
+        rpc_json::to_json(&rpc_json::RpcSummaryHeader::from_summary_header(&header)),
     )
 }
 
@@ -1153,54 +1303,4 @@ fn rpc_error_data(id: Value, code: i64, message: &str, data: &str) -> Value {
         "id": id,
         "error": { "code": code, "message": message, "data": data },
     })
-}
-
-fn read_request(stream: &mut impl Read) -> Result<(String, Vec<String>, Vec<u8>), Error> {
-    let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        let n = stream.read(&mut byte).map_err(fail)?;
-        if n == 0 {
-            return Err(Error::new("client closed the request"));
-        }
-        buf.push(byte[0]);
-        if buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err(Error::new("request headers are too large"));
-        }
-    }
-    let text = String::from_utf8(buf).map_err(|_| Error::new("request headers are not utf-8"))?;
-    let mut lines = text.split("\r\n");
-    let request_line = lines.next().unwrap_or("").to_owned();
-    let mut headers = Vec::new();
-    let mut content_length = 0usize;
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            content_length = value.trim().parse().unwrap_or(0);
-        }
-        headers.push(line.to_owned());
-    }
-    if content_length > 1024 * 1024 {
-        return Err(Error::new("request body is too large"));
-    }
-    let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        stream.read_exact(&mut body).map_err(fail)?;
-    }
-    Ok((request_line, headers, body))
-}
-
-fn write_raw(stream: &mut impl Write, status: u16, reason: &str, body: &[u8]) -> Result<(), Error> {
-    let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(header.as_bytes()).map_err(fail)?;
-    stream.write_all(body).map_err(fail)?;
-    stream.flush().map_err(fail)
 }

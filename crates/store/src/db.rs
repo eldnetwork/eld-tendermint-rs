@@ -42,10 +42,17 @@ impl Batch {
     pub fn delete(&mut self, key: &[u8]) {
         self.ops.push(BatchOp::Delete(key.to_vec()));
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
 }
 
 /// Key-value store. `BlockStore` takes `D: Db`, including `Arc<MemDb>`.
-pub trait Db: Send + Sync {
+///
+/// The handle is `'static` so a prune thread can own it after the caller returns.
+pub trait Db: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`Error::Db`] when the backend read fails. `MemDb` does not fail.

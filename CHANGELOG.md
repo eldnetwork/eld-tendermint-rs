@@ -6,12 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `GET /status` returns the same JSON as the `status` RPC method, with `id` `-1`, so a load balancer can check the RPC port over HTTP.
+- `OPTIONS` returns 200 with CORS headers that allow any origin, so a browser can call the RPC port. The same headers are sent on every REST and JSON-RPC response.
+
+## [v0.34.24-eld-tm-rs.11] - 2026-11-02
+
 ### Fixed
 
 - JSON-RPC hashes and addresses that are Go `bytes.HexBytes` use uppercase hex: transaction `hash` (`broadcast_tx_*`, `tx`, `tx_search`, Tx events), block IDs, header hashes, validator and proposer addresses, and commit `validator_address`. They were standard base64 before.
 
 ### Added
 
+- The node retries block and tx pruning for the current summary every 5 minutes, and deletes rotated WAL segments older than that summary.
+- JSON-RPC `summary` returns the current summary header. A node that has not stored a summary yet returns `summary not found`.
 - JSON-RPC `abci_info` asks the app for Info on the query connection, so `eld-cli chain abci-info` can read the app version, height, and app hash.
 - `tests/vectors/` and `scripts/refresh-vectors.sh`, so CI fails when the hex fixtures and `proto/GO_REF` disagree.
 - Property tests for Merkle roots, Amino JSON, vote sign bytes, and part-set hashes.
@@ -110,7 +119,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - RocksDB is the on-disk backend. A Go `data/` directory created with goleveldb is not opened. Key prefixes match the Go block store. The directory format does not.
 - `unsafe-reset-all` leaves a home that either binary can start. The `data/` files the next Rust `start` creates are RocksDB and cannot be opened by the Go node.
 
-[Unreleased]: https://github.com/eldnetwork/eld-tendermint-rs/compare/v0.34.24-eld-tm-rs.3...HEAD
+[Unreleased]: https://github.com/eldnetwork/eld-tendermint-rs/compare/v0.34.24-eld-tm-rs.11...HEAD
+[v0.34.24-eld-tm-rs.11]: https://github.com/eldnetwork/eld-tendermint-rs/compare/v0.34.24-eld-tm-rs.10...v0.34.24-eld-tm-rs.11
 [v0.34.24-eld-tm-rs.3]: https://github.com/eldnetwork/eld-tendermint-rs/compare/v0.34.24-eld-tm-rs.2...v0.34.24-eld-tm-rs.3
 [v0.34.24-eld-tm-rs.2]: https://github.com/eldnetwork/eld-tendermint-rs/compare/v0.34.24-eld-tm-rs.1...v0.34.24-eld-tm-rs.2
 [v0.34.24-eld-tm-rs.1]: https://github.com/eldnetwork/eld-tendermint-rs/releases/tag/v0.34.24-eld-tm-rs.1

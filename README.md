@@ -58,11 +58,12 @@ flowchart TD
   fastsync --> p2p
   evidence --> p2p
   mempool --> p2p
+  content[Content reactor] --> p2p
   consensus --> rpc
   p2p --> rpc
 ```
 
-Peers share these channels: PEX `0x00`, consensus `0x20`–`0x23`, mempool `0x30`, evidence `0x38`, blockchain `0x40`. Fast sync is registered only when `fast_sync` is on and `fastsync.version` is `v0`. A missing `stateKey` calls ABCI `InitChain` once. A restart calls `Info` only.
+Peers share these channels: PEX `0x00`, consensus `0x20`–`0x23`, mempool `0x30`, evidence `0x38`, blockchain `0x40`, content `0x50`. Fast sync is registered only when `fast_sync` is on and `fastsync.version` is `v0`. A missing `stateKey` calls ABCI `InitChain` once. A restart calls `Info` only.
 
 ## Quickstart
 
@@ -148,14 +149,15 @@ A tag `v0.34.24-eld-tm-rs.N` publishes the image after CI passes. Pushes run CI 
 
 ## JSON-RPC
 
-`POST /` is the only HTTP JSON-RPC route. Any other method and path is 404, including the Go `GET /status` style URLs. `GET /websocket` upgrades to a WebSocket.
+One listener serves both APIs. The HTTP method chooses which one: `GET` is REST, `POST /` is JSON-RPC. `GET /status` returns the same `status` result as `POST /`, with JSON-RPC `id` `-1`. Any other method and path is 404. `GET /websocket` upgrades to a WebSocket.
 
-These `POST /` methods are served: `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `abci_info`, `block`, `commit`, `tx`, `tx_search`.
+These `POST /` methods are served: `health`, `status`, `genesis`, `validators`, `blockchain`, `net_info`, `consensus_state`, `broadcast_tx_sync`, `broadcast_tx_async`, `broadcast_tx_commit`, `abci_query`, `abci_info`, `block`, `commit`, `summary`, `tx`, `tx_search`, `content_push`, `content_request`, `content_challenge`.
 
 Any other method name returns `-32601` and `Method not found`. That includes `block_by_hash`, `block_results`, `genesis_chunked`, `consensus_params`, `unconfirmed_txs`, `num_unconfirmed_txs`, `check_tx`, and `broadcast_evidence`.
 
 A few limits are easy to miss:
 
+- `summary` takes no parameters and returns the current `SummaryHeader`. The snapshot body is not included. A node that has not stored a summary yet returns `summary not found`.
 - `broadcast_tx_async` and `broadcast_tx_sync` both return the CheckTx code and the transaction hash without waiting for a block. `broadcast_tx_commit` waits for the next committed block, or returns a timeout error.
 - `tx_search` accepts equality on `tx.height` and `tx.hash` only. A hash condition wins. Any other tag is an error. With `[tx_index] indexer = "null"` there is no index.
 - `status.sync_info.catching_up` is always `false`.
@@ -236,8 +238,9 @@ Every package is `0.0.1` and unpublished. Each crate has a short README.
 | [`eld-tendermint-evidence`](crates/evidence/README.md) | Evidence pool. A duplicate vote is verified against the current or last validator set. A light-client attack is verified against the trusted and common validator sets. Both are stored in `evidence.db`, gossiped on channel `0x38`, and included in one proposal. |
 | [`eld-tendermint-mempool`](crates/mempool/README.md) | v0 FIFO mempool. `CheckTx`, reap in arrival order, and recheck. Gossip sends one tx per message on channel `0x30` and does not send that tx back to the peer that sent it. |
 | [`eld-tendermint-blockchain`](crates/blockchain/README.md) | v0 fast sync on channel `0x40`. A taller peer is asked for up to 20 blocks. Each block is applied at the next height after its commit matches the previous block. v1 and v2 are not started. |
+| [`eld-tendermint-content`](crates/content/README.md) | Content push, fetch, announce, and capacity-challenge messages on channel `0x50`. The node registers the reactor. A peer that sends bytes that are not one of those messages is stopped. |
 | [`eld-tendermint-consensus`](crates/consensus/README.md) | In-process rounds, with gossip on channels `0x20`–`0x23`. One and four validators commit height 1, and a locked validator re-proposes that block. A node one or two blocks behind catches up on `0x21` and `0x22` with fast sync off. The WAL is CRC32C-framed. The head stays `cs.wal/wal` and rotates to `wal.NNN` at 10 MiB. A prevote written before rotation is replayed from the older segment without a second signature. |
-| [`eld-tendermint-node`](crates/node/README.md) | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, and v0 fast sync when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before RPC starts. A commit `retain_height` prunes block-store heights below that target. Serves the `POST /` methods named in the JSON-RPC section. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
+| [`eld-tendermint-node`](crates/node/README.md) | `eld-tendermint start`. Loads one home (config, keys, RocksDB, ABCI `Info`, `InitChain` on a fresh home, mempool, consensus, evidence, PEX, the content reactor, and v0 fast sync when `fast_sync` is on). A set `priv_validator_laddr` dials that signer and does not read `priv_validator_key.json`. A refused dial exits before the listener starts. A commit `retain_height` prunes block-store heights below that target. Serves the `POST /` methods named in the JSON-RPC section, and `GET /status` with the same `status` result. `GET /websocket` serves `subscribe` and `unsubscribe` for `NewBlock` and `Tx`. `eld-tendermint unsafe-reset-all` deletes `data/` and the address book, keeps config and keys, and writes a height-0 `priv_validator_state.json`. The next start calls `InitChain` once. |
 
 [`tools/proto-compiler`](tools/proto-compiler/README.md) is the prost-build binary used by `scripts/gen-proto.sh`.
 

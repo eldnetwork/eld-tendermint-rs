@@ -1,4 +1,4 @@
-//! Load one home, start the reactors, then serve RPC.
+//! Load one home, start the reactors, then serve REST and JSON-RPC.
 
 use std::env;
 use std::io::{self, Write};
@@ -13,9 +13,13 @@ use eld_tendermint_abci::SocketClient;
 use eld_tendermint_blockchain::{
     Reactor as BlockchainReactor, channel_descriptors as blockchain_channels,
 };
-use eld_tendermint_config::{Config, load_home, resolve_home};
+use eld_tendermint_config::{Config, StorageConfig, load_home, resolve_home};
 use eld_tendermint_consensus::{
-    Node, NodeExtras, Reactor as ConsensusReactor, channel_descriptors as consensus_channels,
+    Node, NodeExtras, Reactor as ConsensusReactor, catch_up_prune,
+    channel_descriptors as consensus_channels, remove_wal_segments_before, spawn_prune,
+};
+use eld_tendermint_content::{
+    ContentSendQueue, Reactor as ContentReactor, channel_descriptors as content_channels,
 };
 use eld_tendermint_crypto::marshal_pub_key;
 use eld_tendermint_evidence::{
@@ -34,10 +38,10 @@ use eld_tendermint_types::{BLOCK_PROTOCOL, Level, log_line, upper_hex};
 
 use crate::app::{AbciApp, info_request};
 use crate::error::{Error, fail};
-use crate::rpc::{self, NodeStatus};
+use crate::rpc::NodeStatus;
 use crate::ws::{CommitPublisher, SubscriptionHub};
 
-/// `eld-tendermint start [--home <dir>] [--proxy-app <addr>]` blocks on the RPC accept loop.
+/// `eld-tendermint start [--home <dir>] [--proxy-app <addr>]` blocks on the connection accept loop. That loop serves REST and JSON-RPC.
 /// `eld-tendermint unsafe-reset-all` returns after wiping chain data.
 ///
 /// # Errors
@@ -58,7 +62,7 @@ pub fn run() -> Result<(), Error> {
                 "RPC listener",
                 &[("addr", rpc_addr.as_str())],
             );
-            rpc::serve(listener, Arc::clone(&process.status))
+            crate::connection::serve(listener, Arc::clone(&process.status))
         }
         Command::UnsafeResetAll {
             home,
@@ -80,8 +84,9 @@ enum Command {
 
 struct NodeProcess {
     switch: Arc<Switch>,
-    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
     poll: Option<JoinHandle<()>>,
+    prune: Option<JoinHandle<()>>,
     status: Arc<NodeStatus>,
     rpc_addr: SocketAddr,
 }
@@ -89,7 +94,10 @@ struct NodeProcess {
 impl Drop for NodeProcess {
     fn drop(&mut self) {
         log_line(Level::Info, "main", "Stopping Node", &[]);
-        self.stop.store(false, Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.prune.take() {
+            let _ = handle.join();
+        }
         if let Some(handle) = self.poll.take() {
             let _ = handle.join();
         }
@@ -161,6 +169,14 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     let tx_for_reactors = tx_index
         .as_ref()
         .map(|index| Arc::clone(index) as Arc<dyn IndexTxs>);
+    let tx_for_prune = tx_for_reactors.clone();
+    if let Some(header) = block_store.load_summary_header() {
+        spawn_prune(
+            Arc::clone(&block_store),
+            tx_for_reactors.clone(),
+            header.end_height,
+        );
+    }
     let subscriptions = Arc::new(SubscriptionHub::new());
     let events: Option<Arc<dyn CommitEvents>> =
         Some(Arc::new(CommitPublisher::new(Arc::clone(&subscriptions))));
@@ -210,6 +226,7 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
     let rpc_app = app.clone();
     let mempool = Mempool::new(config.mempool.clone(), app.clone()).map_err(fail)?;
     let wal_path = config.consensus.wal_file();
+    let wal_to_prune = wal_path.clone();
     let node = Node::start_with_store_extras(
         config.consensus.clone(),
         pv,
@@ -242,6 +259,8 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         Vec::new()
     };
     let evidence_desc = evidence_channels();
+    let content_desc = content_channels();
+    let content_queue = Arc::new(ContentSendQueue::new());
     let channels = hex::encode(
         mempool_desc
             .iter()
@@ -249,12 +268,41 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
             .chain(pex_desc.iter())
             .chain(blockchain_desc.iter())
             .chain(evidence_desc.iter())
+            .chain(content_desc.iter())
             .map(|desc| desc.id)
             .collect::<Vec<_>>(),
     )
     .to_ascii_uppercase();
 
     let switch = Arc::new(Switch::new());
+    let running = Arc::new(AtomicBool::new(true));
+    let consensus_status = consensus.clone();
+    let status_switch = Arc::clone(&switch);
+    let content_app = rpc_app.clone();
+    let status = Arc::new(NodeStatus {
+        id: node_id,
+        network: genesis.chain_id.as_str().to_owned(),
+        listen_addr: config.p2p.laddr.clone(),
+        moniker: config.base.moniker.clone(),
+        rpc_address: config.rpc.laddr.clone(),
+        channels,
+        address: validator_address,
+        pub_key: pub_key_json,
+        voting_power,
+        block_store: Arc::clone(&block_store),
+        mempool: node_mempool,
+        content_queue,
+        waiter,
+        commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
+        app: rpc_app,
+        tx_index,
+        subscriptions,
+        genesis,
+        state_store,
+        switch: status_switch,
+        consensus: consensus_status,
+    });
+    let content = ContentReactor::from_shared(content_app, Arc::clone(&status.content_queue));
     register(
         &switch,
         &consensus,
@@ -268,46 +316,33 @@ fn boot(home: &Path, proxy_app: Option<&str>) -> Result<NodeProcess, Error> {
         register_blockchain(&switch, blockchain, blockchain_desc)?;
     }
     register_evidence(&switch, &evidence_reactor, evidence_desc)?;
+    register_content(&switch, &content, content_desc)?;
 
-    let stop = Arc::new(AtomicBool::new(true));
-    let consensus_status = consensus.clone();
     let poll = spawn_poll(
-        Arc::clone(&stop),
+        Arc::clone(&running),
         Arc::clone(&switch),
-        consensus,
-        mempool_reactor,
-        pex,
-        blockchain,
-        evidence_reactor,
+        PollReactors {
+            consensus,
+            mempool: mempool_reactor,
+            pex,
+            blockchain,
+            evidence: evidence_reactor,
+            content,
+        },
+    );
+    let prune = spawn_catch_up(
+        Arc::clone(&running),
+        Arc::clone(&block_store),
+        tx_for_prune,
+        wal_to_prune,
     );
 
-    let status_switch = Arc::clone(&switch);
     let process = NodeProcess {
         switch,
-        stop,
+        running,
         poll: Some(poll),
-        status: Arc::new(NodeStatus {
-            id: node_id,
-            network: genesis.chain_id.as_str().to_owned(),
-            listen_addr: config.p2p.laddr.clone(),
-            moniker: config.base.moniker.clone(),
-            rpc_address: config.rpc.laddr.clone(),
-            channels,
-            address: validator_address,
-            pub_key: pub_key_json,
-            voting_power,
-            block_store,
-            mempool: node_mempool,
-            waiter,
-            commit_timeout: std_duration(config.rpc.timeout_broadcast_tx_commit),
-            app: rpc_app,
-            tx_index,
-            subscriptions,
-            genesis,
-            state_store,
-            switch: status_switch,
-            consensus: consensus_status,
-        }),
+        prune: Some(prune),
+        status,
         rpc_addr: parse_tcp(&config.rpc.laddr)?,
     };
     process
@@ -423,6 +458,26 @@ fn register_evidence(
     Ok(())
 }
 
+fn register_content(
+    switch: &Arc<Switch>,
+    content: &ContentReactor<AbciApp>,
+    content_desc: Vec<eld_tendermint_p2p::ChannelDescriptor>,
+) -> Result<(), Error> {
+    let content_cb = content.clone();
+    let content_switch = Arc::downgrade(switch);
+    switch
+        .add_reactor("content", content_desc, move |peer_id, ch_id, bytes| {
+            let Some(switch) = content_switch.upgrade() else {
+                return;
+            };
+            if !content_cb.handle(peer_id, ch_id, &bytes) {
+                stop_bad_peer(&switch, peer_id);
+            }
+        })
+        .map_err(fail)?;
+    Ok(())
+}
+
 fn stop_bad_peer(switch: &Switch, peer_id: &str) {
     log_line(
         Level::Info,
@@ -433,24 +488,72 @@ fn stop_bad_peer(switch: &Switch, peer_id: &str) {
     switch.stop_peer(peer_id);
 }
 
-fn spawn_poll(
-    stop: Arc<AtomicBool>,
-    switch: Arc<Switch>,
+fn spawn_catch_up(
+    running: Arc<AtomicBool>,
+    store: Arc<BlockStore<RocksDb>>,
+    tx_index: Option<Arc<dyn IndexTxs>>,
+    wal_path: PathBuf,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let interval = StorageConfig::CATCH_UP_PRUNE_INTERVAL;
+        let step = Duration::from_secs(1);
+        while running.load(Ordering::SeqCst) {
+            let mut waited = Duration::ZERO;
+            while waited < interval && running.load(Ordering::SeqCst) {
+                thread::sleep(step.min(interval.saturating_sub(waited)));
+                waited = waited.saturating_add(step);
+            }
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Err(err) = catch_up_prune(Arc::clone(&store), tx_index.clone()) {
+                let err = err.to_string();
+                log_line(
+                    Level::Error,
+                    "consensus",
+                    "catch-up prune failed",
+                    &[("err", err.as_str())],
+                );
+            }
+            if let Some(header) = store.load_summary_header() {
+                if let Err(err) = remove_wal_segments_before(&wal_path, header.end_height) {
+                    let err = err.to_string();
+                    log_line(
+                        Level::Error,
+                        "consensus",
+                        "WAL segment prune failed",
+                        &[("err", err.as_str())],
+                    );
+                }
+            }
+        }
+    })
+}
+
+struct PollReactors {
     consensus: ConsensusReactor<AbciApp, AbciApp, RocksDb>,
     mempool: MempoolReactor<AbciApp>,
     pex: PexReactor,
     blockchain: Option<BlockchainReactor<AbciApp, RocksDb>>,
     evidence: EvidenceReactor<RocksDb>,
+    content: ContentReactor<AbciApp>,
+}
+
+fn spawn_poll(
+    running: Arc<AtomicBool>,
+    switch: Arc<Switch>,
+    reactors: PollReactors,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        while stop.load(Ordering::SeqCst) {
-            consensus.poll(&switch);
-            mempool.poll(&switch);
-            pex.poll(&switch);
-            if let Some(blockchain) = &blockchain {
+        while running.load(Ordering::SeqCst) {
+            reactors.consensus.poll(&switch);
+            reactors.mempool.poll(&switch);
+            reactors.pex.poll(&switch);
+            if let Some(blockchain) = &reactors.blockchain {
                 blockchain.poll(&switch);
             }
-            evidence.poll(&switch);
+            reactors.evidence.poll(&switch);
+            reactors.content.poll(&switch);
             thread::sleep(Duration::from_millis(5));
         }
     })
@@ -496,10 +599,12 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
         .ok_or_else(|| Error::new(format!("proxy_app is not tcp: {proxy_app}")))?;
     // `multiAppConn.OnStart` order: query, snapshot, mempool, consensus.
     // Each dial is `socketClient.OnStart` with `mustConnect == false`.
+    // Content is its own dial to the same address. The first request on it is `RequestContent`.
     let mut query = dial_abci(proxy_app, addr, "query");
     let snapshot = dial_abci(proxy_app, addr, "snapshot");
     let mempool = dial_abci(proxy_app, addr, "mempool");
     let consensus = dial_abci(proxy_app, addr, "consensus");
+    let content = dial_abci(proxy_app, addr, "content");
     let info = match query.info(info_request()) {
         Ok(info) => info,
         Err(err) => return Err(abci_failed(err)),
@@ -525,7 +630,7 @@ fn connect_app(proxy_app: &str) -> Result<AbciApp, Error> {
             ("appHash", app_hash.as_str()),
         ],
     );
-    Ok(AbciApp::new(query, snapshot, mempool, consensus))
+    Ok(AbciApp::new(query, snapshot, mempool, consensus, content))
 }
 
 fn dial_abci(proxy_app: &str, addr: &str, connection: &'static str) -> SocketClient {

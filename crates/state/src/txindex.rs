@@ -21,6 +21,13 @@ pub trait IndexTxs: Send + Sync {
     ///
     /// Returns a database or decode error. A failure must not panic the process.
     fn index_committed(&self, block: &Block, results: &[ResponseDeliverTx]) -> Result<(), Error>;
+
+    /// Delete indexed transactions for heights below `prune_to`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error. A missing key is not an error.
+    fn prune_txs(&self, prune_to: i64) -> Result<u64, Error>;
 }
 
 /// What the node calls after `save_block` and a successful index write.
@@ -134,11 +141,79 @@ impl<D: Db> TxIndex<D> {
         }
         Ok(found)
     }
+
+    /// Delete all indexed txs for heights < `prune_to`.
+    ///
+    /// Each deleted transaction removes its hash key, its `tx.height` key, and
+    /// the event keys stored with that result. A missing or undecodable result
+    /// still removes the hash and height keys. Writes flush every 1000
+    /// transactions, and once more for whatever remains.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error. A missing key is not an error.
+    pub fn prune_txs(&self, prune_to: i64) -> Result<u64, Error> {
+        if prune_to <= 0 {
+            return Ok(0);
+        }
+
+        let mut deleted = 0u64;
+        let mut batch = Batch::new();
+
+        for height in 1..prune_to {
+            let prefix = format!("tx.height/{height}/").into_bytes();
+            let rows = self
+                .db
+                .iter_prefix(&prefix)
+                .map_err(|err| Error::Db(err.to_string()))?;
+
+            for (height_key, hash) in rows {
+                if !is_height_key(&height_key, height) {
+                    continue;
+                }
+
+                if let Some(raw) = self
+                    .db
+                    .get(hash.as_slice())
+                    .map_err(|err| Error::Db(err.to_string()))?
+                {
+                    if let Ok(stored) = TxResult::decode(raw.as_slice()) {
+                        if let Some(result) = &stored.result {
+                            for event_key in event_keys(result, stored.height, stored.index) {
+                                batch.delete(&event_key);
+                            }
+                        }
+                    }
+                }
+                batch.delete(hash.as_slice());
+                batch.delete(&height_key);
+
+                deleted += 1;
+                if deleted % 1000 == 0 {
+                    self.db
+                        .write_sync(&batch)
+                        .map_err(|err| Error::Db(err.to_string()))?;
+                    batch = Batch::new();
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            self.db
+                .write_sync(&batch)
+                .map_err(|err| Error::Db(err.to_string()))?;
+        }
+        Ok(deleted)
+    }
 }
 
 impl<D: Db + 'static> IndexTxs for TxIndex<D> {
     fn index_committed(&self, block: &Block, results: &[ResponseDeliverTx]) -> Result<(), Error> {
         TxIndex::index_committed(self, block, results)
+    }
+
+    fn prune_txs(&self, prune_to: i64) -> Result<u64, Error> {
+        TxIndex::prune_txs(self, prune_to)
     }
 }
 
@@ -317,6 +392,43 @@ mod tests {
                 .get(b"transfer.sender/bob/10/0")
                 .expect("read")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn prune_txs_removes_only_below_prune_to() {
+        let index = TxIndex::new(MemDb::new());
+        let tx_a = b"tx_A";
+        let tx_b = b"tx_B";
+        index
+            .index_committed(&block_with(1, tx_a), &[deliver(true)])
+            .expect("index height 1");
+        index
+            .index_committed(&block_with(2, tx_b), &[deliver(true)])
+            .expect("index height 2");
+
+        let deleted = index.prune_txs(2).expect("prune");
+        assert!(deleted >= 1);
+
+        let hash_a = Tx::new(tx_a.to_vec()).hash();
+        let hash_b = Tx::new(tx_b.to_vec()).hash();
+        assert!(index.get(hash_a.as_bytes()).expect("get").is_none());
+        assert!(index.get(hash_b.as_bytes()).expect("get").is_some());
+        assert!(index.db.get(b"tx.height/1/1/0").expect("read").is_none());
+        assert!(
+            index
+                .db
+                .get(b"transfer.sender/bob/1/0")
+                .expect("read")
+                .is_none()
+        );
+        assert!(index.db.get(b"tx.height/2/2/0").expect("read").is_some());
+        assert!(
+            index
+                .db
+                .get(b"transfer.sender/bob/2/0")
+                .expect("read")
+                .is_some()
         );
     }
 }

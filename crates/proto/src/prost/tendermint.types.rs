@@ -471,3 +471,139 @@ pub struct CanonicalVote {
     #[prost(string, tag = "6")]
     pub chain_id: ::prost::alloc::string::String,
 }
+/// Eld chain summary. Not part of upstream Tendermint.
+///
+/// summary_hash is the tmhash of this message encoded with summary_hash empty,
+/// so the digest covers body_hash and every other field.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummaryHeader {
+    #[prost(int64, tag = "1")]
+    pub end_height: i64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub summary_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub last_block_id: ::core::option::Option<BlockId>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub last_results_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub app_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub body_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub validators_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub next_validators_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub consensus_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int64, tag = "10")]
+    pub last_height_validators_changed: i64,
+    #[prost(int64, tag = "11")]
+    pub last_height_consensus_params_changed: i64,
+    #[prost(message, optional, tag = "12")]
+    pub validators: ::core::option::Option<ValidatorSet>,
+    #[prost(message, optional, tag = "13")]
+    pub next_validators: ::core::option::Option<ValidatorSet>,
+    #[prost(message, optional, tag = "14")]
+    pub consensus_params: ::core::option::Option<ConsensusParams>,
+}
+/// Compressed application-state snapshot. body_hash is the tmhash of these bytes.
+/// After zstd decompression the bytes are an AppStateSnapshot.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SummaryBody {
+    #[prost(bytes = "vec", tag = "1")]
+    pub state_snapshot: ::prost::alloc::vec::Vec<u8>,
+}
+/// Application state carried in SummaryBody.state_snapshot after decompression.
+/// The Tendermint node and the ABCI app both decode this message.
+/// Record values are opaque application bytes.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppStateSnapshot {
+    #[prost(int64, tag = "1")]
+    pub block_height: i64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub app_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub chain_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "4")]
+    pub current_epoch: i64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub state_trie_root: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int64, tag = "6")]
+    pub frontier: i64,
+    #[prost(message, repeated, tag = "7")]
+    pub records: ::prost::alloc::vec::Vec<AppStateRecord>,
+    #[prost(int64, repeated, tag = "8")]
+    pub epoch_heights: ::prost::alloc::vec::Vec<i64>,
+    #[prost(message, repeated, tag = "9")]
+    pub namespaces: ::prost::alloc::vec::Vec<AppNamespace>,
+    #[prost(message, repeated, tag = "10")]
+    pub validators: ::prost::alloc::vec::Vec<AppValidator>,
+    #[prost(message, repeated, tag = "11")]
+    pub active_validators: ::prost::alloc::vec::Vec<AppValidator>,
+    #[prost(message, repeated, tag = "12")]
+    pub capacity_validators: ::prost::alloc::vec::Vec<AppCapacityValidator>,
+    #[prost(message, optional, tag = "13")]
+    pub active_capacity_validator: ::core::option::Option<AppActiveCapacityValidator>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppStateRecord {
+    #[prost(bytes = "vec", tag = "1")]
+    pub key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppNamespace {
+    #[prost(string, tag = "1")]
+    pub namespace_slug: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub owner: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub registered_height: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppValidator {
+    #[prost(bytes = "vec", tag = "1")]
+    pub address: ::prost::alloc::vec::Vec<u8>,
+    /// Decimal stake amount.
+    #[prost(string, tag = "2")]
+    pub stake: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub public_key: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppCapacityValidator {
+    #[prost(bytes = "vec", tag = "1")]
+    pub address: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub stake: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub public_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub storage_capacity: u64,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub merkle_root: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "6")]
+    pub seed: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint32, optional, tag = "7")]
+    pub chunk_count: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "8")]
+    pub registered_at: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "9")]
+    pub last_merkle_root_update: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "10")]
+    pub registered_block: u64,
+    #[prost(uint64, tag = "11")]
+    pub registration_duration: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AppActiveCapacityValidator {
+    #[prost(bytes = "vec", tag = "1")]
+    pub validator_address: ::prost::alloc::vec::Vec<u8>,
+    #[prost(int64, tag = "2")]
+    pub epoch: i64,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub challenged_providers: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, repeated, tag = "4")]
+    pub subscribed_topics: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}

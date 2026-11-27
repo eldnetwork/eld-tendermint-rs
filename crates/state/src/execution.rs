@@ -8,7 +8,8 @@ use eld_tendermint_proto::abci::{
     ResponseCommit, ResponseDeliverTx, ResponseEndBlock, ValidatorUpdate, VoteInfo,
 };
 use eld_tendermint_types::{
-    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Validator, hash_consensus_params, median_time,
+    ABCI_PUBKEY_TYPE_ED25519, Block, BlockId, Level, Validator, hash_consensus_params, log_line,
+    median_time,
 };
 use prost::Message;
 use prost::bytes::Bytes;
@@ -93,6 +94,20 @@ pub fn apply_block(
         height: block.header.height,
     })?;
 
+    if end.updated_frontier > 0 {
+        let height = block.header.height.to_string();
+        let frontier = end.updated_frontier.to_string();
+        log_line(
+            Level::Info,
+            "state",
+            "frontier advanced",
+            &[
+                ("height", height.as_str()),
+                ("updated_frontier", frontier.as_str()),
+            ],
+        );
+    }
+
     let updates = validator_updates(&end.validator_updates, &state.consensus_params)?;
     let mut last_height_validators_changed = state.last_height_validators_changed;
     let mut next_validators = state.next_validators.copy();
@@ -114,24 +129,26 @@ pub fn apply_block(
 
     let commit = app.commit()?;
     let retain_height = commit.retain_height;
+    let next = State {
+        version,
+        chain_id: state.chain_id.clone(),
+        initial_height: state.initial_height,
+        last_block_height: block.header.height,
+        last_block_id: block_id.clone(),
+        last_block_time: block.header.time,
+        next_validators,
+        validators: state.next_validators.copy(),
+        last_validators: state.validators.copy(),
+        last_height_validators_changed,
+        consensus_params,
+        last_height_consensus_params_changed,
+        last_results_hash: results_hash(&deliver_txs),
+        app_hash: commit.data.to_vec(),
+    };
     Ok(AppliedBlock {
         retain_height,
-        state: State {
-            version,
-            chain_id: state.chain_id.clone(),
-            initial_height: state.initial_height,
-            last_block_height: block.header.height,
-            last_block_id: block_id.clone(),
-            last_block_time: block.header.time,
-            next_validators,
-            validators: state.next_validators.copy(),
-            last_validators: state.validators.copy(),
-            last_height_validators_changed,
-            consensus_params,
-            last_height_consensus_params_changed,
-            last_results_hash: results_hash(&deliver_txs),
-            app_hash: commit.data.to_vec(),
-        },
+        updated_frontier: end.updated_frontier,
+        state: next,
         deliver_txs,
     })
 }
@@ -142,6 +159,8 @@ pub struct AppliedBlock {
     pub deliver_txs: Vec<ResponseDeliverTx>,
     /// `ResponseCommit.retain_height`. Zero means the app did not ask for pruning.
     pub retain_height: i64,
+    /// `ResponseEndBlock.updated_frontier`. Zero means the app reported none.
+    pub updated_frontier: i64,
 }
 
 impl std::fmt::Debug for AppliedBlock {
@@ -150,6 +169,7 @@ impl std::fmt::Debug for AppliedBlock {
             .field("state", &self.state)
             .field("deliver_txs", &self.deliver_txs.len())
             .field("retain_height", &self.retain_height)
+            .field("updated_frontier", &self.updated_frontier)
             .finish()
     }
 }

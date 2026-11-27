@@ -6,11 +6,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use eld_tendermint_crypto::{PubKey, sum};
 use eld_tendermint_proto::types::BlockIdFlag;
 use eld_tendermint_store::{Batch, BlockStore, Db, Error, MemDb, RocksDb};
 use eld_tendermint_types::{
-    ADDRESS_SIZE, Block, BlockId, Commit, CommitSig, EvidenceList, PartSet, PartSetHeader, Time,
-    Tx, Txs,
+    ADDRESS_SIZE, Block, BlockId, Commit, CommitSig, ConsensusParams, EvidenceList, Hash, PartSet,
+    PartSetHeader, SummaryBody, SummaryHeader, SummaryInput, Time, Tx, Txs, Validator,
+    ValidatorSet,
 };
 use prost::Message;
 
@@ -298,6 +300,51 @@ fn stored_state_without_base_loads_as_base_one() {
 }
 
 #[test]
+fn last_pruned_height_reloads_from_the_same_db() {
+    let (db, store) = mem_store();
+    store.save_last_pruned_height(50).expect("save");
+    assert_eq!(store.load_last_pruned_height(), Some(50));
+    assert_eq!(
+        db.get(b"lastPrunedHeight").expect("get").as_deref(),
+        Some(b"50".as_slice())
+    );
+
+    drop(store);
+    let store = BlockStore::new(db);
+    assert_eq!(store.load_last_pruned_height(), Some(50));
+}
+
+#[test]
+fn missing_last_pruned_height_is_none() {
+    let (_db, store) = mem_store();
+    assert!(store.load_last_pruned_height().is_none());
+}
+
+#[test]
+fn negative_last_pruned_height_is_rejected_and_writes_nothing() {
+    let (db, store) = mem_store();
+    let err = store
+        .save_last_pruned_height(-1)
+        .expect_err("negative height");
+    assert!(matches!(err, Error::NegativePrunedHeight), "{err}");
+    assert!(store.load_last_pruned_height().is_none());
+    assert!(db.get(b"lastPrunedHeight").expect("get").is_none());
+}
+
+#[test]
+fn corrupt_last_pruned_height_panics_with_the_key() {
+    let db = Arc::new(MemDb::new());
+    db.set(b"lastPrunedHeight", b"nope").expect("set garbage");
+    let store = BlockStore::new(db);
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        let _ = store.load_last_pruned_height();
+    }));
+    let payload = panicked.expect_err("corrupt last pruned height panics");
+    let text = panic_text(&payload);
+    assert!(text.contains("lastPrunedHeight"), "{text}");
+}
+
+#[test]
 fn corrupt_meta_panics_with_the_key() {
     let db = Arc::new(MemDb::new());
     db.set(b"H:1", b"Tendermint-Meta").expect("set garbage");
@@ -379,6 +426,80 @@ fn rocksdb_round_trip_and_goleveldb_refusal() {
     assert!(err.to_string().contains("goleveldb"), "{}", err);
     assert!(matches!(err, Error::GoLevelDb { .. }));
     assert!(!go_dir.path.join("IDENTITY").exists());
+}
+
+fn summary_pair(end_height: i64, app: &[u8], snapshot: &[u8]) -> (SummaryHeader, SummaryBody) {
+    let validators = ValidatorSet::new(vec![Validator::new(
+        PubKey::from_bytes(&[0x11; 32]).expect("pubkey"),
+        10,
+    )])
+    .expect("validators");
+    let header = SummaryHeader::build(
+        SummaryInput {
+            end_height,
+            last_block_id: BlockId {
+                hash: sum(b"block").to_vec(),
+                part_set_header: PartSetHeader {
+                    total: 1,
+                    hash: sum(b"parts").to_vec(),
+                },
+            },
+            last_results_hash: Hash::from_array(sum(b"results")),
+            app_hash: Hash::from_array(sum(app)),
+            last_height_validators_changed: 1,
+            last_height_consensus_params_changed: 1,
+            validators: validators.copy(),
+            next_validators: validators,
+            consensus_params: ConsensusParams::default_params(),
+        },
+        snapshot,
+    )
+    .expect("summary");
+    (
+        header,
+        SummaryBody {
+            state_snapshot: snapshot.to_vec(),
+        },
+    )
+}
+
+#[test]
+fn save_summary_round_trips_and_replace_drops_the_previous_body() {
+    let (db, store) = mem_store();
+    let (block, parts) = test_block(1, Some(height0_commit()), 1);
+    store
+        .save_block(&block, &parts, &seen_commit(1))
+        .expect("save block");
+    assert!(store.load_summary_header().is_none());
+    assert!(store.load_summary_body().is_none());
+
+    let (header, body) = summary_pair(10, b"app-1", b"snapshot-one");
+    store.save_summary(&header, &body).expect("save summary");
+    assert_eq!(store.base(), 1);
+    assert_eq!(store.height(), 1);
+    assert_eq!(store.load_summary_header().as_ref(), Some(&header));
+    assert_eq!(store.load_summary_body().as_ref(), Some(&body));
+
+    drop(store);
+    let store = BlockStore::new(Arc::clone(&db));
+    assert_eq!(store.load_summary_header().as_ref(), Some(&header));
+    assert_eq!(store.base(), 1);
+
+    let (next_header, next_body) = summary_pair(20, b"app-2", b"snapshot-two-longer");
+    store
+        .save_summary(&next_header, &next_body)
+        .expect("replace summary");
+    assert_eq!(store.base(), 1);
+    assert_eq!(store.height(), 1);
+    let loaded = store.load_summary_body().expect("new body");
+    assert_eq!(loaded, next_body);
+    assert_ne!(loaded.state_snapshot, b"snapshot-one");
+    assert_eq!(store.load_summary_header().as_ref(), Some(&next_header));
+
+    db.delete(b"SB:").expect("drop body");
+    assert_eq!(store.load_summary_header().as_ref(), Some(&next_header));
+    assert!(store.load_summary_body().is_none());
+    assert_eq!(store.base(), 1);
 }
 
 fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {

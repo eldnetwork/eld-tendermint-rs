@@ -146,6 +146,13 @@ pub enum Error {
     TrustedHashMatches,
     ConflictingTimeOrder,
     ByzantineValidatorMismatch,
+    SummaryValidatorsHashMismatch,
+    SummaryNextValidatorsHashMismatch,
+    SummaryConsensusHashMismatch,
+    SummaryHashMismatch,
+    MissingSummaryValidators,
+    MissingSummaryNextValidators,
+    MissingSummaryConsensusParams,
 }
 
 impl fmt::Display for Error {
@@ -343,6 +350,32 @@ impl fmt::Display for Error {
             ),
             Self::ByzantineValidatorMismatch => {
                 write!(f, "byzantine validators do not match the commits")
+            }
+            Self::SummaryValidatorsHashMismatch => {
+                write!(
+                    f,
+                    "summary validators hash does not match the validator set"
+                )
+            }
+            Self::SummaryNextValidatorsHashMismatch => {
+                write!(
+                    f,
+                    "summary next validators hash does not match the next validator set"
+                )
+            }
+            Self::SummaryConsensusHashMismatch => {
+                write!(
+                    f,
+                    "summary consensus hash does not match the consensus params"
+                )
+            }
+            Self::SummaryHashMismatch => write!(f, "summary hash does not match the header"),
+            Self::MissingSummaryValidators => write!(f, "summary validators are missing"),
+            Self::MissingSummaryNextValidators => {
+                write!(f, "summary next validators are missing")
+            }
+            Self::MissingSummaryConsensusParams => {
+                write!(f, "summary consensus params are missing")
             }
         }
     }

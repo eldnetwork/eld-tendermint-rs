@@ -16,6 +16,10 @@ pub mod consensus {
     include!("prost/tendermint.consensus.rs");
 }
 
+pub mod content {
+    include!("prost/tendermint.content.rs");
+}
+
 pub mod crypto {
     include!("prost/tendermint.crypto.rs");
 }

@@ -10,6 +10,9 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
+    /// How often the catch-up thread retries pruning blocks the current summary already covers.
+    pub const CATCH_UP_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
     #[must_use]
     pub fn default_config() -> Self {
         Self {

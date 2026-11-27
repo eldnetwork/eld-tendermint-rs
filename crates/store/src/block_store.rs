@@ -6,15 +6,17 @@
 
 use std::sync::Mutex;
 
-use eld_tendermint_types::{Block, BlockId, Commit, Header, Part, PartSet};
+use eld_tendermint_types::{
+    Block, BlockId, Commit, Header, Part, PartSet, SummaryBody, SummaryHeader,
+};
 use prost::Message;
 
 use crate::db::{Batch, Db};
 use crate::ensured::Ensured;
 use crate::error::Error;
 use crate::keys::{
-    BLOCK_STORE_KEY, block_commit_key, block_hash_key, block_meta_key, block_part_key,
-    seen_commit_key,
+    BLOCK_STORE_KEY, LAST_PRUNED_HEIGHT_KEY, SUMMARY_BODY_KEY, SUMMARY_HEADER_KEY,
+    block_commit_key, block_hash_key, block_meta_key, block_part_key, seen_commit_key,
 };
 
 /// `types.BlockMeta`. Stored as prost `tendermint.types.BlockMeta`.
@@ -317,6 +319,109 @@ impl<D: Db> BlockStore<D> {
         decode_commit(&self.db, &block_commit_key(height))
     }
 
+    /// Writes `SH:` and `SB:` as protobuf. A later save replaces both values.
+    ///
+    /// The block-store base and height are left as they are. [`Self::prune_blocks`]
+    /// is what moves the base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSummary`] when the header cannot be encoded.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the database write fails.
+    pub fn save_summary(&self, header: &SummaryHeader, body: &SummaryBody) -> Result<(), Error> {
+        let header_bytes = header
+            .to_proto()
+            .map_err(Error::InvalidSummary)?
+            .encode_to_vec();
+        let body_bytes = body.to_proto().encode_to_vec();
+        let mut batch = Batch::new();
+        batch.set(SUMMARY_HEADER_KEY, &header_bytes);
+        batch.set(SUMMARY_BODY_KEY, &body_bytes);
+        if let Err(err) = self.db.write_sync(&batch) {
+            panic!("block store db set {}: {err}", key_text(SUMMARY_HEADER_KEY));
+        }
+        Ok(())
+    }
+
+    /// `SH:`. `None` when the key is missing. Does not read `SB:`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `SH:` is present and is not a valid summary header. The panic
+    /// text includes that key.
+    #[must_use]
+    pub fn load_summary_header(&self) -> Option<SummaryHeader> {
+        let bytes = must_get(&self.db, SUMMARY_HEADER_KEY)?;
+        let proto = eld_tendermint_proto::types::SummaryHeader::decode(bytes.as_slice())
+            .unwrap_or_else(|err| {
+                corrupt(
+                    SUMMARY_HEADER_KEY,
+                    &format!("unmarshal to SummaryHeader failed: {err}"),
+                )
+            });
+        Some(SummaryHeader::try_from_proto(&proto).unwrap_or_else(|err| {
+            corrupt(
+                SUMMARY_HEADER_KEY,
+                &format!("error from proto summary header: {err}"),
+            )
+        }))
+    }
+
+    /// `SB:`. `None` when the key is missing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `SB:` is present and is not a `SummaryBody`. The panic text
+    /// includes that key.
+    #[must_use]
+    pub fn load_summary_body(&self) -> Option<SummaryBody> {
+        let bytes = must_get(&self.db, SUMMARY_BODY_KEY)?;
+        let proto = eld_tendermint_proto::types::SummaryBody::decode(bytes.as_slice())
+            .unwrap_or_else(|err| {
+                corrupt(
+                    SUMMARY_BODY_KEY,
+                    &format!("unmarshal to SummaryBody failed: {err}"),
+                )
+            });
+        Some(SummaryBody::from_proto(&proto))
+    }
+
+    /// Highest height a finished prune has deleted. `None` when `lastPrunedHeight` is missing.
+    ///
+    /// The value is the decimal text of that height. This key is local to this node.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `lastPrunedHeight` is present and is not a decimal height. The
+    /// panic text includes that key.
+    #[must_use]
+    pub fn load_last_pruned_height(&self) -> Option<i64> {
+        let bytes = must_get(&self.db, LAST_PRUNED_HEIGHT_KEY)?;
+        Some(decode_last_pruned_height(&bytes))
+    }
+
+    /// Writes `lastPrunedHeight` as the decimal text of `height`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NegativePrunedHeight`] when `height` is negative. Zero is
+    /// a stored height: it means every height below 1 was deleted.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the database write fails.
+    pub fn save_last_pruned_height(&self, height: i64) -> Result<(), Error> {
+        if height < 0 {
+            return Err(Error::NegativePrunedHeight);
+        }
+        let text = height.to_string();
+        must_set_sync(&self.db, LAST_PRUNED_HEIGHT_KEY, text.as_bytes());
+        Ok(())
+    }
+
     /// `LoadSeenCommit`. The +2/3 precommits seen for this height.
     ///
     /// # Panics
@@ -366,6 +471,21 @@ fn load_state<D: Db>(db: &D) -> (i64, i64) {
         base = 1;
     }
     (base, height)
+}
+
+fn decode_last_pruned_height(bytes: &[u8]) -> i64 {
+    let text = std::str::from_utf8(bytes).unwrap_or_else(|_| {
+        corrupt(
+            LAST_PRUNED_HEIGHT_KEY,
+            "last pruned height is not decimal text",
+        )
+    });
+    text.parse().unwrap_or_else(|_| {
+        corrupt(
+            LAST_PRUNED_HEIGHT_KEY,
+            "last pruned height is not decimal text",
+        )
+    })
 }
 
 fn decode_block_meta(key: &[u8], bytes: &[u8]) -> BlockMeta {

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eld_tendermint_config::{ConsensusConfig, MempoolConfig};
-use eld_tendermint_consensus::{Group, Node};
+use eld_tendermint_consensus::{CapacitySummary, Group, Node, SummaryQuery};
 use eld_tendermint_evidence::Pool;
 use eld_tendermint_mempool::{App as MempoolApp, Mempool};
 use eld_tendermint_privval::FilePV;
@@ -24,7 +24,12 @@ use eld_tendermint_types::{
 };
 use prost::bytes::Bytes;
 
+#[derive(Clone)]
 struct Exec;
+
+impl SummaryQuery for Exec {}
+
+impl CapacitySummary for Exec {}
 
 impl ExecApp for Exec {
     fn begin_block(
@@ -58,6 +63,7 @@ impl ExecApp for Exec {
             validator_updates: Vec::new(),
             consensus_param_updates: None,
             events: Vec::new(),
+            updated_frontier: 0,
         })
     }
 

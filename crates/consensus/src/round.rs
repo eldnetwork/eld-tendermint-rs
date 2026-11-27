@@ -17,13 +17,15 @@ use eld_tendermint_state::{
 use eld_tendermint_store::{BlockStore, Db, MemDb};
 use eld_tendermint_types::{
     BLOCK_PART_SIZE_BYTES, BitArray, Block, BlockId, Commit, EvidenceList, Level, Part, PartSet,
-    PartSetHeader, Proposal, Time, ValidatorSet, Vote, VoteSet, log_line, max_data_bytes,
+    PartSetHeader, Proposal, Time, Tx, Txs, ValidatorSet, Vote, VoteSet, log_line, max_data_bytes,
     upper_hex,
 };
 use prost::Message;
 
+use crate::capacity_summary::CapacitySummary;
 use crate::ensured::Ensured;
 use crate::error::Error;
+use crate::summary::{SummaryManager, SummaryQuery};
 use crate::votes::HeightVoteSet;
 use crate::wal::{self, Replay, Wal};
 
@@ -149,6 +151,9 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     evidence: Option<Arc<dyn ProposalEvidence>>,
     tx_index: Option<Arc<dyn IndexTxs>>,
     events: Option<Arc<dyn CommitEvents>>,
+    summary_manager: Arc<Mutex<SummaryManager<D>>>,
+    /// Signed summary appended after the mempool transactions. Not a mempool tx.
+    capacity_summary: Arc<dyn CapacitySummary>,
     exec: E,
     votes: HeightVoteSet,
     proposal: Option<Proposal>,
@@ -167,6 +172,8 @@ pub struct Node<E: ExecApp, C: MempoolApp, D: Db = MemDb> {
     replaying: bool,
     /// Round of the +2/3 precommits while `step` is [`Step::Commit`].
     commit_round: Option<i32>,
+    /// frontier value received from abci app. 0 until a value has been received.
+    frontier: i64,
     /// Parts that arrived before the commit block's part-set header.
     pending_parts: Vec<Part>,
     /// `EventValidBlock` from a +2/3 prevote or from `enterCommit`, not yet broadcast.
@@ -186,7 +193,9 @@ pub(crate) struct OutboundValidBlock {
     pub is_commit: bool,
 }
 
-impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
+impl<E: ExecApp + SummaryQuery + CapacitySummary + Clone + 'static, C: MempoolApp>
+    Node<E, C, MemDb>
+{
     /// `NewNode` with an in-memory block store.
     ///
     /// # Errors
@@ -274,7 +283,9 @@ impl<E: ExecApp, C: MempoolApp> Node<E, C, MemDb> {
     }
 }
 
-impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
+impl<E: ExecApp + SummaryQuery + CapacitySummary + Clone + 'static, C: MempoolApp, D: Db>
+    Node<E, C, D>
+{
     /// [`Self::start`] saving blocks into `block_store`.
     ///
     /// # Errors
@@ -397,7 +408,15 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         exec: E,
         block_store: Arc<BlockStore<D>>,
         extras: NodeExtras,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        E: SummaryQuery + CapacitySummary + Clone + 'static,
+    {
+        let summary_manager = Arc::new(Mutex::new(SummaryManager::new(
+            exec.clone(),
+            Arc::clone(&block_store),
+            extras.tx_index.clone(),
+        )));
         let height = chain_state.last_block_height + 1;
         let validators = chain_state.validators.copy();
         let votes = HeightVoteSet::new(chain_state.chain_id.as_str(), height, validators.copy());
@@ -432,6 +451,8 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             evidence: extras.evidence,
             tx_index: extras.tx_index,
             events: extras.events,
+            summary_manager,
+            capacity_summary: Arc::new(exec.clone()),
             exec,
             votes,
             proposal: None,
@@ -449,6 +470,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             wal,
             replaying: false,
             commit_round: None,
+            frontier: 0,
             pending_parts: Vec::new(),
             outbound_valid_block: None,
             round_start: Time::now(),
@@ -1005,6 +1027,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         if self.proposal_block.is_some() {
             if self.step == Step::Commit {
                 self.try_finalize_commit();
+                self.update_summary();
             }
             return;
         }
@@ -1017,6 +1040,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         self.after_prevote(self.round);
         if self.step == Step::Commit {
             self.try_finalize_commit();
+            self.update_summary();
         }
     }
 
@@ -1395,6 +1419,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
             .unwrap_or_else(|err| err.into_inner())
             .reap_max_bytes_max_gas(max_data, max_gas);
         self.reap_count += 1;
+        let txs = append_capacity_summary(txs, max_data, height, self.capacity_summary.as_ref());
         let mut block = Block::make_block(height, txs, Some(commit), evidence);
         self.fill_header(&mut block);
         let parts = block.make_part_set(BLOCK_PART_SIZE_BYTES).ok()?;
@@ -1658,6 +1683,7 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
         let _ = self.install_commit_header(&block_id);
         self.queue_commit_valid_block();
         self.try_finalize_commit();
+        self.update_summary();
     }
 
     /// `ProposalBlockParts` for a block this node has seen +2/3 prevotes for, or is committing.
@@ -1773,6 +1799,9 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 return;
             }
         };
+        if applied.updated_frontier > 0 {
+            self.frontier = applied.updated_frontier;
+        }
         let seen = self
             .votes
             .precommits(commit_round)
@@ -1862,6 +1891,44 @@ impl<E: ExecApp, C: MempoolApp, D: Db> Node<E, C, D> {
                 ("num_txs", num_txs.as_str()),
             ],
         );
+    }
+
+    /// Called by each caller of [`Self::try_finalize_commit`].
+    ///
+    /// Continues only when `frontier` is greater than `end_height` on the saved
+    /// summary header. No header counts as height 0. The manager asks the app
+    /// and stores the summary. `last_block_id` is block 1, copied from the
+    /// stored summary or from block 1 in the block store.
+    fn update_summary(&mut self) {
+        let saved = self.block_store.load_summary_header();
+        let saved_frontier = saved.as_ref().map(|header| header.end_height).unwrap_or(0);
+        if self.frontier <= saved_frontier {
+            return;
+        }
+        // `catchup` sets `replaying` and feeds the saved consensus log back through
+        // the same calls. The app is already at its latest height then.
+        if self.replaying {
+            return;
+        }
+        let block_id = match saved {
+            Some(header) => header.last_block_id,
+            None => {
+                let Some(meta) = self.block_store.load_block_meta(1) else {
+                    log_line(
+                        Level::Error,
+                        "consensus",
+                        "block 1 is not in the block store",
+                        &[],
+                    );
+                    return;
+                };
+                meta.block_id
+            }
+        };
+        self.summary_manager
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .update_summary(self.frontier, &self.chain_state, block_id);
     }
 
     fn block_ok(&self, block: &Block) -> bool {
@@ -2180,6 +2247,50 @@ pub(crate) fn seconds_since(start: Time, now: Time) -> i64 {
     now.unix_seconds()
         .saturating_sub(start.unix_seconds())
         .max(0)
+}
+
+/// Append the signed summary after the reaped transactions when its protobuf size still fits.
+///
+/// The summary is not taken from the mempool and does not change the block header.
+fn append_capacity_summary<E: CapacitySummary + ?Sized>(
+    txs: Txs,
+    max_data: i64,
+    height: i64,
+    exec: &E,
+) -> Txs {
+    let Some(summary) = exec
+        .capacity_proof_summary(height)
+        .filter(|bytes| !bytes.is_empty())
+    else {
+        return txs;
+    };
+    let mut used = 0i64;
+    for tx in txs.as_slice() {
+        used = used.saturating_add(tx_data_size(tx.as_bytes()));
+    }
+    let extra = tx_data_size(&summary);
+    if max_data > -1 && used.saturating_add(extra) > max_data {
+        let height = height.to_string();
+        let bytes = extra.to_string();
+        log_line(
+            Level::Info,
+            "consensus",
+            "capacity proof summary does not fit in the proposal",
+            &[("height", height.as_str()), ("bytes", bytes.as_str())],
+        );
+        return txs;
+    }
+    let mut list = txs.as_slice().to_vec();
+    list.push(Tx::new(summary));
+    Txs::new(list)
+}
+
+/// Byte size the mempool counts for one transaction.
+fn tx_data_size(tx: &[u8]) -> i64 {
+    let data = eld_tendermint_proto::types::Data {
+        txs: vec![tx.to_vec()],
+    };
+    i64::try_from(data.encoded_len()).unwrap_or(i64::MAX)
 }
 
 fn block_id_of(block: &Block, parts: Option<&PartSet>) -> Option<BlockId> {

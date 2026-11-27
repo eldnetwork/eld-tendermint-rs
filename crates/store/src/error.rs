@@ -36,6 +36,10 @@ pub enum Error {
         height: i64,
         base: i64,
     },
+    /// The summary header could not be encoded.
+    InvalidSummary(eld_tendermint_types::Error),
+    /// `save_last_pruned_height` was given a negative height.
+    NegativePrunedHeight,
 }
 
 impl fmt::Display for Error {
@@ -63,6 +67,8 @@ impl fmt::Display for Error {
                 f,
                 "cannot prune to height {height}, it is lower than base height {base}"
             ),
+            Self::InvalidSummary(err) => write!(f, "invalid summary: {err}"),
+            Self::NegativePrunedHeight => write!(f, "last pruned height must not be negative"),
         }
     }
 }

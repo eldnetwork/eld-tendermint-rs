@@ -346,6 +346,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eld-tendermint-content"
+version = "0.0.1"
+dependencies = [
+ "eld-tendermint-crypto",
+ "eld-tendermint-p2p",
+ "eld-tendermint-proto",
+ "eld-tendermint-types",
+ "prost",
+]
+
+[[package]]
 name = "eld-tendermint-crypto"
 version = "0.0.1"
 dependencies = [
@@ -397,6 +408,7 @@ dependencies = [
  "eld-tendermint-blockchain",
  "eld-tendermint-config",
  "eld-tendermint-consensus",
+ "eld-tendermint-content",
  "eld-tendermint-crypto",
  "eld-tendermint-evidence",
  "eld-tendermint-mempool",
@@ -480,6 +492,7 @@ dependencies = [
 name = "eld-tendermint-store"
 version = "0.0.1"
 dependencies = [
+ "eld-tendermint-crypto",
  "eld-tendermint-proto",
  "eld-tendermint-types",
  "hex",
@@ -737,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.29"
+version = "1.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
 dependencies = [
  "cc",
  "pkg-config",
@@ -1096,9 +1109,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
@@ -1254,7 +1267,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",

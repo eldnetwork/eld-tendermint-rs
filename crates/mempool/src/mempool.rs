@@ -182,6 +182,15 @@ impl<A: App> Mempool<A> {
                 let _ = err;
                 return Ok(response);
             }
+            if is_capacity_proof_tx(tx.as_bytes()) {
+                let hash = upper_hex(tx.hash().as_bytes());
+                log_line(
+                    Level::Info,
+                    "mempool",
+                    "capacity proof tx accepted",
+                    &[("hash", hash.as_str())],
+                );
+            }
             self.txs_bytes += tx_size;
             let mut senders = HashSet::new();
             senders.insert(sender_id);
@@ -257,6 +266,16 @@ impl<A: App> Mempool<A> {
         for (tx, response) in block_txs.iter().zip(deliver_responses.iter()) {
             if response.code == 0 {
                 let _ = self.cache.push(tx);
+                if is_capacity_proof_tx(tx.as_bytes()) {
+                    let height = height.to_string();
+                    let hash = upper_hex(tx.hash().as_bytes());
+                    log_line(
+                        Level::Info,
+                        "mempool",
+                        "capacity proof tx processed",
+                        &[("height", height.as_str()), ("hash", hash.as_str())],
+                    );
+                }
             } else {
                 let code = response.code.to_string();
                 let height = height.to_string();
@@ -359,10 +378,38 @@ impl<A: App> Mempool<A> {
     }
 }
 
+/// The app broadcasts a capacity proof as hex-encoded JSON. The type field is
+/// `"type":"CapacityProof"`. This matches that field without decoding the proof.
+fn is_capacity_proof_tx(tx: &[u8]) -> bool {
+    const TYPE_FIELD: &[u8] = b"2274797065223a22436170616369747950726f6f6622";
+    if tx.len() < TYPE_FIELD.len() {
+        return false;
+    }
+    tx.windows(TYPE_FIELD.len())
+        .any(|window| window.eq_ignore_ascii_case(TYPE_FIELD))
+}
+
 /// `ComputeProtoSizeForTxs` of a one-element list.
 fn proto_size(tx: &Tx) -> i64 {
     let data = eld_tendermint_proto::types::Data {
         txs: vec![tx.as_bytes().to_vec()],
     };
     i64::try_from(data.encoded_len()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_capacity_proof_tx;
+
+    #[test]
+    fn capacity_proof_marker_is_the_hex_type_field() {
+        let proof = hex_json(b"\"type\":\"CapacityProof\"");
+        let transfer = hex_json(b"\"type\":\"Transfer\"");
+        assert!(is_capacity_proof_tx(proof.as_bytes()));
+        assert!(!is_capacity_proof_tx(transfer.as_bytes()));
+    }
+
+    fn hex_json(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
 }

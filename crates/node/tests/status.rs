@@ -46,6 +46,7 @@ fn status_health_and_unknown_method() {
             .to_ascii_lowercase()
             .contains("content-type: application/json")
     );
+    assert_cors(&status_headers);
     assert_eq!(status["id"], 7);
     assert_eq!(status["result"]["node_info"]["network"], CHAIN_ID);
     assert_eq!(status["result"]["sync_info"]["latest_block_height"], "0");
@@ -85,10 +86,34 @@ fn status_health_and_unknown_method() {
         .expect("pubkey bytes");
     assert_eq!(decoded, pv.get_pub_key().as_bytes().as_slice());
 
+    let (rest_code, rest_headers, rest) = get(&addr, "/status");
+    assert_eq!(rest_code, 200);
+    assert!(
+        rest_headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert_cors(&rest_headers);
+    assert_eq!(rest["jsonrpc"], "2.0");
+    assert_eq!(rest["id"], -1);
+    assert_eq!(rest["result"], status["result"]);
+    let (query_code, _, query_status) = get(&addr, "/status?x=1");
+    assert_eq!(query_code, 200);
+    assert_eq!(query_status["result"], status["result"]);
+
     let (_code, _headers, health) =
         post(&addr, r#"{"jsonrpc":"2.0","id":"abc","method":"health"}"#);
     assert_eq!(health["id"], "abc");
     assert_eq!(health["result"], serde_json::json!({}));
+
+    let (_code, _headers, summary) = post(
+        &addr,
+        r#"{"jsonrpc":"2.0","id":1,"method":"summary","params":{}}"#,
+    );
+    assert_eq!(summary["error"]["code"], -32603);
+    assert_eq!(summary["error"]["message"], "Internal error");
+    assert_eq!(summary["error"]["data"], "summary not found");
+    assert!(summary.get("result").is_none());
 
     let (_code, _headers, unknown) =
         post(&addr, r#"{"jsonrpc":"2.0","id":1,"method":"subscribe"}"#);
@@ -98,6 +123,33 @@ fn status_health_and_unknown_method() {
 
     let (_code, _headers, bad) = post(&addr, "not-json");
     assert_eq!(bad["error"]["code"], -32700);
+
+    let (opt_code, opt_headers, opt_body) = exchange(
+        &addr,
+        &format!("OPTIONS / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    );
+    assert_eq!(opt_code, 200);
+    assert_eq!(opt_body, "");
+    assert_cors(&opt_headers);
+
+    let (miss_code, miss_headers, _) = exchange(
+        &addr,
+        &format!(
+            "POST /status HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+    );
+    assert_eq!(miss_code, 404);
+    assert_cors(&miss_headers);
+}
+
+fn assert_cors(headers: &str) {
+    let headers = headers.to_ascii_lowercase();
+    let origin = eld_tendermint_node::CORS_ALLOW_ORIGIN.to_ascii_lowercase();
+    let methods = eld_tendermint_node::CORS_ALLOW_METHODS.to_ascii_lowercase();
+    let allow_headers = eld_tendermint_node::CORS_ALLOW_HEADERS.to_ascii_lowercase();
+    assert!(headers.contains(&format!("access-control-allow-origin: {origin}")));
+    assert!(headers.contains(&format!("access-control-allow-methods: {methods}")));
+    assert!(headers.contains(&format!("access-control-allow-headers: {allow_headers}")));
 }
 
 #[test]
@@ -1276,8 +1328,8 @@ fn info_and_init_chain_use_different_sockets() {
     let conns = conns.lock().unwrap();
     assert_eq!(
         conns.len(),
-        4,
-        "Go opens query, snapshot, mempool, and consensus"
+        5,
+        "query, snapshot, mempool, consensus, and content"
     );
     let mut saw_info = false;
     let mut saw_init = false;
@@ -1561,6 +1613,36 @@ fn bin_path() -> PathBuf {
     path.push("debug");
     path.push("eld-tendermint");
     path
+}
+
+fn exchange(addr: &str, request: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_owned(), body.to_owned())
+}
+
+fn get(addr: &str, path: &str) -> (u16, String, Value) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let json = serde_json::from_str(body).unwrap();
+    (status, head.to_owned(), json)
 }
 
 fn post(addr: &str, body: &str) -> (u16, String, Value) {
